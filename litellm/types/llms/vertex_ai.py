@@ -265,7 +265,6 @@ class RequestBody(TypedDict, total=False):
     safetySettings: List[SafetSettingsConfig]
     generationConfig: GenerationConfig
     cachedContent: str
-    speechConfig: SpeechConfig
     labels: dict[str, str]
 
 
