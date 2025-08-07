@@ -1,3 +1,4 @@
+import asyncio
 import time
 import uuid
 from typing import List, Optional, Union, cast
@@ -57,6 +58,7 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         responses_api_request: ResponsesAPIOptionalRequestParams,
         custom_llm_provider: Optional[str] = None,
         litellm_metadata: Optional[dict] = None,
+        litellm_completion_request: Optional[dict] = None,
     ):
         self.model: str = model
         self.litellm_custom_stream_wrapper: litellm.CustomStreamWrapper = (
@@ -68,6 +70,7 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         )
         self.custom_llm_provider: Optional[str] = custom_llm_provider
         self.litellm_metadata: Optional[dict] = litellm_metadata or {}
+        self.litellm_completion_request: dict = litellm_completion_request or {}
         self.collected_chat_completion_chunks: List[ModelResponseStream] = []
         self.finished: bool = False
         self.litellm_logging_obj = litellm_custom_stream_wrapper.logging_obj
@@ -90,7 +93,7 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         self._tool_args_by_call_id: dict[str, str] = {}
         self._next_tool_output_index: int = 1  # output_index=0 reserved for the message item
         self._final_tool_events_queued: bool = False
-        self._sequence_number: int = 0  
+        self._sequence_number: int = 0
         self._cached_reasoning_item_id: Optional[str] = None
         self._sent_reasoning_summary_text_done_event: bool = False
         self._sent_reasoning_summary_part_done_event: bool = False
@@ -100,6 +103,8 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         self._reasoning_active = False
         self._reasoning_done_emitted = False
         self._reasoning_item_id: Optional[str] = None
+        # CARTO PATCH: For Redis session storage
+        self.response_completed_event: Optional[ResponseCompletedEvent] = None
 
 
     def _get_or_assign_tool_output_index(self, call_id: str) -> int:
@@ -836,7 +841,11 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
                         return self._pending_response_events.pop(0)
 
                 except StopAsyncIteration:
-                    return self.common_done_event_logic(sync_mode=False)
+                    # CARTO PATCH: Store session in Redis before returning done event
+                    done_event = self.common_done_event_logic(sync_mode=False)
+                    if isinstance(done_event, ResponseCompletedEvent):
+                        await self._store_session_in_redis(done_event)
+                    return done_event
 
         except Exception as e:
             # Handle HTTP errors
@@ -1027,9 +1036,60 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
                 litellm_metadata=self.litellm_metadata,
             )
 
+            responses_api_response = LiteLLMCompletionResponsesConfig.transform_chat_completion_response_to_responses_api_response(
+                request_input=self.request_input,
+                chat_completion_response=litellm_model_response,
+                responses_api_request=self.responses_api_request,
+            )
+            
+            # PATCH: Store session immediately in Redis for streaming responses
+            # This ensures the session is available for subsequent requests
+            if responses_api_response.id:
+                # Store the completed event to be used in async context
+                self.response_completed_event = ResponseCompletedEvent(
+                    type=ResponsesAPIStreamEvents.RESPONSE_COMPLETED,
+                    response=responses_api_response,
+                )
+                return self.response_completed_event
+            
             return ResponseCompletedEvent(
                 type=ResponsesAPIStreamEvents.RESPONSE_COMPLETED,
                 response=encoded_response,
             )
         else:
             return None
+    
+    async def _store_session_in_redis(self, response_completed_event: ResponseCompletedEvent):
+        """
+        PATCH: Store session in Redis for streaming responses
+        This fixes the issue where Redis sessions weren't created for streaming requests
+        """
+        try:
+            response = response_completed_event.response
+            if response and response.id:
+                # Get the session ID from metadata or from the completion request
+                session_id = (self.litellm_completion_request.get("litellm_trace_id") or 
+                             self.litellm_metadata.get("litellm_trace_id") or 
+                             str(uuid.uuid4()))
+                
+                # Get the full messages from the completion request (includes history)
+                messages = self.litellm_completion_request.get("messages", []).copy()
+                
+                # Add the assistant response to the messages
+                if response.output and len(response.output) > 0:
+                    output_item = response.output[0]
+                    if output_item.content and len(output_item.content) > 0:
+                        content_item = output_item.content[0]
+                        if hasattr(content_item, "text"):
+                            messages.append({"role": "assistant", "content": content_item.text})
+                
+                # Store session in Redis
+                await LiteLLMCompletionResponsesConfig._patch_store_session_in_redis(
+                    response_id=response.id,
+                    session_id=session_id,
+                    messages=messages
+                )
+        except Exception as e:
+            # Silently fail - Redis storage is a patch for timing issues
+            # and shouldn't break the streaming response
+            pass
