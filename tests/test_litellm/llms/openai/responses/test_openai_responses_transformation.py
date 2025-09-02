@@ -147,15 +147,16 @@ class TestOpenAIResponsesAPIConfig:
 
             assert result.type == ResponsesAPIStreamEvents.RESPONSE_COMPLETED
             assert result.response.id == "resp_123"
-
+    
+    @pytest.mark.serial
     def test_validate_environment(self):
         """Test that validate_environment correctly sets the Authorization header"""
         # Test with provided API key
         headers = {}
         api_key = "test_api_key"
-
+        litellm_params = GenericLiteLLMParams(api_key=api_key)
         result = self.config.validate_environment(
-            headers=headers, model=self.model, api_key=api_key
+            headers=headers, model=self.model, litellm_params=litellm_params
         )
 
         assert "Authorization" in result
@@ -165,7 +166,10 @@ class TestOpenAIResponsesAPIConfig:
         headers = {}
 
         with patch("litellm.api_key", "litellm_api_key"):
-            result = self.config.validate_environment(headers=headers, model=self.model)
+            litellm_params = GenericLiteLLMParams()
+            result = self.config.validate_environment(
+                headers=headers, model=self.model, litellm_params=litellm_params
+            )
 
             assert "Authorization" in result
             assert result["Authorization"] == "Bearer litellm_api_key"
@@ -175,8 +179,9 @@ class TestOpenAIResponsesAPIConfig:
 
         with patch("litellm.openai_key", "openai_key"):
             with patch("litellm.api_key", None):
+                litellm_params = GenericLiteLLMParams()
                 result = self.config.validate_environment(
-                    headers=headers, model=self.model
+                    headers=headers, model=self.model, litellm_params=litellm_params
                 )
 
                 assert "Authorization" in result
@@ -193,8 +198,9 @@ class TestOpenAIResponsesAPIConfig:
                     "litellm.llms.openai.responses.transformation.get_secret_str",
                     return_value="env_api_key",
                 ):
+                    litellm_params = GenericLiteLLMParams()
                     result = self.config.validate_environment(
-                        headers=headers, model=self.model
+                        headers=headers, model=self.model, litellm_params=litellm_params
                     )
 
                     assert "Authorization" in result
