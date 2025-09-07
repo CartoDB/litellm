@@ -1469,3 +1469,66 @@ def test_vertex_parallel_tool_calls_false_single_tool():
         parallel_tool_calls=False,
     )
     assert "tools" in optional_params
+
+
+from litellm.llms.vertex_ai.gemini.transformation import _transform_request_body
+
+
+def test_system_prompt_only_adds_blank_user_message():
+    """
+    Test that the system prompt only adds a blank user message when a system message is passed in.
+
+    Relevant Issue - https://github.com/BerriAI/litellm/issues/13769
+    """
+    SYSTEM_INSTRUCTION = "System instructions for the model"
+    data = _transform_request_body(
+        messages=[{"role": "system", "content": SYSTEM_INSTRUCTION}],
+        model="gemini-2.5-flash",
+        optional_params={},
+        custom_llm_provider="vertex_ai",
+        litellm_params={},
+        cached_content=None,
+    )
+    print("Final data: ", data)
+
+    # validate that a blank user message is added when a system message is passed in
+    assert len(data["contents"]) == 1
+    first_content = data["contents"][0]
+    assert first_content["role"] == "user"
+    assert len(first_content["parts"]) == 1
+
+
+    #########################################################
+    # system message was passed in
+    #########################################################
+    assert len(data["system_instruction"]) == 1
+    assert data["system_instruction"]["parts"][0]["text"] == SYSTEM_INSTRUCTION
+
+def test_extra_body_labels_added_and_existing_fields_not_overridden():
+    """
+    Test that list of parameters sent as "extra_body" are added to the request body and existing fields are not overridden.
+
+    Relevant Issue - https://github.com/BerriAI/litellm/issues/13692
+    """
+    data = _transform_request_body(
+        messages=[{"role": "system", "content": "System instructions for the model"}],
+        model="gemini-2.5-flash",
+        optional_params={
+            "extra_body": {
+                "labels": {"team": "ml"},
+                "cachedContent": "should_not_override"
+            }
+        },
+        custom_llm_provider="vertex_ai",
+        litellm_params={},
+        cached_content="pre_set",
+    )
+
+    print("Final data with extra_body: ", data)
+
+    # validate that extra_body fields are added
+    assert "labels" in data
+    assert data["labels"] == {"team": "ml"}
+
+    # validate that existing fields are not overridden
+    assert data["cachedContent"] == "pre_set"
