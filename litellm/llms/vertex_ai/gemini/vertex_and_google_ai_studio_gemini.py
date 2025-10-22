@@ -1566,6 +1566,7 @@ class VertexLLM(VertexBase):
             custom_llm_provider=custom_llm_provider,
             api_base=api_base,
             should_use_v1beta1_features=should_use_v1beta1_features,
+            labels=optional_params.get("labels"),
         )
 
         headers = VertexGeminiConfig().validate_environment(
@@ -1653,6 +1654,7 @@ class VertexLLM(VertexBase):
             custom_llm_provider=custom_llm_provider,
             api_base=api_base,
             should_use_v1beta1_features=should_use_v1beta1_features,
+            labels=optional_params.get("labels"),
         )
 
         headers = VertexGeminiConfig().validate_environment(
@@ -1828,6 +1830,7 @@ class VertexLLM(VertexBase):
             custom_llm_provider=custom_llm_provider,
             api_base=api_base,
             should_use_v1beta1_features=should_use_v1beta1_features,
+            labels=optional_params.get("labels"),
         )
         headers = VertexGeminiConfig().validate_environment(
             api_key=auth_header,

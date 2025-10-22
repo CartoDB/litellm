@@ -123,30 +123,38 @@ def _get_gemini_url(
     model: str,
     stream: Optional[bool],
     gemini_api_key: Optional[str],
+    labels: Optional[Dict[str, str]] = None,
 ) -> Tuple[str, str]:
     _gemini_model_name = "models/{}".format(model)
+
+    # Build labels query string if provided
+    labels_query = ""
+    if labels:
+        for key, value in labels.items():
+            labels_query += f"&{key}={value}"
+
     if mode == "chat":
         endpoint = "generateContent"
         if stream is True:
             endpoint = "streamGenerateContent"
-            url = "https://generativelanguage.googleapis.com/v1beta/{}:{}?key={}&alt=sse".format(
-                _gemini_model_name, endpoint, gemini_api_key
+            url = "https://generativelanguage.googleapis.com/v1beta/{}:{}?key={}&alt=sse{}".format(
+                _gemini_model_name, endpoint, gemini_api_key, labels_query
             )
         else:
             url = (
-                "https://generativelanguage.googleapis.com/v1beta/{}:{}?key={}".format(
-                    _gemini_model_name, endpoint, gemini_api_key
+                "https://generativelanguage.googleapis.com/v1beta/{}:{}?key={}{}".format(
+                    _gemini_model_name, endpoint, gemini_api_key, labels_query
                 )
             )
     elif mode == "embedding":
         endpoint = "embedContent"
-        url = "https://generativelanguage.googleapis.com/v1beta/{}:{}?key={}".format(
-            _gemini_model_name, endpoint, gemini_api_key
+        url = "https://generativelanguage.googleapis.com/v1beta/{}:{}?key={}{}".format(
+            _gemini_model_name, endpoint, gemini_api_key, labels_query
         )
     elif mode == "batch_embedding":
         endpoint = "batchEmbedContents"
-        url = "https://generativelanguage.googleapis.com/v1beta/{}:{}?key={}".format(
-            _gemini_model_name, endpoint, gemini_api_key
+        url = "https://generativelanguage.googleapis.com/v1beta/{}:{}?key={}{}".format(
+            _gemini_model_name, endpoint, gemini_api_key, labels_query
         )
     elif mode == "image_generation":
         raise ValueError(

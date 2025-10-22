@@ -1507,7 +1507,7 @@ def test_vertex_labels_support():
     google_supported_params = google_config.get_supported_openai_params("gemini-1.5-flash")
     assert "labels" in google_supported_params, "labels should be in supported OpenAI params for Google AI Studio"
 
-    # Test 4: Labels are included in the request body during transformation
+    # Test 4: Labels are included in the request body during transformation for Vertex AI
     messages = [{"role": "user", "content": "Hello, world!"}]
     optional_params_with_labels = {
         "labels": {"goog-partner-solution": "test_solution_urn"},
@@ -1523,8 +1523,34 @@ def test_vertex_labels_support():
         cached_content=None
     )
 
-    assert "labels" in request_body, "labels should be in the request body"
+    assert "labels" in request_body, "labels should be in the request body for Vertex AI"
     assert request_body["labels"] == {"goog-partner-solution": "test_solution_urn"}, "request body labels should match input"
+
+    # Test 4b: Labels are NOT included in request body for Google AI Studio (passed as query params instead)
+    request_body_gemini = _transform_request_body(
+        messages=messages,
+        model="gemini-1.5-flash",
+        optional_params=optional_params_with_labels,
+        custom_llm_provider="gemini",
+        litellm_params={},
+        cached_content=None
+    )
+
+    assert "labels" not in request_body_gemini, "labels should NOT be in request body for Google AI Studio (passed as query params)"
+
+    # Test 4c: URL generation includes labels as query parameters for Google AI Studio
+    from litellm.llms.vertex_ai.common_utils import _get_gemini_url
+
+    url, endpoint = _get_gemini_url(
+        mode="chat",
+        model="gemini-1.5-flash",
+        stream=False,
+        gemini_api_key="test_key",
+        labels={"goog-partner-solution": "test_solution_urn"}
+    )
+
+    assert "goog-partner-solution=test_solution_urn" in url, "labels should be in URL query parameters for Google AI Studio"
+    assert "key=test_key" in url, "API key should still be in URL"
 
     # Test 5: get_optional_params integration test
     optional_params = get_optional_params(

@@ -329,6 +329,7 @@ class VertexBase:
         api_base: Optional[str],
         should_use_v1beta1_features: Optional[bool] = False,
         mode: all_gemini_url_modes = "chat",
+        labels: Optional[Dict[str, str]] = None,
     ) -> Tuple[Optional[str], str]:
         """
         Internal function. Returns the token and url for the call.
@@ -344,6 +345,7 @@ class VertexBase:
                 model=model,
                 stream=stream,
                 gemini_api_key=gemini_api_key,
+                labels=labels,
             )
             auth_header = None  # this field is not used for gemin
         else:
