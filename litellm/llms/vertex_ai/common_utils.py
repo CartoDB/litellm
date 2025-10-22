@@ -127,34 +127,34 @@ def _get_gemini_url(
 ) -> Tuple[str, str]:
     _gemini_model_name = "models/{}".format(model)
 
-    # Build labels query string if provided
+    # Google AI Studio doesn't support labels as query parameters
+    # Labels are only supported in Vertex AI, not Google AI Studio
     labels_query = ""
-    if labels:
-        for key, value in labels.items():
-            labels_query += f"&{key}={value}"
+    # Note: Google AI Studio API does not support goog-partner-solution labels
+    # Partner consumption tracking is only available via Vertex AI API
 
     if mode == "chat":
         endpoint = "generateContent"
         if stream is True:
             endpoint = "streamGenerateContent"
-            url = "https://generativelanguage.googleapis.com/v1beta/{}:{}?key={}&alt=sse{}".format(
-                _gemini_model_name, endpoint, gemini_api_key, labels_query
+            url = "https://generativelanguage.googleapis.com/v1beta/{}:{}?key={}&alt=sse".format(
+                _gemini_model_name, endpoint, gemini_api_key
             )
         else:
             url = (
-                "https://generativelanguage.googleapis.com/v1beta/{}:{}?key={}{}".format(
-                    _gemini_model_name, endpoint, gemini_api_key, labels_query
+                "https://generativelanguage.googleapis.com/v1beta/{}:{}?key={}".format(
+                    _gemini_model_name, endpoint, gemini_api_key
                 )
             )
     elif mode == "embedding":
         endpoint = "embedContent"
-        url = "https://generativelanguage.googleapis.com/v1beta/{}:{}?key={}{}".format(
-            _gemini_model_name, endpoint, gemini_api_key, labels_query
+        url = "https://generativelanguage.googleapis.com/v1beta/{}:{}?key={}".format(
+            _gemini_model_name, endpoint, gemini_api_key
         )
     elif mode == "batch_embedding":
         endpoint = "batchEmbedContents"
-        url = "https://generativelanguage.googleapis.com/v1beta/{}:{}?key={}{}".format(
-            _gemini_model_name, endpoint, gemini_api_key, labels_query
+        url = "https://generativelanguage.googleapis.com/v1beta/{}:{}?key={}".format(
+            _gemini_model_name, endpoint, gemini_api_key
         )
     elif mode == "image_generation":
         raise ValueError(

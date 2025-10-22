@@ -379,9 +379,7 @@ def _transform_request_body(
             data["generationConfig"] = generation_config
         if cached_content is not None:
             data["cachedContent"] = cached_content
-        # For Vertex AI, add labels to request body
-        # For Google AI Studio (gemini), labels are passed as query parameters
-        if labels is not None and custom_llm_provider != "gemini":
+        if labels is not None:
             data["labels"] = labels
     except Exception as e:
         raise e
