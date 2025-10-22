@@ -1469,3 +1469,70 @@ def test_vertex_parallel_tool_calls_false_single_tool():
         parallel_tool_calls=False,
     )
     assert "tools" in optional_params
+
+
+def test_vertex_labels_support():
+    """
+    Test that labels parameter is properly supported and passed through for Vertex AI.
+    This test covers the fix for: https://github.com/BerriAI/litellm/issues/13692
+    """
+    from litellm.llms.vertex_ai.gemini.vertex_and_google_ai_studio_gemini import VertexGeminiConfig
+    from litellm.llms.vertex_ai.gemini.transformation import _transform_request_body
+    from litellm.llms.gemini.chat.transformation import GoogleAIStudioGeminiConfig
+
+    # Test 1: VertexGeminiConfig supports labels in get_supported_openai_params
+    config = VertexGeminiConfig()
+    supported_params = config.get_supported_openai_params("gemini-1.5-flash")
+    assert "labels" in supported_params, "labels should be in supported OpenAI params for Vertex AI"
+
+    # Test 2: VertexGeminiConfig map_openai_params handles labels
+    non_default_params = {
+        "labels": {"goog-partner-solution": "test_solution_urn"},
+        "temperature": 0.5
+    }
+    optional_params = {}
+
+    result = config.map_openai_params(
+        non_default_params=non_default_params,
+        optional_params=optional_params,
+        model="gemini-1.5-flash",
+        drop_params=False
+    )
+
+    assert "labels" in result, "labels should be preserved in optional_params"
+    assert result["labels"] == {"goog-partner-solution": "test_solution_urn"}, "labels value should match input"
+
+    # Test 3: GoogleAIStudioGeminiConfig also supports labels
+    google_config = GoogleAIStudioGeminiConfig()
+    google_supported_params = google_config.get_supported_openai_params("gemini-1.5-flash")
+    assert "labels" in google_supported_params, "labels should be in supported OpenAI params for Google AI Studio"
+
+    # Test 4: Labels are included in the request body during transformation
+    messages = [{"role": "user", "content": "Hello, world!"}]
+    optional_params_with_labels = {
+        "labels": {"goog-partner-solution": "test_solution_urn"},
+        "temperature": 0.5
+    }
+
+    request_body = _transform_request_body(
+        messages=messages,
+        model="gemini-1.5-flash",
+        optional_params=optional_params_with_labels,
+        custom_llm_provider="vertex_ai",
+        litellm_params={},
+        cached_content=None
+    )
+
+    assert "labels" in request_body, "labels should be in the request body"
+    assert request_body["labels"] == {"goog-partner-solution": "test_solution_urn"}, "request body labels should match input"
+
+    # Test 5: get_optional_params integration test
+    optional_params = get_optional_params(
+        model="gemini-1.5-pro",
+        custom_llm_provider="vertex_ai",
+        labels={"goog-partner-solution": "test_solution_urn"},
+        temperature=0.7
+    )
+
+    assert "labels" in optional_params, "labels should be in optional_params from get_optional_params"
+    assert optional_params["labels"] == {"goog-partner-solution": "test_solution_urn"}, "labels value should be preserved"
