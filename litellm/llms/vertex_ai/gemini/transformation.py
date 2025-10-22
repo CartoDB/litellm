@@ -5,7 +5,7 @@ Why separate file? Make it easy to see how transformation works
 """
 
 import os
-from typing import TYPE_CHECKING, List, Literal, Optional, Tuple, Union, cast
+from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple, Union, cast
 
 import httpx
 from pydantic import BaseModel
@@ -356,6 +356,7 @@ def _transform_request_body(
         safety_settings: Optional[List[SafetSettingsConfig]] = optional_params.pop(
             "safety_settings", None
         )  # type: ignore
+        labels: Optional[Dict[str, str]] = optional_params.pop("labels", None)
         config_fields = GenerationConfig.__annotations__.keys()
 
         filtered_params = {
@@ -378,6 +379,8 @@ def _transform_request_body(
             data["generationConfig"] = generation_config
         if cached_content is not None:
             data["cachedContent"] = cached_content
+        if labels is not None:
+            data["labels"] = labels
     except Exception as e:
         raise e
 

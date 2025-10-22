@@ -229,6 +229,7 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
             "modalities",
             "parallel_tool_calls",
             "web_search_options",
+            "labels",
         ]
         if supports_reasoning(model):
             supported_params.append("reasoning_effort")
@@ -614,6 +615,8 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
                 optional_params = self._add_tools_to_optional_params(
                     optional_params, [_tools]
                 )
+            elif param == "labels" and isinstance(value, dict):
+                optional_params["labels"] = value
         if litellm.vertex_ai_safety_settings is not None:
             optional_params["safety_settings"] = litellm.vertex_ai_safety_settings
 
