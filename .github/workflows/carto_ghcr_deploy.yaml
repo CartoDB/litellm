@@ -81,7 +81,7 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-non_root
           tags: |
             ${{ steps.tag-config.outputs.tags }}
-
+  
       # Configure multi platform Docker builds
       # - name: Set up QEMU
       #   uses: docker/setup-qemu-action@e0e4588fad221d38ee467c0bffd91115366dc0c5
@@ -99,4 +99,4 @@ jobs:
           cache-to: type=gha,mode=max
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          platforms: linux/arm64
+          platforms: linux/amd64 #linux/arm64
