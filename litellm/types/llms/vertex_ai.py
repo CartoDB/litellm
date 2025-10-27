@@ -266,6 +266,7 @@ class RequestBody(TypedDict, total=False):
     generationConfig: GenerationConfig
     cachedContent: str
     speechConfig: SpeechConfig
+    labels: Dict[str, str]
 
 
 class CachedContentRequestBody(TypedDict, total=False):
