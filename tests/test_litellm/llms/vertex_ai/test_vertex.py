@@ -1504,31 +1504,82 @@ def test_system_prompt_only_adds_blank_user_message():
     assert len(data["system_instruction"]) == 1
     assert data["system_instruction"]["parts"][0]["text"] == SYSTEM_INSTRUCTION
 
-def test_extra_body_labels_added_and_existing_fields_not_overridden():
+def test_google_genai_excludes_labels():
+    """Test that Google GenAI/AI Studio endpoints exclude labels when custom_llm_provider='gemini'"""
+    messages = [{"role": "user", "content": "test"}]
+    optional_params = {"labels": {"project": "test", "team": "ai"}}
+    litellm_params = {}
+
+    result = _transform_request_body(
+        messages=messages,
+        model="gemini-2.5-pro",
+        optional_params=optional_params,
+        custom_llm_provider="gemini",
+        litellm_params=litellm_params,
+        cached_content=None,
+    )
+
+    # Google GenAI/AI Studio should NOT include labels
+    assert "labels" not in result
+    assert "contents" in result
+
+
+def test_vertex_ai_includes_labels():
     """
-    Test that list of parameters sent as "extra_body" are added to the request body and existing fields are not overridden.
+    Test that Vertex AI endpoints include labels when custom_llm_provider='vertex_ai'
 
     Relevant Issue - https://github.com/BerriAI/litellm/issues/13692
     """
-    data = _transform_request_body(
-        messages=[{"role": "system", "content": "System instructions for the model"}],
-        model="gemini-2.5-flash",
-        optional_params={
-            "extra_body": {
-                "labels": {"team": "ml"},
-                "cachedContent": "should_not_override"
-            }
-        },
+    messages = [{"role": "user", "content": "test"}]
+    optional_params = {"labels": {"project": "test", "team": "ai"}}
+    litellm_params = {}
+
+    result = _transform_request_body(
+        messages=messages,
+        model="gemini-2.5-pro",
+        optional_params=optional_params,
         custom_llm_provider="vertex_ai",
-        litellm_params={},
-        cached_content="pre_set",
+        litellm_params=litellm_params,
+        cached_content=None,
     )
 
-    print("Final data with extra_body: ", data)
+    # Vertex AI SHOULD include labels
+    assert "labels" in result
+    assert result["labels"] == {"project": "test", "team": "ai"}
 
-    # validate that extra_body fields are added
-    assert "labels" in data
-    assert data["labels"] == {"team": "ml"}
 
-    # validate that existing fields are not overridden
-    assert data["cachedContent"] == "pre_set"
+def test_metadata_to_labels_vertex_only():
+    """Test that metadata->labels conversion only happens for Vertex AI"""
+    messages = [{"role": "user", "content": "test"}]
+    optional_params = {}
+    litellm_params = {
+        "metadata": {
+            "requester_metadata": {
+                "user": "john_doe",
+                "project": "test-project"
+            }
+        }
+    }
+
+    # Google GenAI/AI Studio should not include labels from metadata
+    result = _transform_request_body(
+        messages=messages,
+        model="gemini-2.5-pro",
+        optional_params=optional_params.copy(),
+        custom_llm_provider="gemini",
+        litellm_params=litellm_params.copy(),
+        cached_content=None,
+    )
+    assert "labels" not in result
+
+    # Vertex AI should include labels from metadata
+    result = _transform_request_body(
+        messages=messages,
+        model="gemini-2.5-pro",
+        optional_params=optional_params.copy(),
+        custom_llm_provider="vertex_ai",
+        litellm_params=litellm_params.copy(),
+        cached_content=None,
+    )
+    assert "labels" in result
+    assert result["labels"] == {"user": "john_doe", "project": "test-project"}

@@ -36,6 +36,7 @@ from litellm.types.llms.openai import (
     ChatCompletionImageObject,
     ChatCompletionTextObject,
 )
+from litellm.types.utils import LlmProviders
 from litellm.types.llms.vertex_ai import *
 from litellm.types.llms.vertex_ai import (
     GenerationConfig,
@@ -356,8 +357,18 @@ def _transform_request_body(
         safety_settings: Optional[List[SafetSettingsConfig]] = optional_params.pop(
             "safety_settings", None
         )  # type: ignore
-        labels: Optional[dict] = optional_params.pop("labels", None)
         config_fields = GenerationConfig.__annotations__.keys()
+
+        # If the LiteLLM client sends Gemini-supported parameter "labels", add it
+        # as "labels" field to the request sent to the Gemini backend.
+        labels: Optional[dict[str, str]] = optional_params.pop("labels", None)
+        # If the LiteLLM client sends OpenAI-supported parameter "metadata", add it
+        # as "labels" field to the request sent to the Gemini backend.
+        if labels is None and "metadata" in litellm_params:
+            metadata = litellm_params["metadata"]
+            if metadata is not None and "requester_metadata" in metadata:
+                rm = metadata["requester_metadata"]
+                labels = {k: v for k, v in rm.items() if isinstance(v, str)}
 
         filtered_params = {
             k: v for k, v in optional_params.items() if k in config_fields
@@ -379,14 +390,9 @@ def _transform_request_body(
             data["generationConfig"] = generation_config
         if cached_content is not None:
             data["cachedContent"] = cached_content
-        if labels is not None:
+        # Only add labels for Vertex AI endpoints (not Google GenAI/AI Studio) and only if non-empty
+        if labels and custom_llm_provider != LlmProviders.GEMINI:
             data["labels"] = labels
-
-         # Add any extra body params passed to the request body
-        extra_body = optional_params.get("extra_body", {})
-        if extra_body is not None:
-            data = {**extra_body, **data}
-            
     except Exception as e:
         raise e
 
