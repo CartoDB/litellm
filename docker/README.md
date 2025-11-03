@@ -65,7 +65,10 @@ The LiteLLM Docker image supports running in air-gapped/restricted network envir
 
 ### Testing with Restricted Network Access
 
-**Note for Mac ARM (Apple Silicon) users:** The Dockerfile automatically detects your architecture and downloads the appropriate ARM64 Prisma binaries. The `docker-compose.offline-test.yml` file is configured to build for `linux/arm64` platform.
+**Platform Support:**
+- **AMD64 (x86_64)**: Full offline mode support - all Prisma binaries are pre-cached at build time
+- **ARM64 (Apple Silicon, ARM servers)**: Query-engine is pre-cached, but schema-engine may require runtime download on first migration
+  - **Workaround**: On ARM64, if you encounter schema-engine errors, allow network access during first startup or set `PRISMA_OFFLINE_MODE=false`
 
 To test that the container works without outbound network access:
 
@@ -128,6 +131,17 @@ docker compose -f docker-compose.offline-test.yml exec litellm sh -c "wget -T 5 
 
 # Clean up
 docker compose -f docker-compose.offline-test.yml down -v
+```
+
+**ARM64 workaround (if schema-engine errors occur):**
+```bash
+# Option A: Allow network access for first startup, then restrict
+docker compose -f docker-compose.offline-test.yml up -d  # Let schema-engine download
+docker compose -f docker-compose.offline-test.yml down
+# Now edit docker-compose to add "internal: true" to network
+
+# Option B: Disable offline mode for ARM64
+PRISMA_OFFLINE_MODE=false docker compose -f docker-compose.offline-test.yml up -d --build
 ```
 
 #### Option 2: Using plain Docker with network disabled

@@ -12,7 +12,8 @@ services:
     environment:
       DATABASE_URL: "postgresql://llmproxy:dbpassword9090@db:5432/litellm"
       STORE_MODEL_IN_DB: "True"
-      PRISMA_OFFLINE_MODE: "true"  # Explicitly enable offline mode (enabled by default in Dockerfile)
+      # Offline mode: Works fully on AMD64. On ARM64, set to "false" if schema-engine issues occur
+      PRISMA_OFFLINE_MODE: "${PRISMA_OFFLINE_MODE:-true}"  # Override with: PRISMA_OFFLINE_MODE=false docker compose up
       MASTER_KEY: "${MASTER_KEY:-sk-test-default-key}"  # Use env var or default
     env_file:
       - path: .env

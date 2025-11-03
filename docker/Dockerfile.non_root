@@ -41,9 +41,12 @@ RUN NPM_CONFIG_CACHE=/app/.cache/npm \
     python -c "import prisma.cli.prisma as p; p.ensure_cached()"
 
 # Run Prisma commands to ensure all engines are downloaded
+# Note: On ARM64 with Chainguard base images, schema-engine may not download properly
+# This is a known limitation - the build will succeed but schema-engine may be downloaded at runtime
 RUN prisma generate && \
-    prisma --version && \
-    prisma migrate diff --from-empty --to-schema-datamodel ./schema.prisma --script > /dev/null 2>&1 || true
+    (prisma --version || echo "WARNING: schema-engine not found on ARM64") && \
+    (prisma migrate diff --from-empty --to-schema-datamodel ./schema.prisma --script > /dev/null 2>&1 || \
+     echo "INFO: schema-engine verification skipped (may be downloaded at runtime on ARM64)")
 
 # -----------------
 # Runtime Stage
@@ -140,6 +143,9 @@ USER nobody
 ENV HOME=/app
 
 # Runtime Prisma configuration for offline operation
+# Note: Offline mode works fully on AMD64. On ARM64 with Chainguard base images,
+# schema-engine may not be pre-cached and could download at runtime if needed.
+# To allow runtime downloads on ARM64, override with: -e PRISMA_OFFLINE_MODE=false
 ENV PRISMA_SKIP_POSTINSTALL_GENERATE=1 \
     PRISMA_HIDE_UPDATE_MESSAGE=1 \
     PRISMA_ENGINES_CHECKSUM_IGNORE_MISSING=1 \
