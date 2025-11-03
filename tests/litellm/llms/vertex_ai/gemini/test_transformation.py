@@ -153,4 +153,3 @@ async def test__transform_request_body_image_config():
 
     assert "imageConfig" in rb
     assert rb["imageConfig"] == {"aspectRatio": "16:9"}
->>>>>>> main

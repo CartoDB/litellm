@@ -329,7 +329,6 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
                 raise StopIteration
             else:
                 raise StopAsyncIteration
->>>>>>> main
 
     async def __anext__(
         self,
