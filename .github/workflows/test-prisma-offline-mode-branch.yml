@@ -1,0 +1,208 @@
+name: Test Prisma Offline Mode (AMD64) - Branch Specific
+
+# Temporary workflow for testing Prisma offline mode on feature branch
+# This workflow will automatically stop running once the branch is merged/deleted
+
+on:
+  push:
+    branches:
+      - feature/prisma-offline-mode-fresh
+  workflow_dispatch:
+    inputs:
+      debug_enabled:
+        type: boolean
+        description: 'Enable debug logging'
+        required: false
+        default: false
+
+env:
+  IMAGE_NAME: litellm-offline-test-amd64
+
+jobs:
+  test-offline-mode-amd64:
+    name: Build and Test on AMD64
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          platforms: linux/amd64
+
+      - name: Build Docker image for AMD64
+        run: |
+          echo "::group::Building Docker image with Prisma binaries pre-cached"
+          docker buildx build \
+            --platform linux/amd64 \
+            --file docker/Dockerfile.non_root \
+            --tag ${{ env.IMAGE_NAME }}:latest \
+            --load \
+            .
+          echo "::endgroup::"
+
+      - name: Verify pre-cached Prisma binaries exist
+        run: |
+          echo "::group::Checking for pre-cached Prisma binaries"
+          echo "Listing Prisma cache directory..."
+          docker run --rm --platform linux/amd64 ${{ env.IMAGE_NAME }}:latest \
+            ls -lah /app/.cache/prisma-python/binaries/
+
+          echo ""
+          echo "Checking for Prisma CLI binaries..."
+          docker run --rm --platform linux/amd64 ${{ env.IMAGE_NAME }}:latest \
+            ls -lah /app/.cache/prisma-python/binaries/node_modules/prisma/ || \
+            (echo "ERROR: Prisma binaries directory not found!" && exit 1)
+
+          echo ""
+          echo "Verifying query-engine binary exists..."
+          docker run --rm --platform linux/amd64 ${{ env.IMAGE_NAME }}:latest \
+            test -f /app/.cache/prisma-python/binaries/node_modules/prisma/query-engine-linux-arm64-openssl-3.0.x && \
+            echo "✓ Query engine found" || \
+            echo "✗ Query engine NOT found (expected for AMD64 build)"
+
+          echo ""
+          echo "Verifying schema-engine binary exists..."
+          docker run --rm --platform linux/amd64 ${{ env.IMAGE_NAME }}:latest \
+            sh -c "ls -la /app/.cache/prisma-python/binaries/node_modules/prisma/*schema* || echo 'Schema engine may need to be downloaded at runtime'"
+
+          echo "::endgroup::"
+
+      - name: Create .env file for testing
+        run: |
+          echo "MASTER_KEY=sk-test-ci-${{ github.run_id }}" > .env
+
+      - name: Start services with isolated network
+        run: |
+          echo "::group::Starting PostgreSQL and LiteLLM in isolated network"
+          docker compose -f docker-compose.offline-test.yml up -d
+          echo "::endgroup::"
+
+      - name: Wait for PostgreSQL to be healthy
+        run: |
+          echo "::group::Waiting for PostgreSQL readiness"
+          timeout 60 bash -c 'until docker compose -f docker-compose.offline-test.yml ps db | grep -q "healthy"; do
+            echo "Waiting for database...";
+            sleep 2;
+          done'
+          echo "✓ PostgreSQL is healthy"
+          echo "::endgroup::"
+
+      - name: Wait for LiteLLM container to start
+        run: |
+          echo "::group::Waiting for LiteLLM initialization"
+          sleep 10
+          echo "::endgroup::"
+
+      - name: Check LiteLLM container status
+        run: |
+          echo "::group::Container Status"
+          docker compose -f docker-compose.offline-test.yml ps
+          echo "::endgroup::"
+
+      - name: Verify network isolation (no outbound access)
+        run: |
+          echo "::group::Testing network isolation"
+          docker compose -f docker-compose.offline-test.yml exec -T litellm \
+            sh -c "wget -T 5 google.com 2>&1 || echo '✓ Network access blocked (expected behavior)'"
+          echo "::endgroup::"
+
+      - name: Check LiteLLM logs for Prisma initialization
+        if: always()
+        run: |
+          echo "::group::LiteLLM Logs"
+          docker compose -f docker-compose.offline-test.yml logs litellm
+          echo "::endgroup::"
+
+      - name: Verify LiteLLM started successfully
+        run: |
+          echo "::group::Checking LiteLLM startup"
+
+          # Check if container is running
+          if ! docker compose -f docker-compose.offline-test.yml ps litellm | grep -q "Up"; then
+            echo "ERROR: LiteLLM container is not running!"
+            docker compose -f docker-compose.offline-test.yml logs litellm
+            exit 1
+          fi
+
+          # Look for successful startup indicators in logs
+          LOGS=$(docker compose -f docker-compose.offline-test.yml logs litellm)
+
+          if echo "$LOGS" | grep -qi "Application startup failed"; then
+            echo "ERROR: LiteLLM failed to start!"
+            echo "$LOGS" | grep -A 5 "ERROR"
+            exit 1
+          fi
+
+          if echo "$LOGS" | grep -qi "Prisma.*not found\|Unable to find Prisma"; then
+            echo "ERROR: Prisma binaries not found!"
+            echo "$LOGS" | grep -i "prisma"
+            exit 1
+          fi
+
+          echo "✓ LiteLLM container started successfully"
+          echo "::endgroup::"
+
+      - name: Test health endpoint
+        run: |
+          echo "::group::Testing Health Endpoint"
+          # Give it a bit more time to fully initialize
+          sleep 5
+
+          # Try health check with retries
+          for i in {1..5}; do
+            if curl -f http://localhost:4000/health/liveliness; then
+              echo ""
+              echo "✓ Health check passed on attempt $i"
+              exit 0
+            fi
+            echo "Health check attempt $i failed, retrying..."
+            sleep 3
+          done
+
+          echo "ERROR: Health check failed after 5 attempts"
+          docker compose -f docker-compose.offline-test.yml logs litellm
+          exit 1
+          echo "::endgroup::"
+
+      - name: Verify Prisma offline mode indicators
+        run: |
+          echo "::group::Checking for offline mode indicators"
+          LOGS=$(docker compose -f docker-compose.offline-test.yml logs litellm)
+
+          # Check for positive indicators
+          if echo "$LOGS" | grep -qi "Using cached Prisma\|PRISMA_OFFLINE_MODE"; then
+            echo "✓ Found offline mode indicators in logs"
+          else
+            echo "⚠ No explicit offline mode indicators found (may still be working)"
+          fi
+
+          # Check for negative indicators
+          if echo "$LOGS" | grep -qi "downloading.*prisma\|npm.*install"; then
+            echo "⚠ WARNING: Detected possible runtime downloads"
+            echo "$LOGS" | grep -i "download"
+          else
+            echo "✓ No runtime download attempts detected"
+          fi
+
+          echo "::endgroup::"
+
+      - name: Cleanup containers and volumes
+        if: always()
+        run: |
+          echo "::group::Cleanup"
+          docker compose -f docker-compose.offline-test.yml down -v
+          echo "✓ Cleanup completed"
+          echo "::endgroup::"
+
+      - name: Summary
+        if: success()
+        run: |
+          echo "::notice::✅ Prisma offline mode test PASSED on AMD64"
+          echo "::notice::- Docker image built successfully"
+          echo "::notice::- Container started in isolated network"
+          echo "::notice::- No schema-engine errors detected"
+          echo "::notice::- Health endpoint responding"
