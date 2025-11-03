@@ -69,16 +69,13 @@ jobs:
 
           echo "::endgroup::"
 
-      - name: Set environment variables for testing
-        run: |
-          echo "MASTER_KEY=sk-test-ci-${{ github.run_id }}" >> $GITHUB_ENV
-          echo "Created MASTER_KEY for CI testing"
-
       - name: Start services with isolated network
         run: |
           echo "::group::Starting PostgreSQL and LiteLLM in isolated network"
           docker compose -f docker-compose.offline-test.yml up -d
           echo "::endgroup::"
+        env:
+          MASTER_KEY: sk-test-ci-${{ github.run_id }}
 
       - name: Wait for PostgreSQL to be healthy
         run: |
