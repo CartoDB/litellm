@@ -103,10 +103,6 @@ RUN mkdir -p /tmp/.npm /nonexistent /.npm
 # Set PATH so node is available for npm scripts (same as builder)
 ENV PATH="/usr/lib/python3.13/site-packages/nodejs/bin:${PATH}"
 
-# Verify Prisma CLI works in runtime
-RUN prisma --version && \
-    prisma generate
-
 # Set permissions for non-root user
 RUN chown -R nobody:nogroup /app && \
     chown -R nobody:nogroup /nonexistent && \

@@ -1,0 +1,54 @@
+services:
+  litellm:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.non_root
+      platforms:
+        - linux/arm64  # Use native platform on Mac ARM
+    image: litellm-offline-test:latest
+    networks:
+      - isolated
+    ports:
+      - "4000:4000"
+    environment:
+      DATABASE_URL: "postgresql://llmproxy:dbpassword9090@db:5432/litellm"
+      STORE_MODEL_IN_DB: "True"
+      PRISMA_OFFLINE_MODE: "true"  # Explicitly enable offline mode (enabled by default in Dockerfile)
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "wget --no-verbose --tries=1 http://localhost:4000/health/liveliness || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  db:
+    image: postgres:16
+    restart: always
+    container_name: litellm_db_offline_test
+    networks:
+      - isolated
+    environment:
+      POSTGRES_DB: litellm
+      POSTGRES_USER: llmproxy
+      POSTGRES_PASSWORD: dbpassword9090
+    volumes:
+      - postgres_data_test:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d litellm -U llmproxy"]
+      interval: 1s
+      timeout: 5s
+      retries: 10
+
+networks:
+  isolated:
+    driver: bridge
+    internal: true  # No external network access - simulates air-gapped environment
+
+volumes:
+  postgres_data_test:
+    name: litellm_postgres_data_offline_test

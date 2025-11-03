@@ -18,6 +18,43 @@ def str_to_bool(value: Optional[str]) -> bool:
     return value.lower() in ("true", "1", "t", "y", "yes")
 
 
+def get_prisma_env() -> dict:
+    """Get environment variables for Prisma, handling offline mode if configured."""
+    prisma_env = os.environ.copy()
+    if str_to_bool(os.getenv("PRISMA_OFFLINE_MODE")):
+        # These env vars prevent Prisma from attempting downloads
+        prisma_env["NPM_CONFIG_PREFER_OFFLINE"] = "true"
+        prisma_env["NPM_CONFIG_CACHE"] = os.getenv("NPM_CONFIG_CACHE", "/app/.cache/npm")
+    return prisma_env
+
+
+def get_prisma_command() -> str:
+    """Get the Prisma command to use, bypassing Python wrapper in offline mode."""
+    if str_to_bool(os.getenv("PRISMA_OFFLINE_MODE")):
+        # Primary location where Prisma Python package installs the CLI
+        default_cli_path = "/app/.cache/prisma-python/binaries/node_modules/.bin/prisma"
+
+        # Check if custom path is provided (for flexibility)
+        custom_cli_path = os.getenv("PRISMA_CLI_PATH")
+        if custom_cli_path and os.path.exists(custom_cli_path):
+            logger.info(f"Using custom Prisma CLI at {custom_cli_path}")
+            return custom_cli_path
+
+        # Check the default location
+        if os.path.exists(default_cli_path):
+            logger.info(f"Using cached Prisma CLI at {default_cli_path}")
+            return default_cli_path
+
+        # If not found, log warning and fall back
+        logger.warning(
+            f"Prisma CLI not found at {default_cli_path}. "
+            "Falling back to Python wrapper (may attempt downloads)"
+        )
+
+    # Fall back to the Python wrapper (will work in online mode)
+    return "prisma"
+
+
 class ProxyExtrasDBManager:
     @staticmethod
     def _get_prisma_dir() -> str:
