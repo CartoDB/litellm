@@ -81,6 +81,12 @@ RUN pip install *.whl /wheels/* --no-index --find-links=/wheels/ \
 # Install semantic_router and aurelio-sdk using script
 RUN chmod +x docker/install_auto_router.sh && ./docker/install_auto_router.sh
 
+# Generate Prisma client in runtime stage (using pre-cached binaries from builder)
+# This must happen AFTER pip install since pip overwrites the prisma package
+RUN NPM_CONFIG_CACHE=/app/.cache/npm \
+    PRISMA_BINARY_CACHE_DIR=/app/.cache/prisma-python/binaries \
+    prisma generate
+
 # Ensure correct JWT library is used (pyjwt not jwt)
 RUN pip uninstall jwt -y && \
   pip uninstall PyJWT -y && \
