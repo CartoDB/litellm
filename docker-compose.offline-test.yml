@@ -3,8 +3,7 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.non_root
-      platforms:
-        - linux/arm64  # Use native platform on Mac ARM
+      # Platform will be auto-detected (ARM64 on Mac, AMD64 on CI)
     image: litellm-offline-test:latest
     networks:
       - isolated
@@ -14,8 +13,10 @@ services:
       DATABASE_URL: "postgresql://llmproxy:dbpassword9090@db:5432/litellm"
       STORE_MODEL_IN_DB: "True"
       PRISMA_OFFLINE_MODE: "true"  # Explicitly enable offline mode (enabled by default in Dockerfile)
+      MASTER_KEY: "${MASTER_KEY:-sk-test-default-key}"  # Use env var or default
     env_file:
-      - .env
+      - path: .env
+        required: false  # Make .env optional for CI environments
     depends_on:
       db:
         condition: service_healthy
