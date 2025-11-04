@@ -14,7 +14,7 @@ services:
       STORE_MODEL_IN_DB: "True"
       # Offline mode: Works fully on AMD64. On ARM64, set to "false" if schema-engine issues occur
       PRISMA_OFFLINE_MODE: "${PRISMA_OFFLINE_MODE:-true}"  # Override with: PRISMA_OFFLINE_MODE=false docker compose up
-      MASTER_KEY: "${MASTER_KEY:-sk-test-default-key}"  # Use env var or default
+      LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY:-sk-test-default-key}"  # Use env var or default
     env_file:
       - path: .env
         required: false  # Make .env optional for CI environments

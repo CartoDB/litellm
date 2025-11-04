@@ -22,7 +22,7 @@ jobs:
     timeout-minutes: 20
     env:
       IMAGE_NAME: litellm-offline-test-amd64
-      MASTER_KEY: sk-test-ci-${{ github.run_id }}
+      LITELLM_MASTER_KEY: sk-test-ci-${{ github.run_id }}
 
     steps:
       - name: Checkout code
@@ -75,7 +75,7 @@ jobs:
           docker compose -f docker-compose.offline-test.yml up -d
           echo "::endgroup::"
         env:
-          MASTER_KEY: sk-test-ci-${{ github.run_id }}
+          LITELLM_MASTER_KEY: sk-test-ci-${{ github.run_id }}
 
       - name: Wait for PostgreSQL to be healthy
         run: |
@@ -150,7 +150,7 @@ jobs:
 
           # Try health check with retries
           for i in {1..5}; do
-            if curl -f http://localhost:4000/health/liveliness -H "Authorization: Bearer ${{ env.MASTER_KEY }}"; then
+            if curl -f http://localhost:4000/health/liveliness -H "Authorization: Bearer ${{ env.LITELLM_MASTER_KEY }}"; then
               echo ""
               echo "✓ Health check passed on attempt $i"
               exit 0
@@ -210,7 +210,7 @@ jobs:
     timeout-minutes: 20
     env:
       IMAGE_NAME: litellm-offline-test-arm64
-      MASTER_KEY: sk-test-ci-arm64-${{ github.run_id }}
+      LITELLM_MASTER_KEY: sk-test-ci-arm64-${{ github.run_id }}
 
     steps:
       - name: Checkout code
@@ -263,7 +263,7 @@ jobs:
           docker compose -f docker-compose.offline-test.yml up -d
           echo "::endgroup::"
         env:
-          MASTER_KEY: ${{ env.MASTER_KEY }}
+          LITELLM_MASTER_KEY: ${{ env.LITELLM_MASTER_KEY }}
 
       - name: Wait for PostgreSQL to be healthy
         run: |
@@ -339,7 +339,7 @@ jobs:
 
           # Try health check with retries
           for i in {1..5}; do
-            if curl -f http://localhost:4000/health/liveliness -H "Authorization: Bearer ${{ env.MASTER_KEY }}"; then
+            if curl -f http://localhost:4000/health/liveliness -H "Authorization: Bearer ${{ env.LITELLM_MASTER_KEY }}"; then
               echo ""
               echo "✓ Health check passed on attempt $i"
               exit 0
