@@ -22,7 +22,6 @@ jobs:
     timeout-minutes: 20
     env:
       IMAGE_NAME: litellm-offline-test-amd64
-      LITELLM_MASTER_KEY: sk-test-ci-${{ github.run_id }}
 
     steps:
       - name: Checkout code
@@ -69,13 +68,20 @@ jobs:
 
           echo "::endgroup::"
 
+      - name: Generate LITELLM_MASTER_KEY
+        run: |
+          # Generate random 22-char alphanumeric key with sk- prefix (matches Terraform pattern)
+          MASTER_KEY="sk-$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 22)"
+          echo "LITELLM_MASTER_KEY=$MASTER_KEY" >> $GITHUB_ENV
+          echo "✓ Generated LITELLM_MASTER_KEY: ${MASTER_KEY:0:8}..." # Show first 8 chars only
+
       - name: Start services with isolated network
         run: |
           echo "::group::Starting PostgreSQL and LiteLLM in isolated network"
           docker compose -f docker-compose.offline-test.yml up -d
           echo "::endgroup::"
         env:
-          LITELLM_MASTER_KEY: sk-test-ci-${{ github.run_id }}
+          USE_PRISMA_MIGRATE: "True"
 
       - name: Wait for PostgreSQL to be healthy
         run: |
@@ -150,7 +156,7 @@ jobs:
 
           # Try health check with retries
           for i in {1..5}; do
-            if curl -f http://localhost:4000/health/liveliness -H "Authorization: Bearer ${{ env.LITELLM_MASTER_KEY }}"; then
+            if curl -f http://localhost:4000/health/liveliness -H "Authorization: Bearer $LITELLM_MASTER_KEY"; then
               echo ""
               echo "✓ Health check passed on attempt $i"
               exit 0
@@ -210,7 +216,6 @@ jobs:
     timeout-minutes: 20
     env:
       IMAGE_NAME: litellm-offline-test-arm64
-      LITELLM_MASTER_KEY: sk-test-ci-arm64-${{ github.run_id }}
 
     steps:
       - name: Checkout code
@@ -257,13 +262,20 @@ jobs:
 
           echo "::endgroup::"
 
+      - name: Generate LITELLM_MASTER_KEY
+        run: |
+          # Generate random 22-char alphanumeric key with sk- prefix (matches Terraform pattern)
+          MASTER_KEY="sk-$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 22)"
+          echo "LITELLM_MASTER_KEY=$MASTER_KEY" >> $GITHUB_ENV
+          echo "✓ Generated LITELLM_MASTER_KEY: ${MASTER_KEY:0:8}..." # Show first 8 chars only
+
       - name: Start services with isolated network
         run: |
           echo "::group::Starting PostgreSQL and LiteLLM in isolated network"
           docker compose -f docker-compose.offline-test.yml up -d
           echo "::endgroup::"
         env:
-          LITELLM_MASTER_KEY: ${{ env.LITELLM_MASTER_KEY }}
+          USE_PRISMA_MIGRATE: "True"
 
       - name: Wait for PostgreSQL to be healthy
         run: |
@@ -339,7 +351,7 @@ jobs:
 
           # Try health check with retries
           for i in {1..5}; do
-            if curl -f http://localhost:4000/health/liveliness -H "Authorization: Bearer ${{ env.LITELLM_MASTER_KEY }}"; then
+            if curl -f http://localhost:4000/health/liveliness -H "Authorization: Bearer $LITELLM_MASTER_KEY"; then
               echo ""
               echo "✓ Health check passed on attempt $i"
               exit 0
