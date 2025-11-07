@@ -53,6 +53,7 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         responses_api_request: ResponsesAPIOptionalRequestParams,
         custom_llm_provider: Optional[str] = None,
         litellm_metadata: Optional[dict] = None,
+        litellm_completion_request: Optional[dict] = None,
     ):
         self.model: str = model
         self.litellm_custom_stream_wrapper: litellm.CustomStreamWrapper = (
@@ -64,6 +65,7 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         )
         self.custom_llm_provider: Optional[str] = custom_llm_provider
         self.litellm_metadata: Optional[dict] = litellm_metadata or {}
+        self.litellm_completion_request: dict = litellm_completion_request or {}
         self.collected_chat_completion_chunks: List[ModelResponseStream] = []
         self.finished: bool = False
         self.litellm_logging_obj = litellm_custom_stream_wrapper.logging_obj
@@ -79,6 +81,18 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
             Union[ModelResponse, TextCompletionResponse]
         ] = None
         self.final_text: str = ""
+
+    def _encode_chunk_id(self, chunk_id: str) -> str:
+        """
+        Encode chunk ID using the same format as non-streaming responses.
+        """
+        model_info = self.litellm_metadata.get("model_info", {}) or {}
+        model_id = model_info.get("id")
+        return ResponsesAPIRequestUtils._build_responses_api_response_id(
+            custom_llm_provider=self.custom_llm_provider,
+            model_id=model_id,
+            response_id=chunk_id,
+        )
 
     def _default_response_created_event_data(self) -> dict:
         response_created_event_data = {
