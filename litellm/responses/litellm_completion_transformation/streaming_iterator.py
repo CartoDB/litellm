@@ -53,6 +53,7 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         responses_api_request: ResponsesAPIOptionalRequestParams,
         custom_llm_provider: Optional[str] = None,
         litellm_metadata: Optional[dict] = None,
+        litellm_completion_request: Optional[dict] = None,
     ):
         self.model: str = model
         self.litellm_custom_stream_wrapper: litellm.CustomStreamWrapper = (
@@ -64,6 +65,7 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         )
         self.custom_llm_provider: Optional[str] = custom_llm_provider
         self.litellm_metadata: Optional[dict] = litellm_metadata or {}
+        self.litellm_completion_request: dict = litellm_completion_request or {}
         self.collected_chat_completion_chunks: List[ModelResponseStream] = []
         self.finished: bool = False
         self.litellm_logging_obj = litellm_custom_stream_wrapper.logging_obj
@@ -79,6 +81,18 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
             Union[ModelResponse, TextCompletionResponse]
         ] = None
         self.final_text: str = ""
+
+    def _encode_chunk_id(self, chunk_id: str) -> str:
+        """
+        Encode chunk ID using the same format as non-streaming responses.
+        """
+        model_info = self.litellm_metadata.get("model_info", {}) or {}
+        model_id = model_info.get("id")
+        return ResponsesAPIRequestUtils._build_responses_api_response_id(
+            custom_llm_provider=self.custom_llm_provider,
+            model_id=model_id,
+            response_id=chunk_id,
+        )
 
     def _default_response_created_event_data(self) -> dict:
         response_created_event_data = {
@@ -319,9 +333,7 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
                 raise StopAsyncIteration
 
         self.finished = self.is_stream_finished()
-        response_completed_event = self._emit_response_completed_event(
-            self.litellm_model_response
-        )
+        response_completed_event = self._emit_response_completed_event()
         if response_completed_event:
             return response_completed_event
         else:
@@ -491,11 +503,11 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         chat_completion_delta: ChatCompletionDelta = choice.delta
         return chat_completion_delta.content or ""
 
-    def _emit_response_completed_event(
-        self, litellm_model_response: ModelResponse
-    ) -> Optional[ResponseCompletedEvent]:
-
-        if litellm_model_response:
+    def _emit_response_completed_event(self) -> Optional[ResponseCompletedEvent]:
+        litellm_model_response: Optional[
+            Union[ModelResponse, TextCompletionResponse]
+        ] = stream_chunk_builder(chunks=self.collected_chat_completion_chunks)
+        if litellm_model_response and isinstance(litellm_model_response, ModelResponse):
             # Add cost to usage object if include_cost_in_streaming_usage is True
             if (
                 litellm.include_cost_in_streaming_usage

@@ -91,6 +91,7 @@ class LiteLLMCompletionTransformationHandler:
                 responses_api_request=responses_api_request,
                 custom_llm_provider=custom_llm_provider,
                 litellm_metadata=kwargs.get("litellm_metadata", {}),
+                litellm_completion_request=litellm_completion_request,
             )
 
     async def async_response_api_handler(
@@ -151,4 +152,5 @@ class LiteLLMCompletionTransformationHandler:
                     "custom_llm_provider"
                 ),
                 litellm_metadata=kwargs.get("litellm_metadata", {}),
+                litellm_completion_request=litellm_completion_request,
             )
