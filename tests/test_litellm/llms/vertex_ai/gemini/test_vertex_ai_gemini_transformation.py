@@ -155,3 +155,79 @@ def test_metadata_to_labels_vertex_only():
     )
     assert "labels" in result
     assert result["labels"] == {"user": "john_doe", "project": "test-project"}
+
+
+def test_metadata_none_no_crash():
+    """Test that metadata=None doesn't cause TypeError (bug fix for issue reported by Ana)"""
+    messages = [{"role": "user", "content": "test"}]
+    optional_params = {}
+    litellm_params = {"metadata": None}  # Key exists but value is None
+
+    # Should not crash with TypeError
+    result = _transform_request_body(
+        messages=messages,
+        model="gemini-2.5-pro",
+        optional_params=optional_params,
+        custom_llm_provider="gemini",
+        litellm_params=litellm_params,
+        cached_content=None,
+    )
+
+    # Should successfully return result without labels
+    assert "contents" in result
+    assert "labels" not in result
+
+
+def test_metadata_empty_dict():
+    """Test that empty metadata dict is handled correctly"""
+    messages = [{"role": "user", "content": "test"}]
+    optional_params = {}
+    litellm_params = {"metadata": {}}  # Empty dict
+
+    result = _transform_request_body(
+        messages=messages,
+        model="gemini-2.5-pro",
+        optional_params=optional_params,
+        custom_llm_provider="vertex_ai",
+        litellm_params=litellm_params,
+        cached_content=None,
+    )
+
+    # Should not crash and should not add labels
+    assert "contents" in result
+    assert "labels" not in result
+
+
+def test_metadata_filters_non_string_values():
+    """Test that only string values are converted to labels"""
+    messages = [{"role": "user", "content": "test"}]
+    optional_params = {}
+    litellm_params = {
+        "metadata": {
+            "requester_metadata": {
+                "user": "john_doe",         # string - should be included
+                "project": "test-project",  # string - should be included
+                "count": 42,                # int - should be filtered out
+                "enabled": True,            # bool - should be filtered out
+                "config": {"key": "value"}, # dict - should be filtered out
+                "items": ["a", "b"],        # list - should be filtered out
+            }
+        }
+    }
+
+    result = _transform_request_body(
+        messages=messages,
+        model="gemini-2.5-pro",
+        optional_params=optional_params,
+        custom_llm_provider="vertex_ai",
+        litellm_params=litellm_params,
+        cached_content=None,
+    )
+
+    # Only string values should be in labels
+    assert "labels" in result
+    assert result["labels"] == {"user": "john_doe", "project": "test-project"}
+    assert "count" not in result["labels"]
+    assert "enabled" not in result["labels"]
+    assert "config" not in result["labels"]
+    assert "items" not in result["labels"]
