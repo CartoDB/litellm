@@ -390,7 +390,8 @@ def _transform_request_body(
             data["generationConfig"] = generation_config
         if cached_content is not None:
             data["cachedContent"] = cached_content
-        if labels is not None:
+        # Only add labels for Vertex AI endpoints (not Google GenAI/AI Studio) and only if non-empty
+        if labels and custom_llm_provider != LlmProviders.GEMINI:
             data["labels"] = labels
     except Exception as e:
         raise e
