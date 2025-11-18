@@ -806,3 +806,9 @@ jobs:
           else
             echo "[Resolver] ⚠️ No resolution PR found - keeping original PR open"
           fi
+
+      - name: Note about CI monitoring
+        if: always()
+        run: |
+          echo "::notice::CI monitoring is handled by the 'carto-upstream-sync-ci-fixer' workflow"
+          echo "::notice::It will automatically trigger when CI checks fail on the resolution PR"
