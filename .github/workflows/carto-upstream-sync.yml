@@ -540,10 +540,58 @@ jobs:
           echo "::endgroup::"
 
           echo "::group::Posting to Slack"
-          curl -F "text=${MESSAGE}" \
-            -F "channel=${SLACK_CHANNEL}" \
-            -H "Authorization: Bearer ${{ secrets.SLACK_KEY }}" \
-            -X POST https://slack.com/api/chat.postMessage
 
-          echo "[Slack] Notification sent successfully"
+          # Check if SLACK_KEY secret is configured
+          if [[ -z "${{ secrets.SLACK_KEY }}" ]]; then
+            echo "::warning::SLACK_KEY secret not configured - skipping notification"
+            echo "::endgroup::"
+            exit 0
+          fi
+
+          # Retry logic (up to 3 attempts)
+          SUCCESS=false
+          for attempt in 1 2 3; do
+            echo "[Slack] Attempt ${attempt}/3..."
+
+            # Send to Slack API
+            RESPONSE=$(curl -s -w "\n%{http_code}" \
+              -F "text=${MESSAGE}" \
+              -F "channel=${SLACK_CHANNEL}" \
+              -H "Authorization: Bearer ${{ secrets.SLACK_KEY }}" \
+              -X POST https://slack.com/api/chat.postMessage)
+
+            # Extract HTTP code and body
+            HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+            BODY=$(echo "$RESPONSE" | head -n-1)
+
+            echo "[Slack] HTTP ${HTTP_CODE}"
+            echo "[Slack] Response: ${BODY}"
+
+            # Check if successful
+            if [ "$HTTP_CODE" = "200" ]; then
+              # Check Slack API response
+              if echo "$BODY" | grep -q '"ok":true'; then
+                echo "✅ [Slack] Notification sent successfully"
+                SUCCESS=true
+                break
+              else
+                ERROR=$(echo "$BODY" | grep -o '"error":"[^"]*"' || echo "unknown error")
+                echo "⚠️ [Slack] Slack API error: ${ERROR}"
+              fi
+            else
+              echo "⚠️ [Slack] HTTP error: ${HTTP_CODE}"
+            fi
+
+            # Wait before retry
+            if [ $attempt -lt 3 ]; then
+              echo "[Slack] Retrying in 5 seconds..."
+              sleep 5
+            fi
+          done
+
+          if [ "$SUCCESS" = "false" ]; then
+            echo "::error::Failed to send Slack notification after 3 attempts"
+            echo "::notice::Check SLACK_KEY secret and channel permissions"
+          fi
+
           echo "::endgroup::"
