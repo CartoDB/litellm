@@ -508,7 +508,7 @@ jobs:
       - name: Notify Slack of new release
         if: success()
         env:
-          SLACK_CHANNEL: "C3W6342EN" # infrastructure-dev
+          SLACK_CHANNEL: "C09K0M5MP7V" # cartodb-ops
         run: |
           set -eu
 
@@ -539,12 +539,15 @@ jobs:
             EMOJI=":rocket:"
           fi
 
-          # Build Slack message
+          # Build Slack message with context
           MESSAGE="${EMOJI} *LiteLLM CARTO Release* - ${RELEASE_TAG}
-• Type: ${TYPE_LABEL}
-• CARTO Version: ${CARTO_VERSION}
-• Release: ${RELEASE_URL}
-• Docker: ${DOCKER_IMAGE}"
+
+          *Release Details:*
+          - Type: ${TYPE_LABEL}
+          - CARTO Version: ${CARTO_VERSION}
+          - Upstream Base: LiteLLM v${UPSTREAM_VERSION}
+          - Release Notes: ${RELEASE_URL}
+          - Docker Image: ${DOCKER_IMAGE}"
 
           echo "[Slack] Sending notification to channel ${SLACK_CHANNEL}"
           echo "::endgroup::"
