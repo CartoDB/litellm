@@ -115,8 +115,13 @@ RUN mkdir -p /tmp/.npm /nonexistent /.npm
 # Set PATH so node is available for npm scripts (same as builder)
 ENV PATH="/usr/lib/python3.13/site-packages/nodejs/bin:${PATH}"
 
-# Verify Prisma CLI works in runtime
-RUN prisma --version && \
+# Generate Prisma client in runtime stage (using pre-cached binaries from builder)
+# This must happen AFTER pip install since pip overwrites the prisma package
+RUN NPM_CONFIG_CACHE=/app/.cache/npm \
+    PRISMA_BINARY_CACHE_DIR=/app/.cache/prisma-python/binaries \
+    prisma --version && \
+    NPM_CONFIG_CACHE=/app/.cache/npm \
+    PRISMA_BINARY_CACHE_DIR=/app/.cache/prisma-python/binaries \
     prisma generate
 
 # Set permissions for non-root user
