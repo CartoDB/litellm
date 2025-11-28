@@ -891,46 +891,52 @@ try:
 
     # Only modify files if a custom server root path is set
     if server_root_path and server_root_path != "/":
-        # Iterate through files in the UI directory
-        for root, dirs, files in os.walk(ui_path):
-            for filename in files:
-                file_path = os.path.join(root, filename)
-                # Skip binary files and files that don't need path replacement
-                if filename.endswith(
-                    (
-                        ".png",
-                        ".jpg",
-                        ".jpeg",
-                        ".gif",
-                        ".ico",
-                        ".woff",
-                        ".woff2",
-                        ".ttf",
-                        ".eot",
-                    )
-                ):
-                    continue
-                try:
-                    with open(file_path, "r", encoding="utf-8") as f:
-                        content = f.read()
+        try:
+            # Iterate through files in the UI directory
+            for root, dirs, files in os.walk(ui_path):
+                for filename in files:
+                    file_path = os.path.join(root, filename)
+                    # Skip binary files and files that don't need path replacement
+                    if filename.endswith(
+                        (
+                            ".png",
+                            ".jpg",
+                            ".jpeg",
+                            ".gif",
+                            ".ico",
+                            ".woff",
+                            ".woff2",
+                            ".ttf",
+                            ".eot",
+                        )
+                    ):
+                        continue
+                    try:
+                        with open(file_path, "r", encoding="utf-8") as f:
+                            content = f.read()
 
-                    # Replace the asset prefix with the server root path
-                    modified_content = content.replace(
-                        f"{litellm_asset_prefix}",
-                        f"{server_root_path}",
-                    )
+                        # Replace the asset prefix with the server root path
+                        modified_content = content.replace(
+                            f"{litellm_asset_prefix}",
+                            f"{server_root_path}",
+                        )
 
-                    # Replace the /.well-known/litellm-ui-config with the server root path
-                    modified_content = modified_content.replace(
-                        "/litellm/.well-known/litellm-ui-config",
-                        f"{server_root_path}/.well-known/litellm-ui-config",
-                    )
+                        # Replace the /.well-known/litellm-ui-config with the server root path
+                        modified_content = modified_content.replace(
+                            "/litellm/.well-known/litellm-ui-config",
+                            f"{server_root_path}/.well-known/litellm-ui-config",
+                        )
 
-                    with open(file_path, "w", encoding="utf-8") as f:
-                        f.write(modified_content)
-                except UnicodeDecodeError:
-                    # Skip binary files that can't be decoded
-                    continue
+                        with open(file_path, "w", encoding="utf-8") as f:
+                            f.write(modified_content)
+                    except UnicodeDecodeError:
+                        # Skip binary files that can't be decoded
+                        continue
+        except (OSError, PermissionError) as e:
+            # If filesystem is read-only, continue with mounting UI without modifications
+            verbose_proxy_logger.warning(
+                f"Unable to modify UI files (filesystem may be read-only): {e}. UI will be mounted without path modifications."
+            )
 
     # # Mount the _next directory at the root level
     app.mount(
@@ -948,17 +954,23 @@ try:
     app.mount("/ui", StaticFiles(directory=ui_path, html=True), name="ui")
 
     # Handle HTML file restructuring
-    for filename in os.listdir(ui_path):
-        if filename.endswith(".html") and filename != "index.html":
-            # Create a folder with the same name as the HTML file
-            folder_name = os.path.splitext(filename)[0]
-            folder_path = os.path.join(ui_path, folder_name)
-            os.makedirs(folder_path, exist_ok=True)
+    try:
+        for filename in os.listdir(ui_path):
+            if filename.endswith(".html") and filename != "index.html":
+                # Create a folder with the same name as the HTML file
+                folder_name = os.path.splitext(filename)[0]
+                folder_path = os.path.join(ui_path, folder_name)
+                os.makedirs(folder_path, exist_ok=True)
 
-            # Move the HTML file into the folder and rename it to 'index.html'
-            src = os.path.join(ui_path, filename)
-            dst = os.path.join(folder_path, "index.html")
-            os.rename(src, dst)
+                # Move the HTML file into the folder and rename it to 'index.html'
+                src = os.path.join(ui_path, filename)
+                dst = os.path.join(folder_path, "index.html")
+                os.rename(src, dst)
+    except (OSError, PermissionError) as e:
+        # If filesystem is read-only, skip HTML file restructuring
+        verbose_proxy_logger.warning(
+            f"Unable to restructure HTML files (filesystem may be read-only): {e}"
+        )
 
 except Exception:
     pass
