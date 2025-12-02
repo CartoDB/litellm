@@ -51,8 +51,12 @@ if [ -z "$LAST_TAG" ]; then
   # Count commits from CARTO team (@carto.com or @cartodb.com)
   # This includes both humans and automation (Cartofante)
   # Upstream syncs are excluded via grep pattern (sync:, Merge)
-  COMMITS=$(git log upstream/main..HEAD --oneline --no-merges --reverse \
-    --author="@carto.com" --author="@cartodb.com" 2>/dev/null | \
+  # Only count commits that touch LiteLLM code (exclude CI/Docker/docs)
+  # Analyze ALL commits in carto/main branch (accumulative count)
+  COMMITS=$(git log HEAD --oneline --no-merges --reverse \
+    --author="@carto.com" --author="@cartodb.com" \
+    -- litellm/ tests/ pyproject.toml setup.py \
+    2>/dev/null | \
     grep -vE "(sync:|Merge|merge upstream)" || true)
 
   CURRENT_MAJOR=1
@@ -65,8 +69,11 @@ else
   # Count commits from CARTO team (@carto.com or @cartodb.com)
   # This includes both humans and automation (Cartofante)
   # Upstream syncs are excluded via grep pattern (sync:, Merge)
+  # Only count commits that touch LiteLLM code (exclude CI/Docker/docs)
   COMMITS=$(git log ${LAST_TAG}..HEAD --oneline --no-merges \
-    --author="@carto.com" --author="@cartodb.com" 2>/dev/null | \
+    --author="@carto.com" --author="@cartodb.com" \
+    -- litellm/ tests/ pyproject.toml setup.py \
+    2>/dev/null | \
     grep -vE "(sync:|Merge|merge upstream)" || true)
 
   # Extract current CARTO version from tag (format: v1.79.1-carto.1.7.1)
