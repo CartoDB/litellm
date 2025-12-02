@@ -538,6 +538,29 @@ jobs:
               --label "automated" \
               --label "needs-review" \
               --body "$(cat <<'PRBODY'
+            ## ⛔ CRITICAL: MERGE INSTRUCTIONS ⛔
+
+            > **🚨 DO NOT USE "Squash and merge" 🚨**
+            >
+            > You MUST select **"Create a merge commit"** when merging this PR.
+
+            ### Why This Matters
+
+            | Merge Type | Result |
+            |------------|--------|
+            | ✅ **Create a merge commit** | Preserves upstream history, future syncs work correctly |
+            | ❌ Squash and merge | **DESTROYS** upstream history, breaks future syncs |
+            | ❌ Rebase and merge | **DESTROYS** upstream history, breaks future syncs |
+
+            ### What Happens If You Squash
+
+            - 📈 Future sync PRs will show **thousands of extra commits/files**
+            - 🔍 `git bisect` and `git blame` become useless for upstream code
+            - 🔄 Every future sync will look like a massive change
+            - 😱 This ALREADY happened with PR #26 - don't repeat it!
+
+            ---
+
             ## 🔧 Automated Conflict Resolution
 
             This PR resolves merge conflicts in #${{ needs.check-eligibility.outputs.pr-number }}.
@@ -748,6 +771,37 @@ jobs:
           4. Run tests and create PR
           EOF
           )"
+          fi
+
+      - name: Add merge warning comment to resolution PR
+        if: steps.claude-run.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          RESOLUTION_PR_NUMBER=$(gh pr list \
+            --repo ${{ github.repository }} \
+            --head upstream-sync-resolver/${{ needs.check-eligibility.outputs.pr-number }} \
+            --json number --jq '.[0].number' || echo "")
+
+          if [ -n "${RESOLUTION_PR_NUMBER}" ]; then
+            echo "[Resolver] Adding merge warning comment to PR #${RESOLUTION_PR_NUMBER}"
+            gh pr comment ${RESOLUTION_PR_NUMBER} --repo ${{ github.repository }} --body "## ⚠️ REMINDER: Use \"Create a merge commit\" ⚠️
+
+          When you're ready to merge this PR:
+
+          1. Click the **dropdown arrow** next to the merge button
+          2. Select **\"Create a merge commit\"**
+          3. **DO NOT** select \"Squash and merge\" or \"Rebase and merge\"
+
+          This preserves upstream commit history and ensures future syncs work correctly.
+
+          ### Why?
+
+          Using squash/rebase will **destroy** the upstream commit history, causing:
+          - Future syncs to show thousands of extra commits
+          - git bisect and git blame to become useless
+          - This already happened with PR #26 - please don't repeat it!"
+            echo "[Resolver] ✅ Merge warning comment added"
           fi
 
       - name: Close original PR (conflicts now resolved via resolution PR)
