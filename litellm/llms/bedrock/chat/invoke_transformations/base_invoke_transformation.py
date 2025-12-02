@@ -134,7 +134,7 @@ class AmazonInvokeConfig(BaseConfig, BaseAWSLLM):
             fake_stream=fake_stream,
         )
 
-    def transform_request(
+    def transform_request(  # noqa: PLR0915
         self,
         model: str,
         messages: List[AllMessageValues],
