@@ -1,17 +1,7 @@
 import json
 import time
 from enum import Enum
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Dict,
-    List,
-    Literal,
-    Mapping,
-    Optional,
-    Tuple,
-    Union,
-)
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Mapping, Optional, Union
 
 from aiohttp import FormData
 from openai._models import BaseModel as OpenAIObject
@@ -129,6 +119,7 @@ class ModelInfoBase(ProviderSpecificModelInfo, total=False):
         float
     ]  # OpenAI priority service tier pricing
     cache_creation_input_token_cost: Optional[float]
+    cache_creation_input_token_cost_above_200k_tokens: Optional[float]
     cache_creation_input_token_cost_above_1hr: Optional[float]
     cache_read_input_token_cost: Optional[float]
     cache_read_input_token_cost_flex: Optional[
@@ -137,6 +128,7 @@ class ModelInfoBase(ProviderSpecificModelInfo, total=False):
     cache_read_input_token_cost_priority: Optional[
         float
     ]  # OpenAI priority service tier pricing
+    cache_read_input_token_cost_above_200k_tokens: Optional[float]
     input_cost_per_character: Optional[float]  # only for vertex ai models
     input_cost_per_audio_token: Optional[float]
     input_cost_per_token_above_128k_tokens: Optional[float]  # only for vertex ai models
@@ -170,6 +162,7 @@ class ModelInfoBase(ProviderSpecificModelInfo, total=False):
         float
     ]  # only for vertex ai models
     output_cost_per_image: Optional[float]
+    output_cost_per_image_token: Optional[float]
     output_vector_size: Optional[int]
     output_cost_per_reasoning_token: Optional[float]
     output_cost_per_video_per_second: Optional[float]  # only for vertex ai models
@@ -280,7 +273,7 @@ class CallTypes(str, Enum):
     file_content = "file_content"
     create_fine_tuning_job = "create_fine_tuning_job"
     acreate_fine_tuning_job = "acreate_fine_tuning_job"
-    
+
     #########################################################
     # Video Generation Call Types
     #########################################################
@@ -298,6 +291,35 @@ class CallTypes(str, Enum):
     avideo_retrieve_job = "avideo_retrieve_job"
     video_delete = "video_delete"
     avideo_delete = "avideo_delete"
+    vector_store_file_create = "vector_store_file_create"
+    avector_store_file_create = "avector_store_file_create"
+    vector_store_file_list = "vector_store_file_list"
+    avector_store_file_list = "avector_store_file_list"
+    vector_store_file_retrieve = "vector_store_file_retrieve"
+    avector_store_file_retrieve = "avector_store_file_retrieve"
+    vector_store_file_content = "vector_store_file_content"
+    avector_store_file_content = "avector_store_file_content"
+    vector_store_file_update = "vector_store_file_update"
+    avector_store_file_update = "avector_store_file_update"
+    vector_store_file_delete = "vector_store_file_delete"
+    avector_store_file_delete = "avector_store_file_delete"
+    vector_store_create = "vector_store_create"
+    avector_store_create = "avector_store_create"
+    vector_store_search = "vector_store_search"
+    avector_store_search = "avector_store_search"
+
+    #########################################################
+    # Container Call Types
+    #########################################################
+    create_container = "create_container"
+    acreate_container = "acreate_container"
+    list_containers = "list_containers"
+    alist_containers = "alist_containers"
+    retrieve_container = "retrieve_container"
+    aretrieve_container = "aretrieve_container"
+    delete_container = "delete_container"
+    adelete_container = "adelete_container"
+
     acancel_fine_tuning_job = "acancel_fine_tuning_job"
     cancel_fine_tuning_job = "cancel_fine_tuning_job"
     alist_fine_tuning_jobs = "alist_fine_tuning_jobs"
@@ -358,8 +380,25 @@ CallTypesLiteral = Literal[
     "agenerate_content_stream",
     "ocr",
     "aocr",
-    "avector_store_search",
+    "vector_store_create",
+    "avector_store_create",
     "vector_store_search",
+    "avector_store_search",
+    "vector_store_file_create",
+    "avector_store_file_create",
+    "vector_store_file_list",
+    "avector_store_file_list",
+    "vector_store_file_retrieve",
+    "avector_store_file_retrieve",
+    "vector_store_file_content",
+    "avector_store_file_content",
+    "vector_store_file_update",
+    "avector_store_file_update",
+    "vector_store_file_delete",
+    "avector_store_file_delete",
+    "call_mcp_tool",
+    "aresponses",
+    "responses",
 ]
 
 
@@ -626,9 +665,7 @@ class Message(OpenAIObject):
     thinking_blocks: Optional[
         List[Union[ChatCompletionThinkingBlock, ChatCompletionRedactedThinkingBlock]]
     ] = None
-    provider_specific_fields: Optional[Dict[str, Any]] = Field(
-        default=None, exclude=True
-    )
+    provider_specific_fields: Optional[Dict[str, Any]] = Field(default=None)
     annotations: Optional[List[ChatCompletionAnnotation]] = None
 
     def __init__(
@@ -807,6 +844,8 @@ class Delta(OpenAIObject):
                     if tool_call.get("index", None) is None:
                         tool_call["index"] = current_index
                         current_index += 1
+                    if tool_call.get("type", None) is None:
+                        tool_call["type"] = "function"
                     self.tool_calls.append(ChatCompletionDeltaToolCall(**tool_call))
                 elif isinstance(tool_call, ChatCompletionDeltaToolCall):
                     self.tool_calls.append(tool_call)
@@ -907,6 +946,9 @@ class CompletionTokensDetailsWrapper(
     text_tokens: Optional[int] = None
     """Text tokens generated by the model."""
 
+    image_tokens: Optional[int] = None
+    """Image tokens generated by the model."""
+
 
 class CacheCreationTokenDetails(BaseModel):
     ephemeral_5m_input_tokens: Optional[int] = None
@@ -957,7 +999,8 @@ class PromptTokensDetailsWrapper(
 
 
 class ServerToolUse(BaseModel):
-    web_search_requests: Optional[int]
+    web_search_requests: Optional[int] = None
+    tool_search_requests: Optional[int] = None
 
 
 class Usage(CompletionUsage):
@@ -995,15 +1038,8 @@ class Usage(CompletionUsage):
     ):
         # handle reasoning_tokens
         _completion_tokens_details: Optional[CompletionTokensDetailsWrapper] = None
-        if reasoning_tokens:
-            text_tokens = (
-                completion_tokens - reasoning_tokens if completion_tokens else None
-            )
-            completion_tokens_details = CompletionTokensDetailsWrapper(
-                reasoning_tokens=reasoning_tokens, text_tokens=text_tokens
-            )
 
-        # Ensure completion_tokens_details is properly handled
+        # First, handle existing completion_tokens_details
         if completion_tokens_details:
             if isinstance(completion_tokens_details, dict):
                 _completion_tokens_details = CompletionTokensDetailsWrapper(
@@ -1011,6 +1047,30 @@ class Usage(CompletionUsage):
                 )
             elif isinstance(completion_tokens_details, CompletionTokensDetails):
                 _completion_tokens_details = completion_tokens_details
+
+        # Handle reasoning_tokens and auto-calculate text_tokens if needed
+        if reasoning_tokens:
+            # Ensure we have a details object to work with
+            if _completion_tokens_details is None:
+                _completion_tokens_details = CompletionTokensDetailsWrapper()
+
+            # Set reasoning_tokens if not already set by provider
+            if _completion_tokens_details.reasoning_tokens is None:
+                _completion_tokens_details.reasoning_tokens = reasoning_tokens
+
+            # Auto-calculate text_tokens only if provider didn't set it explicitly
+            # Formula: text_tokens = completion_tokens - reasoning_tokens - image_tokens - audio_tokens
+            if _completion_tokens_details.text_tokens is None and completion_tokens is not None:
+                calculated_text_tokens = completion_tokens - reasoning_tokens
+
+                # Subtract other modality tokens if present
+                if _completion_tokens_details.image_tokens:
+                    calculated_text_tokens -= _completion_tokens_details.image_tokens
+                if _completion_tokens_details.audio_tokens:
+                    calculated_text_tokens -= _completion_tokens_details.audio_tokens
+
+                # Prevent negative token counts from inconsistent data
+                _completion_tokens_details.text_tokens = max(0, calculated_text_tokens)
 
         # handle prompt_tokens_details
         _prompt_tokens_details: Optional[PromptTokensDetailsWrapper] = None
@@ -1179,8 +1239,6 @@ class StreamingChatCompletionChunk(OpenAIChatCompletionChunk):
         super().__init__(**kwargs)
 
 
-
-
 class ModelResponseBase(OpenAIObject):
     id: str
     """A unique identifier for the completion."""
@@ -1282,7 +1340,7 @@ class ModelResponse(ModelResponseBase):
     choices: List[Union[Choices, StreamingChoices]]
     """The list of completion choices the model generated for the input prompt."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0915
         self,
         id=None,
         choices=None,
@@ -1761,6 +1819,10 @@ class ImageResponse(OpenAIImageResponse, BaseLiteLLMOpenAIResponseObject):
             total_tokens=0,
         )
         super().__init__(created=created, data=_data, usage=_usage)  # type: ignore
+
+        self.quality = kwargs.get("quality", None)
+        self.output_format = kwargs.get("output_format", None)
+        self.size = kwargs.get("size", None)
         self._hidden_params = hidden_params or {}
 
     def __contains__(self, key):
@@ -1787,8 +1849,29 @@ class ImageResponse(OpenAIImageResponse, BaseLiteLLMOpenAIResponseObject):
             return self.dict()
 
 
+class TranscriptionUsageDurationObject(BaseModel):
+    type: Literal["duration"]
+    seconds: int
+
+
+class TranscriptionUsageInputTokenDetailsObject(BaseModel):
+    audio_tokens: int
+    text_tokens: int
+
+
+class TranscriptionUsageTokensObject(BaseModel):
+    type: Literal["tokens"]
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    input_token_details: TranscriptionUsageInputTokenDetailsObject
+
+
 class TranscriptionResponse(OpenAIObject):
     text: Optional[str] = None
+    usage: Optional[
+        Union[TranscriptionUsageDurationObject, TranscriptionUsageTokensObject]
+    ] = None
 
     _hidden_params: dict = {}
     _response_headers: Optional[dict] = None
@@ -2190,7 +2273,7 @@ class StandardLoggingPayload(TypedDict):
     error_information: Optional[StandardLoggingPayloadErrorInformation]
     model_parameters: dict
     hidden_params: StandardLoggingHiddenParams
-    guardrail_information: Optional[StandardLoggingGuardrailInformation]
+    guardrail_information: Optional[List[StandardLoggingGuardrailInformation]]
     standard_built_in_tools_params: Optional[StandardBuiltInToolsParams]
 
 
@@ -2309,6 +2392,7 @@ class CustomPricingLiteLLMParams(BaseModel):
     output_cost_per_token_above_200k_tokens: Optional[float] = None
     output_cost_per_character_above_128k_tokens: Optional[float] = None
     output_cost_per_image: Optional[float] = None
+    output_cost_per_image_token: Optional[float] = None
     output_cost_per_reasoning_token: Optional[float] = None
     output_cost_per_video_per_second: Optional[float] = None
     output_cost_per_audio_per_second: Optional[float] = None
@@ -2417,6 +2501,7 @@ all_litellm_params = (
         "use_litellm_proxy",
         "prompt_label",
         "shared_session",
+        "search_tool_name",
     ]
     + list(StandardCallbackDynamicParams.__annotations__.keys())
     + list(CustomPricingLiteLLMParams.model_fields.keys())
@@ -2468,6 +2553,7 @@ class LlmProviders(str, Enum):
     OPENAI_LIKE = "openai_like"  # embedding only
     JINA_AI = "jina_ai"
     XAI = "xai"
+    ZAI = "zai"
     CUSTOM_OPENAI = "custom_openai"
     TEXT_COMPLETION_OPENAI = "text-completion-openai"
     COHERE = "cohere"
@@ -2477,6 +2563,7 @@ class LlmProviders(str, Enum):
     ANTHROPIC_TEXT = "anthropic_text"
     BYTEZ = "bytez"
     REPLICATE = "replicate"
+    RUNWAYML = "runwayml"
     HUGGINGFACE = "huggingface"
     TOGETHER_AI = "together_ai"
     OPENROUTER = "openrouter"
@@ -2501,6 +2588,7 @@ class LlmProviders(str, Enum):
     DEEPINFRA = "deepinfra"
     PERPLEXITY = "perplexity"
     MISTRAL = "mistral"
+    MILVUS = "milvus"
     GROQ = "groq"
     NVIDIA_NIM = "nvidia_nim"
     CEREBRAS = "cerebras"
@@ -2510,6 +2598,7 @@ class LlmProviders(str, Enum):
     TEXT_COMPLETION_CODESTRAL = "text-completion-codestral"
     DASHSCOPE = "dashscope"
     MOONSHOT = "moonshot"
+    PUBLICAI = "publicai"
     V0 = "v0"
     MORPH = "morph"
     LAMBDA_AI = "lambda_ai"
@@ -2530,6 +2619,7 @@ class LlmProviders(str, Enum):
     EMPOWER = "empower"
     GITHUB = "github"
     COMPACTIFAI = "compactifai"
+    DOCKER_MODEL_RUNNER = "docker_model_runner"
     CUSTOM = "custom"
     LITELLM_PROXY = "litellm_proxy"
     HOSTED_VLLM = "hosted_vllm"
@@ -2570,18 +2660,27 @@ class LlmProviders(str, Enum):
 # Create a set of all provider values for quick lookup
 LlmProvidersSet = {provider.value for provider in LlmProviders}
 
+# File and Batch API providers that are OpenAI-compatible
+OPENAI_COMPATIBLE_BATCH_AND_FILES_PROVIDERS: set[str] = {
+    LlmProviders.OPENAI.value,
+    LlmProviders.HOSTED_VLLM.value,
+}
+
 
 class SearchProviders(str, Enum):
     """
     Enum for search provider types.
     Separate from LlmProviders for semantic clarity.
     """
+
     PERPLEXITY = "perplexity"
     TAVILY = "tavily"
     PARALLEL_AI = "parallel_ai"
     EXA_AI = "exa_ai"
     GOOGLE_PSE = "google_pse"
     DATAFORSEO = "dataforseo"
+    FIRECRAWL = "firecrawl"
+    SEARXNG = "searxng"
 
 
 # Create a set of all search provider values for quick lookup
@@ -2662,7 +2761,7 @@ class LiteLLMFineTuningJob(FineTuningJob):
 
 class LiteLLMBatch(Batch):
     _hidden_params: dict = {}
-    usage: Optional[Usage] = None
+    usage: Optional[Usage] = None  # type: ignore[assignment]
 
     def __contains__(self, key):
         # Define custom behavior for the 'in' operator
@@ -2770,6 +2869,10 @@ class SpecialEnums(Enum):
 
     LITELLM_MANAGED_GENERIC_RESPONSE_COMPLETE_STR = "litellm_proxy;model_id:{};generic_response_id:{}"  # generic implementation of 'managed batches' - used for finetuning and any future work.
 
+    LITELLM_MANAGED_VIDEO_COMPLETE_STR = (
+        "litellm:custom_llm_provider:{};model_id:{};video_id:{}"
+    )
+
 
 class ServiceTier(Enum):
     """Enum for service tier types used in cost calculations."""
@@ -2822,13 +2925,13 @@ CostResponseTypes = Union[
 class PriorityReservationDict(TypedDict, total=False):
     """
     Dictionary format for priority reservation values.
-    
+
     Used in litellm.priority_reservation to specify how much capacity to reserve
     for each priority level. Supports three formats:
     1. Percentage-based: {"type": "percent", "value": 0.9} -> 90% of capacity
     2. RPM-based: {"type": "rpm", "value": 900} -> 900 requests per minute
     3. TPM-based: {"type": "tpm", "value": 900000} -> 900,000 tokens per minute
-    
+
     Attributes:
         type: The type of value - "percent", "rpm", or "tpm". Defaults to "percent".
         value: The numeric value. For percent (0.0-1.0), for rpm/tpm (absolute value).
