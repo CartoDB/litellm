@@ -344,7 +344,7 @@ jobs:
           github_token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           show_full_output: true
-          claude_args: "--model claude-sonnet-4-5-20250929 --max-turns 250 --allowed-tools Read,Write,Edit,Bash,Grep,Glob ${{ github.event.inputs.debug == 'true' && '--debug' || '' }}"
+          claude_args: "--model claude-opus-4-5-20251101 --thinking-budget 10000 --max-turns 250 --allowed-tools Read,Write,Edit,Bash,Grep,Glob ${{ github.event.inputs.debug == 'true' && '--debug' || '' }}"
           prompt: |
             # Upstream Sync Conflict Resolution Task
 
@@ -693,11 +693,12 @@ jobs:
           Claude Code has attempted to resolve conflicts in PR #${{ needs.check-eligibility.outputs.pr-number }}.
 
           **Configuration:**
-          - Model: Sonnet 4.5
+          - Model: Opus 4.5 (with extended thinking)
+          - Thinking budget: 10,000 tokens
           - Max turns: 250 (very generous - timeout is real limit)
           - Job timeout: 90 minutes (workflow-level)
           - Tools: Read, Write, Edit, Bash, Grep, Glob (restricted)
-          - Estimated cost: Limited by 90-min timeout (~$3-10 max)
+          - Estimated cost: Limited by 90-min timeout (~$5-20 max)
 
           **Resolution Priorities Applied:**
           1. 🏢 CARTO customizations (highest priority)
