@@ -53,7 +53,6 @@ MCPAuthType = Optional[
     ]
 ]
 
-
 class MCPPublicServer(BaseModel):
     """
     Safe params for public MCP servers
