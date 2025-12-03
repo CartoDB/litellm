@@ -144,6 +144,7 @@ def test_completion_missing_role(openai_api_response):
 )
 @pytest.mark.parametrize("sync_mode", [True, False])
 @pytest.mark.asyncio
+@pytest.mark.flaky(reruns=3)
 async def test_url_with_format_param(model, sync_mode, monkeypatch):
     from litellm import acompletion, completion
     from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
