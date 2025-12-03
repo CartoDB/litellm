@@ -1,4 +1,4 @@
-import { MessageType } from "./types";
+import { MessageType } from "./chat_ui/types";
 
 export interface ChatMultimodalContent {
   type: "text" | "image_url";

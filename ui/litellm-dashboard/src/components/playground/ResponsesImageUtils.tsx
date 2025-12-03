@@ -1,4 +1,4 @@
-import { MessageType, MultimodalContent } from "./types";
+import { MessageType, MultimodalContent } from "./chat_ui/types";
 
 export const convertImageToBase64 = (file: File): Promise<string> => {
   return new Promise((resolve, reject) => {

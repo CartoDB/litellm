@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Button } from "antd";
-import { VectorStoreSearchResponse } from "./types";
+import { VectorStoreSearchResponse } from "./chat_ui/types";
 import { DatabaseOutlined, FileTextOutlined, DownOutlined, RightOutlined } from "@ant-design/icons";
 
 interface SearchResultsDisplayProps {

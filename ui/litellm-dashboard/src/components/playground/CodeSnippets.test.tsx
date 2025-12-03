@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { generateCodeSnippet } from "./CodeSnippets";
-import { EndpointType } from "./mode_endpoint_mapping";
+import { generateCodeSnippet } from "./chat_ui/CodeSnippets";
+import { EndpointType } from "./chat_ui/mode_endpoint_mapping";
 
 describe("CodeSnippets", () => {
   it("should generate the correct code snippet for embeddings", () => {

@@ -1,7 +1,7 @@
 import React from "react";
 import { Switch, Tooltip } from "antd";
 import { InfoCircleOutlined, CopyOutlined } from "@ant-design/icons";
-import { EndpointType } from "./mode_endpoint_mapping";
+import { EndpointType } from "./chat_ui/mode_endpoint_mapping";
 import NotificationsManager from "../molecules/notifications_manager";
 
 interface SessionManagementProps {

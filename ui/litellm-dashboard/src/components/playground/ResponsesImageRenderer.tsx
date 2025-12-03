@@ -1,5 +1,5 @@
 import React from "react";
-import { MessageType } from "./types";
+import { MessageType } from "./chat_ui/types";
 import { shouldShowAttachedImage } from "./ResponsesImageUtils";
 import { FilePdfOutlined } from "@ant-design/icons";
 
