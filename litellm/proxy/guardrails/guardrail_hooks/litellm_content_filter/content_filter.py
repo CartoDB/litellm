@@ -423,12 +423,13 @@ class ContentFilterGuardrail(CustomGuardrail):
                         if isinstance(choice.delta.content, str):
                             # Check the chunk content using apply_guardrail
                             try:
-                                processed_content = await self.apply_guardrail(
+                                processed_texts, _ = await self.apply_guardrail(
                                     texts=[choice.delta.content],
                                     input_type="response",
                                     images=None,
                                     request_data=request_data,
                                 )
+                                processed_content = processed_texts[0] if processed_texts else choice.delta.content
                                 if processed_content != choice.delta.content:
                                     choice.delta.content = processed_content
                                     verbose_proxy_logger.debug(
