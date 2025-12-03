@@ -570,6 +570,7 @@ jobs:
           SLACK_CHANNEL: "C09K0M5MP7V" # cartodb-ops
           HAS_NEW_RELEASE: ${{ needs.check-new-release.outputs.has-new-release }}
           NEW_VERSION: ${{ needs.check-new-release.outputs.new-version }}
+          CURRENT_VERSION: ${{ needs.check-new-release.outputs.current-version }}
           NEEDS_SYNC: ${{ needs.check-carto-main-sync.outputs.needs-sync }}
           COMMITS_BEHIND: ${{ needs.check-carto-main-sync.outputs.commits-behind }}
           PR_EXISTS: ${{ needs.check-carto-main-sync.outputs.pr-exists }}
