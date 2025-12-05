@@ -7,4 +7,4 @@ BEGIN
 END $$;
 
 -- Migration for existing tables: add alias column if upgrading
-ALTER TABLE "LiteLLM_MCPServerTable" ADD COLUMN IF NOT EXISTS "alias" TEXT;
+ALTER TABLE "LiteLLM_MCPServerTable" ADD COLUMN IF NOT EXISTS "alias" TEXT; 

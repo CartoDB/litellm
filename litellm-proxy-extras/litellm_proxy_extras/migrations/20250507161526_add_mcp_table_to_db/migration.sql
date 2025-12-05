@@ -14,3 +14,4 @@ CREATE TABLE "LiteLLM_MCPServerTable" (
 
     CONSTRAINT "LiteLLM_MCPServerTable_pkey" PRIMARY KEY ("server_id")
 );
+
