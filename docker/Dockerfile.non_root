@@ -9,13 +9,15 @@ ARG LITELLM_RUNTIME_IMAGE=cgr.dev/chainguard/wolfi-base
 FROM $LITELLM_BUILD_IMAGE AS builder
 WORKDIR /app
 
-# Install build dependencies including Python
+# Install build dependencies including Python and Node.js for UI build
 USER root
 RUN apk add --no-cache \
     python3 \
     py3-pip \
     build-base \
     bash \
+    nodejs \
+    npm \
   && pip install --no-cache-dir --upgrade pip build
 
 # Copy project files
@@ -38,6 +40,19 @@ RUN cd /app/ui/litellm-dashboard && rm -f package-lock.json
 
 RUN cd /app/ui/litellm-dashboard && npm install --legacy-peer-deps
 
+RUN cd /app/ui/litellm-dashboard && npm run build
+
+RUN cp -r /app/ui/litellm-dashboard/out/* /tmp/litellm_ui/
+
+# --- Pre-cache Prisma binaries in builder stage ---
+# Configure Prisma cache directories
+ENV PRISMA_BINARY_CACHE_DIR=/app/.cache/prisma-python/binaries
+ENV PRISMA_CLI_BINARY_TARGETS="debian-openssl-3.0.x"
+
+# Install prisma and nodejs-bin packages
+RUN pip install --no-cache-dir prisma==0.11.0 nodejs-bin==18.4.0a4 && \
+    mkdir -p /app/.cache/npm
+
 # Dynamically detect Python version and set up paths
 # Copy packages to version-agnostic location for runtime stage
 RUN PYTHON_VERSION=$(python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')") && \
@@ -52,6 +67,15 @@ RUN PYTHON_VERSION=$(python -c "import sys; print(f'{sys.version_info.major}.{sy
 
 # Set PATH for Node.js using symlink
 ENV PATH="/app/.nodejs-bin:${PATH}"
+
+# Download Prisma CLI and all required binaries
+RUN NPM_CONFIG_CACHE=/app/.cache/npm \
+    python -c "import prisma.cli.prisma as p; p.ensure_cached()"
+
+# Run Prisma commands to ensure all engines are downloaded
+RUN prisma generate && \
+    prisma --version && \
+    prisma migrate diff --from-empty --to-schema-datamodel ./schema.prisma --script > /dev/null 2>&1 || true
 
 RUN cd /tmp/litellm_ui && \
   for html_file in *.html; do \
@@ -91,6 +115,8 @@ COPY --from=builder /wheels/ /wheels/
 COPY --from=builder /app/.cache /app/.cache
 # Copy litellm-proxy-extras directory if it has migrations
 COPY --from=builder /app/litellm-proxy-extras /app/litellm-proxy-extras
+# Copy built Admin UI from builder
+COPY --from=builder /tmp/litellm_ui /tmp/litellm_ui
 # Copy version-agnostic python packages cache from builder
 COPY --from=builder /app/.python-packages /app/.python-packages
 # Copy the prisma executables
@@ -122,8 +148,10 @@ RUN pip uninstall jwt -y && \
   pip uninstall PyJWT -y && \
   pip install PyJWT==2.9.0 --no-cache-dir
 
-# Set Prisma cache directories
-ENV PRISMA_BINARY_CACHE_DIR=/nonexistent
+# --- Prisma Configuration ---
+# Use pre-cached binaries from builder stage
+ENV PRISMA_BINARY_CACHE_DIR=/app/.cache/prisma-python/binaries
+ENV PRISMA_CLI_BINARY_TARGETS="debian-openssl-3.0.x"
 ENV NPM_CONFIG_CACHE=/.npm
 
 # Make entrypoints executable
