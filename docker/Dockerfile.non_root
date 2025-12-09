@@ -1,4 +1,5 @@
-# Base images
+# Base images - Using wolfi-base to control Python version (avoids Python 3.14 issues)
+# See: https://github.com/BerriAI/litellm/pull/17406
 ARG LITELLM_BUILD_IMAGE=cgr.dev/chainguard/wolfi-base
 ARG LITELLM_RUNTIME_IMAGE=cgr.dev/chainguard/wolfi-base
 
@@ -8,20 +9,13 @@ ARG LITELLM_RUNTIME_IMAGE=cgr.dev/chainguard/wolfi-base
 FROM $LITELLM_BUILD_IMAGE AS builder
 WORKDIR /app
 
-# Install build dependencies including Node.js for UI build
+# Install build dependencies including Python
 USER root
 RUN apk add --no-cache \
     python3 \
     py3-pip \
-    clang \
-    llvm \
-    lld \
-    gcc \
-    linux-headers \
     build-base \
     bash \
-    nodejs \
-    npm \
   && pip install --no-cache-dir --upgrade pip build
 
 # Copy project files
@@ -44,9 +38,20 @@ RUN cd /app/ui/litellm-dashboard && rm -f package-lock.json
 
 RUN cd /app/ui/litellm-dashboard && npm install --legacy-peer-deps
 
-RUN cd /app/ui/litellm-dashboard && npm run build
+# Dynamically detect Python version and set up paths
+# Copy packages to version-agnostic location for runtime stage
+RUN PYTHON_VERSION=$(python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')") && \
+    SITE_PACKAGES="/usr/lib/python${PYTHON_VERSION}/site-packages" && \
+    echo "Detected Python version: ${PYTHON_VERSION}" && \
+    mkdir -p /app/.python-packages && \
+    cp -r ${SITE_PACKAGES}/nodejs* /app/.python-packages/ && \
+    cp -r ${SITE_PACKAGES}/prisma* /app/.python-packages/ && \
+    cp -r ${SITE_PACKAGES}/tomlkit* /app/.python-packages/ && \
+    cp -r ${SITE_PACKAGES}/nodeenv* /app/.python-packages/ && \
+    ln -sf ${SITE_PACKAGES}/nodejs/bin /app/.nodejs-bin
 
-RUN cp -r /app/ui/litellm-dashboard/out/* /tmp/litellm_ui/
+# Set PATH for Node.js using symlink
+ENV PATH="/app/.nodejs-bin:${PATH}"
 
 RUN cd /tmp/litellm_ui && \
   for html_file in *.html; do \
@@ -70,10 +75,10 @@ RUN rm -rf dist/* && python -m build && \
 FROM $LITELLM_RUNTIME_IMAGE AS runtime
 WORKDIR /app
 
-# Install runtime dependencies
+# Install runtime dependencies including Python
 USER root
 RUN apk upgrade --no-cache && \
-  apk add --no-cache python3 py3-pip bash openssl tzdata nodejs npm supervisor
+  apk add --no-cache python3 py3-pip bash libstdc++ ca-certificates openssl supervisor nodejs npm
 
 # Copy only necessary artifacts from builder stage for runtime
 COPY . .
@@ -82,7 +87,23 @@ COPY --from=builder /app/docker/supervisord.conf /etc/supervisord.conf
 COPY --from=builder /app/schema.prisma /app/schema.prisma
 COPY --from=builder /app/dist/*.whl .
 COPY --from=builder /wheels/ /wheels/
-COPY --from=builder /tmp/litellm_ui /tmp/litellm_ui
+# Copy pre-cached Prisma binaries, CLI, and npm cache from builder stage
+COPY --from=builder /app/.cache /app/.cache
+# Copy litellm-proxy-extras directory if it has migrations
+COPY --from=builder /app/litellm-proxy-extras /app/litellm-proxy-extras
+# Copy version-agnostic python packages cache from builder
+COPY --from=builder /app/.python-packages /app/.python-packages
+# Copy the prisma executables
+COPY --from=builder /usr/bin/prisma /usr/bin/prisma
+COPY --from=builder /usr/bin/prisma-client-py /usr/bin/prisma-client-py
+
+# Install packages from version-agnostic cache to the correct site-packages location
+RUN PYTHON_VERSION=$(python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')") && \
+    SITE_PACKAGES="/usr/lib/python${PYTHON_VERSION}/site-packages" && \
+    echo "Runtime Python version: ${PYTHON_VERSION}" && \
+    cp -r /app/.python-packages/* ${SITE_PACKAGES}/ && \
+    ln -sf ${SITE_PACKAGES}/nodejs/bin /app/.nodejs-bin && \
+    rm -rf /app/.python-packages
 
 # Install package from wheel and dependencies
 RUN pip install *.whl /wheels/* --no-index --find-links=/wheels/ \
@@ -105,10 +126,11 @@ RUN pip uninstall jwt -y && \
 ENV PRISMA_BINARY_CACHE_DIR=/nonexistent
 ENV NPM_CONFIG_CACHE=/.npm
 
-# Install prisma and make entrypoints executable
-RUN pip install --no-cache-dir prisma && \
-  chmod +x docker/entrypoint.sh && \
-  chmod +x docker/prod_entrypoint.sh
+# Make entrypoints executable
+RUN chmod +x docker/entrypoint.sh && \
+    chmod +x docker/prod_entrypoint.sh && \
+    chmod +x /usr/bin/prisma && \
+    chmod +x /usr/bin/prisma-client-py
 
 # Create directories and set permissions for non-root user
 RUN mkdir -p /nonexistent /.npm && \
@@ -118,7 +140,22 @@ RUN mkdir -p /nonexistent /.npm && \
   LITELLM_PKG_MIGRATIONS_PATH="$(python -c 'import os, litellm_proxy_extras; print(os.path.dirname(litellm_proxy_extras.__file__))' 2>/dev/null || echo '')/migrations" && \
   [ -n "$LITELLM_PKG_MIGRATIONS_PATH" ] && chown -R nobody:nogroup $LITELLM_PKG_MIGRATIONS_PATH
 
-# OpenShift compatibility
+# Set PATH using version-agnostic symlink
+ENV PATH="/app/.nodejs-bin:${PATH}"
+
+# Verify Prisma CLI works in runtime
+RUN prisma --version && \
+    prisma generate
+
+# Set permissions for non-root user
+RUN chown -R nobody:nogroup /app && \
+    chown -R nobody:nogroup /nonexistent && \
+    chown -R nobody:nogroup /tmp/.npm && \
+    PRISMA_PATH=$(python -c "import os, prisma; print(os.path.dirname(prisma.__file__))") && \
+    chown -R nobody:nogroup $PRISMA_PATH
+
+# --- OpenShift Compatibility: Apply Red Hat recommended pattern ---
+# Get paths for directories that need write access at runtime
 RUN PRISMA_PATH=$(python -c "import os, prisma; print(os.path.dirname(prisma.__file__))") && \
   LITELLM_PROXY_EXTRAS_PATH=$(python -c "import os, litellm_proxy_extras; print(os.path.dirname(litellm_proxy_extras.__file__))" 2>/dev/null || echo "") && \
   chgrp -R 0 $PRISMA_PATH /tmp/litellm_ui && \
