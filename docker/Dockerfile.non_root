@@ -178,7 +178,7 @@ RUN prisma --version && \
 # Set permissions for non-root user
 RUN chown -R nobody:nogroup /app && \
     chown -R nobody:nogroup /nonexistent && \
-    chown -R nobody:nogroup /tmp/.npm && \
+    chown -R nobody:nogroup /.npm && \
     PRISMA_PATH=$(python -c "import os, prisma; print(os.path.dirname(prisma.__file__))") && \
     chown -R nobody:nogroup $PRISMA_PATH
 
