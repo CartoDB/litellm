@@ -4,10 +4,6 @@ Handles transforming from Responses API -> LiteLLM completion  (Chat Completion 
 
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union, cast
 
-# PATCH: Additional imports for Redis session storage
-from datetime import datetime
-import json
-
 from openai.types.responses.tool_param import FunctionToolParam
 from typing_extensions import TypedDict
 
@@ -211,35 +207,20 @@ class LiteLLMCompletionResponsesConfig:
     ) -> dict:
         """
         Async hook to get the chain of previous input and output pairs and return a list of Chat Completion messages
-        
-        PATCH: Added Redis-first lookup to fix conversation context timing issues
         """
-
-        # PATCH: Try Redis first for immediate availability
-        redis_session = await LiteLLMCompletionResponsesConfig._patch_get_session_from_redis(previous_response_id)
-        if redis_session:
-            _messages = litellm_completion_request.get("messages") or []
-            session_messages = redis_session.get("messages") or []
-            litellm_completion_request["messages"] = session_messages + _messages
-            litellm_completion_request["litellm_trace_id"] = redis_session.get("session_id")
-            return litellm_completion_request
-
-        # PATCH: Fallback to existing enterprise/database logic
-        if _ENTERPRISE_ResponsesSessionHandler is not None:
-            chat_completion_session = ChatCompletionSession(
-                messages=[], litellm_session_id=None
+        chat_completion_session = ChatCompletionSession(
+            messages=[], litellm_session_id=None
+        )
+        if previous_response_id:
+            chat_completion_session = await ResponsesSessionHandler.get_chat_completion_message_history_for_previous_response_id(
+                previous_response_id=previous_response_id
             )
-            if previous_response_id:
-                chat_completion_session = await _ENTERPRISE_ResponsesSessionHandler.get_chat_completion_message_history_for_previous_response_id(
-                    previous_response_id=previous_response_id
-                )
-            _messages = litellm_completion_request.get("messages") or []
-            session_messages = chat_completion_session.get("messages") or []
-            litellm_completion_request["messages"] = session_messages + _messages
-            litellm_completion_request[
-                "litellm_trace_id"
-            ] = chat_completion_session.get("litellm_session_id")
-
+        _messages = litellm_completion_request.get("messages") or []
+        session_messages = chat_completion_session.get("messages") or []
+        litellm_completion_request["messages"] = session_messages + _messages
+        litellm_completion_request[
+            "litellm_trace_id"
+        ] = chat_completion_session.get("litellm_session_id")
         return litellm_completion_request
 
     @staticmethod
@@ -637,16 +618,30 @@ class LiteLLMCompletionResponsesConfig:
         for tool in all_chat_completion_tools:
             if tool.type == "function":
                 function_definition = tool.function
-                responses_tools.append(
-                    OutputFunctionToolCall(
-                        name=function_definition.name or "",
-                        arguments=function_definition.get("arguments") or "",
-                        call_id=tool.id or "",
-                        id=tool.id or "",
-                        type="function_call",  # critical this is "function_call" to work with tools like openai codex
-                        status=function_definition.get("status") or "completed",
-                    )
+                provider_specific_fields: Optional[Dict[str, Any]] = None
+                if hasattr(tool, "provider_specific_fields") and getattr(tool, "provider_specific_fields", None):
+                    provider_specific_fields = getattr(tool, "provider_specific_fields")
+                    if not isinstance(provider_specific_fields, dict):
+                        provider_specific_fields = dict(provider_specific_fields) if hasattr(provider_specific_fields, "__dict__") else {}
+                elif hasattr(function_definition, "provider_specific_fields") and getattr(function_definition, "provider_specific_fields", None):
+                    provider_specific_fields = getattr(function_definition, "provider_specific_fields")
+                    if not isinstance(provider_specific_fields, dict):
+                        provider_specific_fields = dict(provider_specific_fields) if hasattr(provider_specific_fields, "__dict__") else {}
+                
+                output_tool_call: OutputFunctionToolCall = OutputFunctionToolCall(
+                    name=function_definition.name or "",
+                    arguments=function_definition.get("arguments") or "",
+                    call_id=tool.id or "",
+                    id=tool.id or "",
+                    type="function_call",  # critical this is "function_call" to work with tools like openai codex
+                    status=function_definition.get("status") or "completed",
                 )
+                
+                # Pass through provider_specific_fields as-is if present
+                if provider_specific_fields:
+                    setattr(output_tool_call, "provider_specific_fields", provider_specific_fields)  # type: ignore
+                
+                responses_tools.append(output_tool_call)
         return responses_tools
 
     @staticmethod
@@ -930,74 +925,12 @@ class LiteLLMCompletionResponsesConfig:
             output_tokens=usage.completion_tokens,
             total_tokens=usage.total_tokens,
         )
+
         # Preserve cost field if it exists (for streaming usage with cost calculation)
         if hasattr(usage, "cost") and usage.cost is not None:
             setattr(response_usage, "cost", usage.cost)
 
         return response_usage
-
-
-# =============================================================================
-# PATCH: Redis Session Storage for Issue #12364
-# This is a temporary fix for conversation context timing issues
-# TODO: Remove when upstream fixes batch processing timing
-# =============================================================================
-
-    @staticmethod
-    async def _patch_store_session_in_redis(response_id: str, session_id: str, messages: List[Dict]):
-        """PATCH: Store session immediately in Redis to avoid batch processing delay"""
-        try:
-            import litellm
-
-            if litellm.cache is None or not hasattr(litellm.cache, 'cache') or not hasattr(litellm.cache.cache, 'init_async_client'):
-                return  # No Redis - graceful fallback to existing logic
-
-            session_data = {
-                "messages": messages,
-                "session_id": session_id,
-                "timestamp": datetime.utcnow().isoformat()
-            }
-
-            # Store with 24-hour TTL using the async Redis client
-            async_redis_client = litellm.cache.cache.init_async_client()
-            await async_redis_client.set(
-                name=f"litellm_patch:session:{response_id}",
-                value=json.dumps(session_data),
-                ex=86400  # 24 hours
-            )
-
-
-        except Exception:
-            # PATCH: Silent fail - don't break existing functionality
-            pass
-
-    @staticmethod
-    async def _patch_get_session_from_redis(previous_response_id: str) -> Optional[Dict]:
-        """PATCH: Get session from Redis if available"""
-        try:
-            import litellm
-
-            if litellm.cache is None or not hasattr(litellm.cache, 'cache') or not hasattr(litellm.cache.cache, 'init_async_client'):
-                return None
-
-            # Decode response ID to get actual request ID
-            from litellm.responses.utils import ResponsesAPIRequestUtils
-            actual_request_id = ResponsesAPIRequestUtils.decode_previous_response_id_to_original_previous_response_id(
-                previous_response_id
-            )
-
-            # Get session data from Redis using the async Redis client
-            async_redis_client = litellm.cache.cache.init_async_client()
-            session_json = await async_redis_client.get(name=f"litellm_patch:session:{actual_request_id}")
-
-            if session_json:
-                return json.loads(session_json)
-
-            return None
-
-        except Exception:
-            # PATCH: Silent fail - fallback to existing logic
-            return None
 
     @staticmethod
     def _transform_text_format_to_response_format(
