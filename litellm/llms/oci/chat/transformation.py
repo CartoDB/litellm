@@ -1352,6 +1352,7 @@ class OCIStreamWrapper(CustomStreamWrapper):
 
     def _handle_generic_stream_chunk(self, dict_chunk: dict):
         """Handle generic OCI streaming chunks."""
+
         # Fix missing required fields in tool calls before Pydantic validation
         # OCI streams tool calls progressively, so early chunks may be missing required fields
         if dict_chunk.get("message") and dict_chunk["message"].get("toolCalls"):
@@ -1362,6 +1363,18 @@ class OCIStreamWrapper(CustomStreamWrapper):
                     tool_call["id"] = ""
                 if "name" not in tool_call:
                     tool_call["name"] = ""
+
+        # Fix missing required fields in content items before Pydantic validation
+        # OCI may stream content progressively, especially with tool calls
+        if dict_chunk.get("message") and dict_chunk["message"].get("content"):
+            for content_item in dict_chunk["message"]["content"]:
+                if isinstance(content_item, dict):
+                    # If content item has type TEXT but no text field, add empty text
+                    if content_item.get("type") == "TEXT" and "text" not in content_item:
+                        content_item["text"] = ""
+                    # If content item has type IMAGE but missing imageUrl, add empty dict
+                    elif content_item.get("type") == "IMAGE" and "imageUrl" not in content_item:
+                        content_item["imageUrl"] = {"url": ""}
 
         try:
             typed_chunk = OCIStreamChunk(**dict_chunk)
