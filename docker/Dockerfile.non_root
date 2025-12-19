@@ -149,7 +149,7 @@ RUN chmod +x docker/entrypoint.sh docker/prod_entrypoint.sh && \
     chown -R nobody:nogroup /app /tmp/litellm_ui /tmp/litellm_assets /nonexistent /.npm && \
     pip uninstall jwt -y || true && \
     pip uninstall PyJWT -y || true && \
-    pip install --no-index --find-links=/wheels/ PyJWT==2.10.1 --no-cache-dir && \
+    pip install --no-index --find-links=/wheels/ PyJWT==2.9.0 --no-cache-dir && \
     rm -rf /wheels && \
     PRISMA_PATH=$(python -c "import os, prisma; print(os.path.dirname(prisma.__file__))") && \
     chown -R nobody:nogroup $PRISMA_PATH && \
