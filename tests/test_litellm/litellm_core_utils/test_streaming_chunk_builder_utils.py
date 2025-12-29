@@ -16,6 +16,7 @@ from litellm.types.utils import (
     Function,
     ModelResponseStream,
     PromptTokensDetails,
+    ServerToolUse,
     StreamingChoices,
     Usage,
 )

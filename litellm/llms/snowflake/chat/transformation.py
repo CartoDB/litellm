@@ -4,16 +4,18 @@ Support for Snowflake REST API
 
 import json
 import time
-from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, Iterator, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 import httpx
 
 from litellm.llms.base_llm.base_model_iterator import BaseModelResponseIterator
-from litellm.secret_managers.main import get_secret_str
 from litellm.types.llms.openai import AllMessageValues
 from litellm.types.utils import ChatCompletionMessageToolCall, Function, ModelResponse, ModelResponseStream
 
 from ...openai_like.chat.transformation import OpenAIGPTConfig
+
+from ..utils import SnowflakeBaseConfig
+
 
 if TYPE_CHECKING:
     from litellm.litellm_core_utils.litellm_logging import Logging as _LiteLLMLoggingObj
@@ -96,7 +98,7 @@ class SnowflakeStreamingHandler(BaseModelResponseIterator):
             raise e
 
 
-class SnowflakeConfig(OpenAIGPTConfig):
+class SnowflakeConfig(SnowflakeBaseConfig, OpenAIGPTConfig):
     """
     Reference: https://docs.snowflake.com/en/user-guide/snowflake-cortex/cortex-llm-rest-api
 
@@ -107,40 +109,6 @@ class SnowflakeConfig(OpenAIGPTConfig):
     @classmethod
     def get_config(cls):
         return super().get_config()
-
-    def get_supported_openai_params(self, model: str) -> List[str]:
-        return [
-            "temperature",
-            "max_tokens",
-            "top_p",
-            "response_format",
-            "tools",
-            "tool_choice",
-        ]
-
-    def map_openai_params(
-        self,
-        non_default_params: dict,
-        optional_params: dict,
-        model: str,
-        drop_params: bool,
-    ) -> dict:
-        """
-        If any supported_openai_params are in non_default_params, add them to optional_params, so they are used in API call
-
-        Args:
-            non_default_params (dict): Non-default parameters to filter.
-            optional_params (dict): Optional parameters to update.
-            model (str): Model name for parameter support check.
-
-        Returns:
-            dict: Updated optional_params with supported non-default parameters.
-        """
-        supported_openai_params = self.get_supported_openai_params(model)
-        for param, value in non_default_params.items():
-            if param in supported_openai_params:
-                optional_params[param] = value
-        return optional_params
 
     def _transform_tool_calls_from_snowflake_to_openai(
         self, content_list: List[Dict[str, Any]]
@@ -254,61 +222,6 @@ class SnowflakeConfig(OpenAIGPTConfig):
             returned_response._hidden_params["model"] = model
         return returned_response
 
-    def validate_environment(
-        self,
-        headers: dict,
-        model: str,
-        messages: List[AllMessageValues],
-        optional_params: dict,
-        litellm_params: dict,
-        api_key: Optional[str] = None,
-        api_base: Optional[str] = None,
-    ) -> dict:
-        """
-        Return headers to use for Snowflake completion request
-
-        Snowflake REST API Ref: https://docs.snowflake.com/en/user-guide/snowflake-cortex/cortex-llm-rest-api#api-reference
-        Expected headers:
-        {
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "Authorization": "Bearer " + <JWT or PAT>,
-            "X-Snowflake-Authorization-Token-Type": "KEYPAIR_JWT" or "PROGRAMMATIC_ACCESS_TOKEN"
-        }
-        """
-
-        if api_key is None:
-            raise ValueError("Missing Snowflake JWT or PAT key")
-
-        # Detect if using PAT token (prefixed with "pat/")
-        token_type = "KEYPAIR_JWT"
-        token = api_key
-
-        if api_key.startswith("pat/"):
-            token_type = "PROGRAMMATIC_ACCESS_TOKEN"
-            token = api_key[4:]  # Strip "pat/" prefix
-
-        headers.update(
-            {
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "Authorization": "Bearer " + token,
-                "X-Snowflake-Authorization-Token-Type": token_type,
-            }
-        )
-        return headers
-
-    def _get_openai_compatible_provider_info(
-        self, api_base: Optional[str], api_key: Optional[str]
-    ) -> Tuple[Optional[str], Optional[str]]:
-        api_base = (
-            api_base
-            or f"""https://{get_secret_str("SNOWFLAKE_ACCOUNT_ID")}.snowflakecomputing.com/api/v2/cortex/inference:complete"""
-            or get_secret_str("SNOWFLAKE_API_BASE")
-        )
-        dynamic_api_key = api_key or get_secret_str("SNOWFLAKE_JWT")
-        return api_base, dynamic_api_key
-
     def get_complete_url(
         self,
         api_base: Optional[str],
@@ -321,10 +234,10 @@ class SnowflakeConfig(OpenAIGPTConfig):
         """
         If api_base is not provided, use the default Snowflake Cortex endpoint.
         """
-        if not api_base:
-            api_base = f"""https://{get_secret_str("SNOWFLAKE_ACCOUNT_ID")}.snowflakecomputing.com/api/v2/cortex/inference:complete"""
 
-        return api_base
+        api_base = self._get_api_base(api_base, optional_params)
+
+        return f"{api_base}/cortex/inference:complete"
 
     def get_model_response_iterator(
         self,
@@ -387,9 +300,7 @@ class SnowflakeConfig(OpenAIGPTConfig):
                 }
                 # Add description if present
                 if "description" in function:
-                    snowflake_tool["tool_spec"]["description"] = function[
-                        "description"
-                    ]
+                    snowflake_tool["tool_spec"]["description"] = function["description"]
 
                 snowflake_tools.append(snowflake_tool)
 
@@ -650,7 +561,7 @@ class SnowflakeConfig(OpenAIGPTConfig):
             verbose_logger.debug(f"Snowflake: Received {len(tools)} tools in OpenAI format")
             transformed_tools = self._transform_tools(tools)
             optional_params["tools"] = transformed_tools
-            verbose_logger.debug(f"Snowflake: Transformed tools to Snowflake format")
+            verbose_logger.debug("Snowflake: Transformed tools to Snowflake format")
         else:
             verbose_logger.debug("Snowflake: No tools in request")
 
@@ -685,22 +596,3 @@ class SnowflakeConfig(OpenAIGPTConfig):
         verbose_logger.debug("=" * 80)
 
         return request_data
-
-    def get_model_response_iterator(
-        self,
-        streaming_response: Union[Iterator[str], AsyncIterator[str], ModelResponse],
-        sync_stream: bool,
-        json_mode: Optional[bool] = False,
-    ) -> Any:
-        """
-        Return custom streaming handler for Snowflake that handles missing 'created' field
-        and transforms Claude-format tool_use to OpenAI-format tool_calls.
-
-        Some Snowflake models (like claude-sonnet-4-5) may not include the 'created' field
-        in their streaming responses, and return tool calls in Claude's format.
-        """
-        return SnowflakeStreamingHandler(
-            streaming_response=streaming_response,
-            sync_stream=sync_stream,
-            json_mode=json_mode,
-        )

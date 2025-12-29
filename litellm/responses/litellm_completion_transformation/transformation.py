@@ -2,11 +2,9 @@
 Handles transforming from Responses API -> LiteLLM completion  (Chat Completion API)
 """
 
-from typing import Any, Dict, List, Literal, Optional, Tuple, Union, cast
-
-# PATCH: Additional imports for Redis session storage
-from datetime import datetime
 import json
+from datetime import datetime
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union, cast
 
 from openai.types.responses.tool_param import FunctionToolParam
 from typing_extensions import TypedDict
@@ -16,6 +14,10 @@ from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLogging
 from litellm.responses.litellm_completion_transformation.session_handler import (
     ResponsesSessionHandler,
 )
+
+# Enterprise session handler - initialized to the standard handler
+# Can be replaced with enterprise-specific implementation
+_ENTERPRISE_ResponsesSessionHandler = ResponsesSessionHandler
 from litellm.types.llms.openai import (
     AllMessageValues,
     ChatCompletionImageObject,
@@ -687,16 +689,30 @@ class LiteLLMCompletionResponsesConfig:
         for tool in all_chat_completion_tools:
             if tool.type == "function":
                 function_definition = tool.function
-                responses_tools.append(
-                    OutputFunctionToolCall(
-                        name=function_definition.name or "",
-                        arguments=function_definition.get("arguments") or "",
-                        call_id=tool.id or "",
-                        id=tool.id or "",
-                        type="function_call",  # critical this is "function_call" to work with tools like openai codex
-                        status=function_definition.get("status") or "completed",
-                    )
+                provider_specific_fields: Optional[Dict[str, Any]] = None
+                if hasattr(tool, "provider_specific_fields") and getattr(tool, "provider_specific_fields", None):
+                    provider_specific_fields = getattr(tool, "provider_specific_fields")
+                    if not isinstance(provider_specific_fields, dict):
+                        provider_specific_fields = dict(provider_specific_fields) if hasattr(provider_specific_fields, "__dict__") else {}
+                elif hasattr(function_definition, "provider_specific_fields") and getattr(function_definition, "provider_specific_fields", None):
+                    provider_specific_fields = getattr(function_definition, "provider_specific_fields")
+                    if not isinstance(provider_specific_fields, dict):
+                        provider_specific_fields = dict(provider_specific_fields) if hasattr(provider_specific_fields, "__dict__") else {}
+                
+                output_tool_call: OutputFunctionToolCall = OutputFunctionToolCall(
+                    name=function_definition.name or "",
+                    arguments=function_definition.get("arguments") or "",
+                    call_id=tool.id or "",
+                    id=tool.id or "",
+                    type="function_call",  # critical this is "function_call" to work with tools like openai codex
+                    status=function_definition.get("status") or "completed",
                 )
+                
+                # Pass through provider_specific_fields as-is if present
+                if provider_specific_fields:
+                    setattr(output_tool_call, "provider_specific_fields", provider_specific_fields)  # type: ignore
+                
+                responses_tools.append(output_tool_call)
         return responses_tools
 
     @staticmethod
@@ -995,6 +1011,7 @@ class LiteLLMCompletionResponsesConfig:
             output_tokens=usage.completion_tokens,
             total_tokens=usage.total_tokens,
         )
+
         # Preserve cost field if it exists (for streaming usage with cost calculation)
         if hasattr(usage, "cost") and usage.cost is not None:
             setattr(response_usage, "cost", usage.cost)

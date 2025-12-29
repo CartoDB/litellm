@@ -9,32 +9,40 @@ ARG LITELLM_RUNTIME_IMAGE=cgr.dev/chainguard/wolfi-base
 FROM $LITELLM_BUILD_IMAGE AS builder
 WORKDIR /app
 
-# Install build dependencies including Python
+# Install build dependencies including Python and Node.js for UI build
 USER root
 RUN apk add --no-cache \
     python3 \
     py3-pip \
     build-base \
     bash \
+    nodejs \
+    npm \
   && pip install --no-cache-dir --upgrade pip build
 
 # Copy project files
 COPY . .
 
+# Set LITELLM_NON_ROOT flag for build time
+ENV LITELLM_NON_ROOT=true
+
 # Build Admin UI
-RUN chmod +x docker/build_admin_ui.sh && ./docker/build_admin_ui.sh
+RUN mkdir -p /tmp/litellm_ui
 
-# Build litellm-proxy-extras package first (includes new migrations)
-RUN cd litellm-proxy-extras && \
-    rm -rf dist/* && \
-    python -m build && \
-    cd ..
+RUN npm install -g npm@latest && npm cache clean --force
 
-# Build main package and wheel dependencies
-RUN rm -rf dist/* && python -m build && \
-    pip install dist/*.whl && \
-    pip wheel --no-cache-dir --wheel-dir=/wheels/ litellm-proxy-extras/dist/*.whl && \
-    pip wheel --no-cache-dir --wheel-dir=/wheels/ -r requirements.txt
+RUN cd /app/ui/litellm-dashboard && \
+  if [ -f "/app/enterprise/enterprise_ui/enterprise_colors.json" ]; then \
+    cp /app/enterprise/enterprise_ui/enterprise_colors.json ./ui_colors.json; \
+  fi
+
+RUN cd /app/ui/litellm-dashboard && rm -f package-lock.json
+
+RUN cd /app/ui/litellm-dashboard && npm install --legacy-peer-deps
+
+RUN cd /app/ui/litellm-dashboard && npm run build
+
+RUN cp -r /app/ui/litellm-dashboard/out/* /tmp/litellm_ui/
 
 # --- Pre-cache Prisma binaries in builder stage ---
 # Configure Prisma cache directories
@@ -69,6 +77,22 @@ RUN prisma generate && \
     prisma --version && \
     prisma migrate diff --from-empty --to-schema-datamodel ./schema.prisma --script > /dev/null 2>&1 || true
 
+RUN cd /tmp/litellm_ui && \
+  for html_file in *.html; do \
+    if [ "$html_file" != "index.html" ] && [ -f "$html_file" ]; then \
+      folder_name="${html_file%.html}" && \
+      mkdir -p "$folder_name" && \
+      mv "$html_file" "$folder_name/index.html"; \
+    fi; \
+  done
+
+RUN cd /app/ui/litellm-dashboard && rm -rf ./out
+
+# Build package and wheel dependencies
+RUN rm -rf dist/* && python -m build && \
+  pip install dist/*.whl && \
+  pip wheel --no-cache-dir --wheel-dir=/wheels/ -r requirements.txt
+
 # -----------------
 # Runtime Stage
 # -----------------
@@ -85,13 +109,14 @@ COPY . .
 COPY --from=builder /app/docker/entrypoint.sh /app/docker/prod_entrypoint.sh /app/docker/
 COPY --from=builder /app/docker/supervisord.conf /etc/supervisord.conf
 COPY --from=builder /app/schema.prisma /app/schema.prisma
-COPY --from=builder /app/db_scripts/create_views_improved.py /app/create_views.py
 COPY --from=builder /app/dist/*.whl .
 COPY --from=builder /wheels/ /wheels/
 # Copy pre-cached Prisma binaries, CLI, and npm cache from builder stage
 COPY --from=builder /app/.cache /app/.cache
 # Copy litellm-proxy-extras directory if it has migrations
 COPY --from=builder /app/litellm-proxy-extras /app/litellm-proxy-extras
+# Copy built Admin UI from builder
+COPY --from=builder /tmp/litellm_ui /tmp/litellm_ui
 # Copy version-agnostic python packages cache from builder
 COPY --from=builder /app/.python-packages /app/.python-packages
 # Copy the prisma executables
@@ -111,6 +136,10 @@ RUN pip install *.whl /wheels/* --no-index --find-links=/wheels/ \
   && rm -f *.whl \
   && rm -rf /wheels
 
+# Remove test files and keys from dependencies
+RUN find /usr/lib -type f -path "*/tornado/test/*" -delete && \
+    find /usr/lib -type d -path "*/tornado/test" -delete
+
 # Install semantic_router and aurelio-sdk using script
 RUN chmod +x docker/install_auto_router.sh && ./docker/install_auto_router.sh
 
@@ -123,6 +152,7 @@ RUN pip uninstall jwt -y && \
 # Use pre-cached binaries from builder stage
 ENV PRISMA_BINARY_CACHE_DIR=/app/.cache/prisma-python/binaries
 ENV PRISMA_CLI_BINARY_TARGETS="debian-openssl-3.0.x"
+ENV NPM_CONFIG_CACHE=/.npm
 
 # Make entrypoints executable
 RUN chmod +x docker/entrypoint.sh && \
@@ -130,8 +160,13 @@ RUN chmod +x docker/entrypoint.sh && \
     chmod +x /usr/bin/prisma && \
     chmod +x /usr/bin/prisma-client-py
 
-# Create temporary directories needed at runtime
-RUN mkdir -p /tmp/.npm /nonexistent /.npm
+# Create directories and set permissions for non-root user
+RUN mkdir -p /nonexistent /.npm && \
+  chown -R nobody:nogroup /app /tmp/litellm_ui /nonexistent /.npm && \
+  PRISMA_PATH=$(python -c "import os, prisma; print(os.path.dirname(prisma.__file__))") && \
+  chown -R nobody:nogroup $PRISMA_PATH && \
+  LITELLM_PKG_MIGRATIONS_PATH="$(python -c 'import os, litellm_proxy_extras; print(os.path.dirname(litellm_proxy_extras.__file__))' 2>/dev/null || echo '')/migrations" && \
+  [ -n "$LITELLM_PKG_MIGRATIONS_PATH" ] && chown -R nobody:nogroup $LITELLM_PKG_MIGRATIONS_PATH
 
 # Set PATH using version-agnostic symlink
 ENV PATH="/app/.nodejs-bin:${PATH}"
@@ -143,46 +178,34 @@ RUN prisma --version && \
 # Set permissions for non-root user
 RUN chown -R nobody:nogroup /app && \
     chown -R nobody:nogroup /nonexistent && \
-    chown -R nobody:nogroup /tmp/.npm && \
+    chown -R nobody:nogroup /.npm && \
     PRISMA_PATH=$(python -c "import os, prisma; print(os.path.dirname(prisma.__file__))") && \
     chown -R nobody:nogroup $PRISMA_PATH
 
 # --- OpenShift Compatibility: Apply Red Hat recommended pattern ---
 # Get paths for directories that need write access at runtime
 RUN PRISMA_PATH=$(python -c "import os, prisma; print(os.path.dirname(prisma.__file__))") && \
-    LITELLM_PROXY_EXTRAS_PATH=$(python -c "import os, litellm_proxy_extras; print(os.path.dirname(litellm_proxy_extras.__file__))" 2>/dev/null || echo "") && \
-    # Set group ownership to 0 (root group) for OpenShift compatibility && \
-    chgrp -R 0 $PRISMA_PATH && \
-    chgrp -R 0 /app/.cache && \
-    [ -n "$LITELLM_PROXY_EXTRAS_PATH" ] && chgrp -R 0 $LITELLM_PROXY_EXTRAS_PATH || true && \
-    # Mirror owner permissions to group (g=u) as recommended by Red Hat && \
-    chmod -R g=u $PRISMA_PATH && \
-    chmod -R g=u /app/.cache && \
-    [ -n "$LITELLM_PROXY_EXTRAS_PATH" ] && chmod -R g=u $LITELLM_PROXY_EXTRAS_PATH || true && \
-    # Ensure directories are readable by group (binaries are read-only at runtime) && \
-    chmod -R g+rX $PRISMA_PATH && \
-    chmod -R g+rX /app/.cache && \
-    [ -n "$LITELLM_PROXY_EXTRAS_PATH" ] && chmod -R g+w $LITELLM_PROXY_EXTRAS_PATH || true
+  LITELLM_PROXY_EXTRAS_PATH=$(python -c "import os, litellm_proxy_extras; print(os.path.dirname(litellm_proxy_extras.__file__))" 2>/dev/null || echo "") && \
+  chgrp -R 0 $PRISMA_PATH /tmp/litellm_ui && \
+  [ -n "$LITELLM_PROXY_EXTRAS_PATH" ] && chgrp -R 0 $LITELLM_PROXY_EXTRAS_PATH || true && \
+  chmod -R g=u $PRISMA_PATH /tmp/litellm_ui && \
+  [ -n "$LITELLM_PROXY_EXTRAS_PATH" ] && chmod -R g=u $LITELLM_PROXY_EXTRAS_PATH || true && \
+  chmod -R g+w $PRISMA_PATH /tmp/litellm_ui && \
+  [ -n "$LITELLM_PROXY_EXTRAS_PATH" ] && chmod -R g+w $LITELLM_PROXY_EXTRAS_PATH || true
 
 # Switch to non-root user
 USER nobody
 
-# Set HOME for non-root user
+# Set HOME for prisma generate to have a writable directory
 ENV HOME=/app
 
-# Runtime Prisma configuration for offline operation
-ENV PRISMA_SKIP_POSTINSTALL_GENERATE=1 \
-    PRISMA_HIDE_UPDATE_MESSAGE=1 \
-    PRISMA_ENGINES_CHECKSUM_IGNORE_MISSING=1 \
-    NPM_CONFIG_CACHE=/app/.cache/npm \
-    NPM_CONFIG_PREFER_OFFLINE=true \
-    PRISMA_OFFLINE_MODE=true
+# Set LITELLM_NON_ROOT flag for runtime
+ENV LITELLM_NON_ROOT=true
+
+RUN prisma generate
 
 EXPOSE 4000/tcp
 
-# Set entrypoint and command
 ENTRYPOINT ["/app/docker/prod_entrypoint.sh"]
 
-# Append "--detailed_debug" to the end of CMD to view detailed debug logs
-# CMD ["--port", "4000", "--detailed_debug"]
 CMD ["--port", "4000"]

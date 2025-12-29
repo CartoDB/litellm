@@ -3,11 +3,15 @@ Unit tests for Snowflake chat transformation
 Tests tool calling request/response transformations
 """
 
+import os
+import copy
 import json
+
+import pytest
+from unittest.mock import patch
 from unittest.mock import MagicMock
 
 import httpx
-import pytest
 
 import litellm
 from litellm.llms.snowflake.chat.transformation import SnowflakeConfig
@@ -66,7 +70,10 @@ class TestSnowflakeToolTransformation:
         assert "tool_spec" in snowflake_tool
         assert snowflake_tool["tool_spec"]["type"] == "generic"
         assert snowflake_tool["tool_spec"]["name"] == "get_weather"
-        assert snowflake_tool["tool_spec"]["description"] == "Get the current weather in a given location"
+        assert (
+            snowflake_tool["tool_spec"]["description"]
+            == "Get the current weather in a given location"
+        )
         assert "input_schema" in snowflake_tool["tool_spec"]
         assert snowflake_tool["tool_spec"]["input_schema"]["type"] == "object"
         assert "location" in snowflake_tool["tool_spec"]["input_schema"]["properties"]
@@ -93,7 +100,9 @@ class TestSnowflakeToolTransformation:
         # Verify tool_choice was transformed to Snowflake format
         assert "tool_choice" in transformed_request
         assert transformed_request["tool_choice"]["type"] == "tool"
-        assert transformed_request["tool_choice"]["name"] == ["get_weather"]  # Array format
+        assert transformed_request["tool_choice"]["name"] == [
+            "get_weather"
+        ]  # Array format
 
     def test_transform_request_with_string_tool_choice(self):
         """
@@ -153,7 +162,10 @@ class TestSnowflakeToolTransformation:
                                 "tool_use": {
                                     "tool_use_id": "tooluse_abc123",
                                     "name": "get_weather",
-                                    "input": {"location": "Paris, France", "unit": "celsius"},
+                                    "input": {
+                                        "location": "Paris, France",
+                                        "unit": "celsius",
+                                    },
                                 },
                             },
                         ]
@@ -228,7 +240,10 @@ class TestSnowflakeToolTransformation:
                 {
                     "message": {
                         "content_list": [
-                            {"type": "text", "text": "Let me check the weather for you. "},
+                            {
+                                "type": "text",
+                                "text": "Let me check the weather for you. ",
+                            },
                             {
                                 "type": "tool_use",
                                 "tool_use": {
@@ -321,7 +336,10 @@ class TestSnowflakeToolTransformation:
 
         # Verify standard response works
         assert isinstance(result, ModelResponse)
-        assert result.choices[0].message.content == "Hello! I'm doing well, thank you for asking."
+        assert (
+            result.choices[0].message.content
+            == "Hello! I'm doing well, thank you for asking."
+        )
 
     def test_get_supported_openai_params_includes_tools(self):
         """
@@ -396,7 +414,7 @@ class TestSnowflakeAuthenticationHeaders:
         config = SnowflakeConfig()
         headers = {}
 
-        with pytest.raises(ValueError, match="Missing Snowflake JWT or PAT key"):
+        with pytest.raises(ValueError, match="Missing Snowflake JWT key"):
             config.validate_environment(
                 headers=headers,
                 model="mistral-7b",

@@ -53,7 +53,6 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         responses_api_request: ResponsesAPIOptionalRequestParams,
         custom_llm_provider: Optional[str] = None,
         litellm_metadata: Optional[dict] = None,
-        litellm_completion_request: Optional[dict] = None,
     ):
         self.model: str = model
         self.litellm_custom_stream_wrapper: litellm.CustomStreamWrapper = (
@@ -65,7 +64,6 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         )
         self.custom_llm_provider: Optional[str] = custom_llm_provider
         self.litellm_metadata: Optional[dict] = litellm_metadata or {}
-        self.litellm_completion_request: dict = litellm_completion_request or {}
         self.collected_chat_completion_chunks: List[ModelResponseStream] = []
         self.finished: bool = False
         self.litellm_logging_obj = litellm_custom_stream_wrapper.logging_obj
@@ -81,18 +79,6 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
             Union[ModelResponse, TextCompletionResponse]
         ] = None
         self.final_text: str = ""
-
-    def _encode_chunk_id(self, chunk_id: str) -> str:
-        """
-        Encode chunk ID using the same format as non-streaming responses.
-        """
-        model_info = self.litellm_metadata.get("model_info", {}) or {}
-        model_id = model_info.get("id")
-        return ResponsesAPIRequestUtils._build_responses_api_response_id(
-            custom_llm_provider=self.custom_llm_provider,
-            model_id=model_id,
-            response_id=chunk_id,
-        )
 
     def _default_response_created_event_data(self) -> dict:
         response_created_event_data = {
@@ -333,7 +319,9 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
                 raise StopAsyncIteration
 
         self.finished = self.is_stream_finished()
-        response_completed_event = self._emit_response_completed_event()
+        response_completed_event = self._emit_response_completed_event(
+            self.litellm_model_response
+        )
         if response_completed_event:
             return response_completed_event
         else:
@@ -369,14 +357,7 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
                     if response_api_chunk:
                         return response_api_chunk
                 except StopAsyncIteration:
-                    self.finished = True
-                    response_completed_event = self._emit_response_completed_event()
-                    if response_completed_event:
-                        # PATCH: Store session in Redis for streaming responses
-                        await self._store_session_in_redis(response_completed_event)
-                        return response_completed_event
-                    else:
-                        raise StopAsyncIteration
+                    return self.common_done_event_logic(sync_mode=False)
 
         except Exception as e:
             # Handle HTTP errors
@@ -461,26 +442,24 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         ):
             reasoning_content = chunk.choices[0].delta.reasoning_content
 
-            encoded_chunk_id = self._encode_chunk_id(chunk.id)
             return ReasoningSummaryTextDeltaEvent(
                 type=ResponsesAPIStreamEvents.REASONING_SUMMARY_TEXT_DELTA,
-                item_id=f"{encoded_chunk_id}_reasoning",
+                item_id=f"rs_{hash(str(reasoning_content))}",
                 output_index=0,
                 delta=reasoning_content,
             )
-
+        
         # Priority 2: Handle text deltas
         delta_content = self._get_delta_string_from_streaming_choices(chunk.choices)
         if delta_content:
-            encoded_chunk_id = self._encode_chunk_id(chunk.id)
             return OutputTextDeltaEvent(
                 type=ResponsesAPIStreamEvents.OUTPUT_TEXT_DELTA,
-                item_id=encoded_chunk_id,
+                item_id=chunk.id,
                 output_index=0,
                 content_index=0,
                 delta=delta_content,
             )
-
+        
         # Priority 3: If we have pending annotation events, emit the next one
         # This happens when the current chunk has no text/reasoning content
         if hasattr(self, '_pending_annotation_events') and self._pending_annotation_events:
@@ -503,11 +482,11 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         chat_completion_delta: ChatCompletionDelta = choice.delta
         return chat_completion_delta.content or ""
 
-    def _emit_response_completed_event(self) -> Optional[ResponseCompletedEvent]:
-        litellm_model_response: Optional[
-            Union[ModelResponse, TextCompletionResponse]
-        ] = stream_chunk_builder(chunks=self.collected_chat_completion_chunks)
-        if litellm_model_response and isinstance(litellm_model_response, ModelResponse):
+    def _emit_response_completed_event(
+        self, litellm_model_response: ModelResponse
+    ) -> Optional[ResponseCompletedEvent]:
+
+        if litellm_model_response:
             # Add cost to usage object if include_cost_in_streaming_usage is True
             if (
                 litellm.include_cost_in_streaming_usage
@@ -537,60 +516,9 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
                 litellm_metadata=self.litellm_metadata,
             )
 
-            responses_api_response = LiteLLMCompletionResponsesConfig.transform_chat_completion_response_to_responses_api_response(
-                request_input=self.request_input,
-                chat_completion_response=litellm_model_response,
-                responses_api_request=self.responses_api_request,
-            )
-            
-            # PATCH: Store session immediately in Redis for streaming responses
-            # This ensures the session is available for subsequent requests
-            if responses_api_response.id:
-                # Store the completed event to be used in async context
-                self.response_completed_event = ResponseCompletedEvent(
-                    type=ResponsesAPIStreamEvents.RESPONSE_COMPLETED,
-                    response=responses_api_response,
-                )
-                return self.response_completed_event
-            
             return ResponseCompletedEvent(
                 type=ResponsesAPIStreamEvents.RESPONSE_COMPLETED,
-                response=responses_api_response,
+                response=encoded_response,
             )
         else:
             return None
-    
-    async def _store_session_in_redis(self, response_completed_event: ResponseCompletedEvent):
-        """
-        PATCH: Store session in Redis for streaming responses
-        This fixes the issue where Redis sessions weren't created for streaming requests
-        """
-        try:
-            response = response_completed_event.response
-            if response and response.id:
-                # Get the session ID from metadata or from the completion request
-                session_id = (self.litellm_completion_request.get("litellm_trace_id") or 
-                             self.litellm_metadata.get("litellm_trace_id") or 
-                             str(uuid.uuid4()))
-                
-                # Get the full messages from the completion request (includes history)
-                messages = self.litellm_completion_request.get("messages", []).copy()
-                
-                # Add the assistant response to the messages
-                if response.output and len(response.output) > 0:
-                    output_item = response.output[0]
-                    if output_item.content and len(output_item.content) > 0:
-                        content_item = output_item.content[0]
-                        if hasattr(content_item, "text"):
-                            messages.append({"role": "assistant", "content": content_item.text})
-                
-                # Store session in Redis
-                await LiteLLMCompletionResponsesConfig._patch_store_session_in_redis(
-                    response_id=response.id,
-                    session_id=session_id,
-                    messages=messages
-                )
-        except Exception:
-            # Silently fail - Redis storage is a patch for timing issues
-            # and shouldn't break the streaming response
-            pass
