@@ -7,6 +7,7 @@ import os
 import copy
 import json
 
+import pytest
 from unittest.mock import patch
 from unittest.mock import MagicMock
 
@@ -413,7 +414,7 @@ class TestSnowflakeAuthenticationHeaders:
         config = SnowflakeConfig()
         headers = {}
 
-        with pytest.raises(ValueError, match="Missing Snowflake JWT or PAT key"):
+        with pytest.raises(ValueError, match="Missing Snowflake JWT key"):
             config.validate_environment(
                 headers=headers,
                 model="mistral-7b",

@@ -2,6 +2,8 @@
 Handles transforming from Responses API -> LiteLLM completion  (Chat Completion API)
 """
 
+import json
+from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union, cast
 
 from openai.types.responses.tool_param import FunctionToolParam
@@ -12,6 +14,10 @@ from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLogging
 from litellm.responses.litellm_completion_transformation.session_handler import (
     ResponsesSessionHandler,
 )
+
+# Enterprise session handler - initialized to the standard handler
+# Can be replaced with enterprise-specific implementation
+_ENTERPRISE_ResponsesSessionHandler = ResponsesSessionHandler
 from litellm.types.llms.openai import (
     AllMessageValues,
     ChatCompletionImageObject,

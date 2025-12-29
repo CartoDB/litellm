@@ -228,28 +228,24 @@ class ChunkProcessor:
             if tool_call_data["id"] and tool_call_data["name"]:
                 raw_arguments = "".join(tool_call_data["arguments"])
                 combined_arguments = _validate_and_repair_tool_arguments(raw_arguments)
-                tool_calls_list.append(
-                    ChatCompletionMessageToolCall(
-                        id=tool_call_data["id"],
-                        function=Function(
-                            arguments=combined_arguments,
-                            name=tool_call_data["name"],
-                        ),
-                        type=tool_call_data["type"] or "function",
-                    )
+
+                # Create the Function object
+                function = Function(
+                    arguments=combined_arguments,
+                    name=tool_call_data["name"],
                 )
-                
+
                 # Prepare params for ChatCompletionMessageToolCall
-                tool_call_params = {
+                tool_call_params: Dict[str, Any] = {
                     "id": tool_call_data["id"],
                     "function": function,
                     "type": tool_call_data["type"] or "function",
                 }
-                
+
                 # Add provider_specific_fields if present (for thought signatures in Gemini 3)
                 if tool_call_data.get("provider_specific_fields"):
                     tool_call_params["provider_specific_fields"] = tool_call_data["provider_specific_fields"]
-                
+
                 tool_call = ChatCompletionMessageToolCall(**tool_call_params)
                 tool_calls_list.append(tool_call)
 
