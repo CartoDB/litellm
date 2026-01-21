@@ -611,10 +611,9 @@ class DatabricksChatResponseIterator(BaseModelResponseIterator):
                     for _tc in tool_calls:
                         if _tc.get("function", {}).get("arguments") == "{}":
                             _tc["function"]["arguments"] = ""  # avoid invalid json
-                if isinstance(choice["delta"]["content"], list) and (
-                    content := choice["delta"]["content"]
-                ):
-                    if citations := content[0].get("citations"):
+                delta_content = choice["delta"].get("content")
+                if isinstance(delta_content, list) and delta_content:
+                    if citations := delta_content[0].get("citations"):
                         # TODO: Databricks delta does not include supported text or chunk type.
                         # Add either here once Databricks supports it to enable citation linkage.
                         choice["delta"].setdefault("provider_specific_fields", {})[
