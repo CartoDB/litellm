@@ -1,0 +1,175 @@
+name: CARTO - n8n Webhook Notifier
+
+# Triggers when CI workflows complete on upstream-sync branches
+on:
+  workflow_run:
+    workflows:
+      - "LiteLLM Mock Tests (folder - tests/test_litellm)"
+      - "CARTO - Deploy Docker Image (CI)"
+      - "LiteLLM Linting"
+    types:
+      - completed
+    branches:
+      - 'upstream-sync/**'
+
+  # Also trigger on releases
+  release:
+    types:
+      - published
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  notify-upstream-sync-ready:
+    name: Notify n8n - Upstream Sync PR Ready
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      - name: Check if PR is fully ready
+        id: check-ready
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+
+          BRANCH="${{ github.event.workflow_run.head_branch }}"
+          echo "::group::Checking if PR from ${BRANCH} is ready"
+
+          # Find PR for this branch
+          PR_JSON=$(gh pr list \
+            --repo ${{ github.repository }} \
+            --head "${BRANCH}" \
+            --base "carto/main" \
+            --json number,mergeable,labels,headRefOid,title,url \
+            --jq '.[0]')
+
+          if [[ -z "${PR_JSON}" || "${PR_JSON}" == "null" ]]; then
+            echo "[Notifier] No PR found for branch ${BRANCH}"
+            echo "is-ready=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          PR_NUMBER=$(echo "${PR_JSON}" | jq -r '.number')
+          MERGEABLE=$(echo "${PR_JSON}" | jq -r '.mergeable')
+          PR_URL=$(echo "${PR_JSON}" | jq -r '.url')
+          PR_TITLE=$(echo "${PR_JSON}" | jq -r '.title')
+          HEAD_SHA=$(echo "${PR_JSON}" | jq -r '.headRefOid')
+          LABELS=$(echo "${PR_JSON}" | jq -r '.labels[].name' | tr '\n' ',' | sed 's/,$//')
+
+          echo "[Notifier] PR #${PR_NUMBER}: ${PR_TITLE}"
+          echo "[Notifier] Mergeable: ${MERGEABLE}"
+          echo "[Notifier] Labels: ${LABELS}"
+
+          # Check 1: Must have upstream-sync label
+          if [[ ! "${LABELS}" =~ "upstream-sync" ]]; then
+            echo "[Notifier] Missing upstream-sync label"
+            echo "is-ready=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Check 2: Must be mergeable (no conflicts)
+          if [[ "${MERGEABLE}" != "MERGEABLE" ]]; then
+            echo "[Notifier] PR not mergeable (status: ${MERGEABLE})"
+            echo "is-ready=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Check 3: All required checks must pass
+          FAILED_CHECKS=$(gh pr checks ${PR_NUMBER} \
+            --repo ${{ github.repository }} \
+            --json name,state \
+            --jq '[.[] | select(.state == "FAILURE" or .state == "PENDING")] | length')
+
+          if [[ "${FAILED_CHECKS}" -gt 0 ]]; then
+            echo "[Notifier] ${FAILED_CHECKS} checks still failing/pending"
+            echo "is-ready=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "[Notifier] PR is ready! All checks passed, no conflicts"
+          echo "is-ready=true" >> $GITHUB_OUTPUT
+          echo "pr-number=${PR_NUMBER}" >> $GITHUB_OUTPUT
+          echo "pr-url=${PR_URL}" >> $GITHUB_OUTPUT
+          echo "pr-title=${PR_TITLE}" >> $GITHUB_OUTPUT
+          echo "branch=${BRANCH}" >> $GITHUB_OUTPUT
+
+          # Extract version from branch name
+          VERSION=$(echo "${BRANCH}" | sed 's|upstream-sync/||')
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+          echo "::endgroup::"
+
+      - name: Call n8n webhook
+        if: steps.check-ready.outputs.is-ready == 'true'
+        run: |
+          set -eu
+
+          echo "::group::Calling n8n webhook"
+
+          PAYLOAD=$(cat <<EOF
+          {
+            "event_type": "upstream_sync_ready",
+            "pr_number": ${{ steps.check-ready.outputs.pr-number }},
+            "pr_url": "${{ steps.check-ready.outputs.pr-url }}",
+            "pr_title": "${{ steps.check-ready.outputs.pr-title }}",
+            "branch": "${{ steps.check-ready.outputs.branch }}",
+            "version": "${{ steps.check-ready.outputs.version }}",
+            "repository": "${{ github.repository }}",
+            "image_tag": "ghcr.io/${{ github.repository }}-non_root:${{ steps.check-ready.outputs.version }}"
+          }
+          EOF
+          )
+
+          echo "[Notifier] Sending payload to n8n..."
+          echo "${PAYLOAD}" | jq .
+
+          curl -X POST \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.N8N_WEBHOOK_TOKEN }}" \
+            -d "${PAYLOAD}" \
+            "${{ secrets.N8N_WEBHOOK_URL }}" \
+            --fail --silent --show-error
+
+          echo "[Notifier] Webhook called successfully"
+          echo "::endgroup::"
+
+  notify-release:
+    name: Notify n8n - Release Created
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+
+    steps:
+      - name: Call n8n webhook for release
+        run: |
+          set -eu
+
+          echo "::group::Calling n8n webhook for release"
+
+          PAYLOAD=$(cat <<EOF
+          {
+            "event_type": "release",
+            "tag": "${{ github.event.release.tag_name }}",
+            "release_url": "${{ github.event.release.html_url }}",
+            "release_name": "${{ github.event.release.name }}",
+            "repository": "${{ github.repository }}",
+            "image_tag": "ghcr.io/${{ github.repository }}-non_root:${{ github.event.release.tag_name }}",
+            "image_stable": "ghcr.io/${{ github.repository }}-non_root:carto-stable"
+          }
+          EOF
+          )
+
+          echo "[Notifier] Sending release payload to n8n..."
+          echo "${PAYLOAD}" | jq .
+
+          curl -X POST \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.N8N_WEBHOOK_TOKEN }}" \
+            -d "${PAYLOAD}" \
+            "${{ secrets.N8N_WEBHOOK_URL }}" \
+            --fail --silent --show-error
+
+          echo "[Notifier] Release webhook called successfully"
+          echo "::endgroup::"
