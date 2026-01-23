@@ -112,13 +112,8 @@ jobs:
           PAYLOAD=$(cat <<EOF
           {
             "event_type": "upstream_sync_ready",
-            "pr_number": ${{ steps.check-ready.outputs.pr-number }},
-            "pr_url": "${{ steps.check-ready.outputs.pr-url }}",
-            "pr_title": "${{ steps.check-ready.outputs.pr-title }}",
-            "branch": "${{ steps.check-ready.outputs.branch }}",
             "version": "${{ steps.check-ready.outputs.version }}",
-            "repository": "${{ github.repository }}",
-            "image_tag": "ghcr.io/${{ github.repository }}-non_root:${{ steps.check-ready.outputs.version }}"
+            "pr_url": "${{ steps.check-ready.outputs.pr-url }}"
           }
           EOF
           )
@@ -151,12 +146,8 @@ jobs:
           PAYLOAD=$(cat <<EOF
           {
             "event_type": "release",
-            "tag": "${{ github.event.release.tag_name }}",
-            "release_url": "${{ github.event.release.html_url }}",
-            "release_name": "${{ github.event.release.name }}",
-            "repository": "${{ github.repository }}",
-            "image_tag": "ghcr.io/${{ github.repository }}-non_root:${{ github.event.release.tag_name }}",
-            "image_stable": "ghcr.io/${{ github.repository }}-non_root:carto-stable"
+            "version": "${{ github.event.release.tag_name }}",
+            "release_url": "${{ github.event.release.html_url }}"
           }
           EOF
           )
