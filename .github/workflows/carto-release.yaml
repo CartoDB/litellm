@@ -198,6 +198,9 @@ jobs:
 
       - name: Calculate next CARTO version
         id: calc-version
+        env:
+          # PAT with read:org scope needed to fetch org members list
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
         run: |
           UPSTREAM_VERSION="${{ steps.detect-upstream.outputs.upstream_version }}"
           LATEST_TAG="${{ steps.get-latest-tag.outputs.latest_tag }}"
