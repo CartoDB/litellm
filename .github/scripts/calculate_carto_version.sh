@@ -28,11 +28,20 @@
 #   Prints the next version tag (e.g., "v1.79.1-carto.1.7.2")
 #   Exits 1 on error
 #
+# Note:
+#   Uses GitHub API to determine org membership. Requires `gh` CLI authenticated.
+#   Commits are counted if the author is a CartoDB org member on GitHub.
+#
 
 set -euo pipefail
 
 LAST_TAG="${1:-}"
 UPSTREAM_VERSION="${2:-}"
+
+# Repository info (can be overridden via environment)
+GITHUB_REPO="${GITHUB_REPOSITORY:-CartoDB/litellm}"
+GITHUB_ORG="${GITHUB_ORG:-CartoDB}"
+GITHUB_BRANCH="${GITHUB_BRANCH:-carto/main}"
 
 # Validation
 if [ -z "$UPSTREAM_VERSION" ]; then
@@ -43,38 +52,59 @@ fi
 
 echo "::group::Calculating CARTO version" >&2
 
+# Fetch CartoDB org members (cached for the script duration)
+echo "Fetching ${GITHUB_ORG} org members..." >&2
+ORG_MEMBERS=$(gh api "orgs/${GITHUB_ORG}/members" --paginate --jq '.[].login' 2>/dev/null | tr '\n' '|' | sed 's/|$//')
+
+if [ -z "$ORG_MEMBERS" ]; then
+  echo "Warning: Could not fetch org members, falling back to known bots" >&2
+  # Fallback: include known automation accounts
+  ORG_MEMBERS="Cartofante|github-actions"
+fi
+
+echo "Org members pattern: ${ORG_MEMBERS:0:100}..." >&2
+
+# Function to get commits from GitHub API and filter by org membership
+get_carto_commits() {
+  local since_tag="$1"
+  local commits_json
+  local filtered_commits=""
+
+  if [ -z "$since_tag" ]; then
+    # First release: get all commits on the branch
+    echo "Fetching all commits on ${GITHUB_BRANCH}..." >&2
+    commits_json=$(gh api "repos/${GITHUB_REPO}/commits?sha=${GITHUB_BRANCH}&per_page=100" --paginate 2>/dev/null)
+  else
+    # Get commits since last tag using compare API
+    echo "Fetching commits since ${since_tag}..." >&2
+    commits_json=$(gh api "repos/${GITHUB_REPO}/compare/${since_tag}...${GITHUB_BRANCH}" --jq '.commits' 2>/dev/null)
+  fi
+
+  # Process commits: filter by org membership, exclude merges and upstream syncs
+  # Output format: "sha message" for each qualifying commit
+  echo "$commits_json" | jq -r '.[] |
+    select(.author.login != null) |
+    select(.commit.message | test("^Merge"; "i") | not) |
+    select(.commit.message | test("sync:|merge upstream"; "i") | not) |
+    "\(.author.login)|\(.sha[0:7])|\(.commit.message | split("\n")[0])"
+  ' 2>/dev/null | while IFS='|' read -r author sha message; do
+    # Check if author is an org member
+    if echo "$author" | grep -qE "^(${ORG_MEMBERS})$"; then
+      echo "${sha} ${message}"
+    fi
+  done
+}
+
 # Initialize version counters
 if [ -z "$LAST_TAG" ]; then
   echo "First CARTO release - analyzing all commits since fork" >&2
-
-  # Get all CARTO-specific commits (exclude upstream syncs and merges)
-  # Count commits from CARTO team (@carto.com or @cartodb.com)
-  # This includes both humans and automation (Cartofante)
-  # Upstream syncs are excluded via grep pattern (sync:, Merge)
-  # Only count commits that touch LiteLLM code (exclude CI/Docker/docs)
-  # Analyze ALL commits in carto/main branch (accumulative count)
-  COMMITS=$(git log HEAD --oneline --no-merges --reverse \
-    --author="@carto.com" --author="@cartodb.com" \
-    -- litellm/ tests/ pyproject.toml setup.py \
-    2>/dev/null | \
-    grep -vE "(sync:|Merge|merge upstream)" || true)
-
+  COMMITS=$(get_carto_commits "")
   CURRENT_MAJOR=1
   CURRENT_MINOR=0
   CURRENT_PATCH=0
 else
   echo "Analyzing commits since: ${LAST_TAG}" >&2
-
-  # Get commits since last release
-  # Count commits from CARTO team (@carto.com or @cartodb.com)
-  # This includes both humans and automation (Cartofante)
-  # Upstream syncs are excluded via grep pattern (sync:, Merge)
-  # Only count commits that touch LiteLLM code (exclude CI/Docker/docs)
-  COMMITS=$(git log ${LAST_TAG}..HEAD --oneline --no-merges \
-    --author="@carto.com" --author="@cartodb.com" \
-    -- litellm/ tests/ pyproject.toml setup.py \
-    2>/dev/null | \
-    grep -vE "(sync:|Merge|merge upstream)" || true)
+  COMMITS=$(get_carto_commits "$LAST_TAG")
 
   # Extract current CARTO version from tag (format: v1.79.1-carto.1.7.1)
   CARTO_VERSION=$(echo "$LAST_TAG" | sed -E 's/.*-carto\.([0-9]+\.[0-9]+\.[0-9]+)/\1/')
@@ -105,18 +135,19 @@ else
       continue
     fi
 
-    if echo "$commit" | grep -qiE "BREAKING CHANGE:|breaking:|major:"; then
+    # Conventional commit patterns (with optional scope): feat(scope): or feat:
+    if echo "$commit" | grep -qiE "BREAKING CHANGE:|breaking(\([^)]*\))?:|major(\([^)]*\))?:"; then
       BREAKING_COUNT=$((BREAKING_COUNT + 1))
       CURRENT_MAJOR=$((CURRENT_MAJOR + 1))
       CURRENT_MINOR=0
       CURRENT_PATCH=0
       echo "  [MAJOR] $commit" >&2
-    elif echo "$commit" | grep -qiE "feat:|feature:"; then
+    elif echo "$commit" | grep -qiE "feat(\([^)]*\))?:|feature(\([^)]*\))?:"; then
       FEAT_COUNT=$((FEAT_COUNT + 1))
       CURRENT_MINOR=$((CURRENT_MINOR + 1))
       CURRENT_PATCH=0
       echo "  [MINOR] $commit" >&2
-    elif echo "$commit" | grep -qiE "fix:|bugfix:"; then
+    elif echo "$commit" | grep -qiE "fix(\([^)]*\))?:|bugfix(\([^)]*\))?:"; then
       FIX_COUNT=$((FIX_COUNT + 1))
       CURRENT_PATCH=$((CURRENT_PATCH + 1))
       echo "  [PATCH] $commit" >&2
