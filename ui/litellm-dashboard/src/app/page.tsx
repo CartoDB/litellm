@@ -8,11 +8,13 @@ import AdminPanel from "@/components/admins";
 import AgentsPanel from "@/components/agents";
 import BudgetPanel from "@/components/budgets/budget_panel";
 import CacheDashboard from "@/components/cache_dashboard";
+import ClaudeCodePluginsPanel from "@/components/claude_code_plugins";
 import { fetchTeams } from "@/components/common_components/fetch_teams";
 import LoadingScreen from "@/components/common_components/LoadingScreen";
 import { CostTrackingSettings } from "@/components/CostTrackingSettings";
 import GeneralSettings from "@/components/general_settings";
 import GuardrailsPanel from "@/components/guardrails";
+import PoliciesPanel from "@/components/policies";
 import { Team } from "@/components/key_team_helpers/key_list";
 import { MCPServers } from "@/components/mcp_tools";
 import ModelHubTable from "@/components/AIHub/ModelHubTable";
@@ -471,6 +473,8 @@ export default function CreateKeyPage() {
                   <BudgetPanel accessToken={accessToken} />
                 ) : page == "guardrails" ? (
                   <GuardrailsPanel accessToken={accessToken} userRole={userRole} />
+                ) : page == "policies" ? (
+                  <PoliciesPanel accessToken={accessToken} userRole={userRole} />
                 ) : page == "agents" ? (
                   <AgentsPanel accessToken={accessToken} userRole={userRole} />
                 ) : page == "prompts" ? (
@@ -530,6 +534,8 @@ export default function CreateKeyPage() {
                   <SearchTools accessToken={accessToken} userRole={userRole} userID={userID} />
                 ) : page == "tag-management" ? (
                   <TagManagement accessToken={accessToken} userRole={userRole} userID={userID} />
+                ) : page == "claude-code-plugins" ? (
+                  <ClaudeCodePluginsPanel accessToken={accessToken} userRole={userRole} />
                 ) : page == "vector-stores" ? (
                   <VectorStoreManagement accessToken={accessToken} userRole={userRole} userID={userID} />
                 ) : page == "new_usage" ? (

@@ -3,6 +3,7 @@ import useAuthorized from "@/app/(dashboard)/hooks/useAuthorized";
 import {
   ApiOutlined,
   AppstoreOutlined,
+  AuditOutlined,
   BankOutlined,
   BarChartOutlined,
   BgColorsOutlined,
@@ -106,7 +107,7 @@ const Sidebar: React.FC<SidebarProps> = ({ setPage, defaultSelectedKey, collapse
         {
           key: "agents",
           page: "agents",
-          label: <span className="flex items-center gap-4">Agents</span>,
+          label: "Agents",
           icon: <RobotOutlined />,
           roles: rolesWithWriteAccess,
         },
@@ -121,6 +122,17 @@ const Sidebar: React.FC<SidebarProps> = ({ setPage, defaultSelectedKey, collapse
           page: "guardrails",
           label: "Guardrails",
           icon: <SafetyOutlined />,
+          roles: all_admin_roles,
+        },
+        {
+          key: "policies",
+          page: "policies",
+          label: (
+            <span className="flex items-center gap-4">
+              Policies <NewBadge />
+            </span>
+          ),
+          icon: <AuditOutlined />,
           roles: all_admin_roles,
         },
         {
@@ -254,6 +266,13 @@ const Sidebar: React.FC<SidebarProps> = ({ setPage, defaultSelectedKey, collapse
               page: "tag-management",
               label: "Tag Management",
               icon: <TagsOutlined />,
+              roles: all_admin_roles,
+            },
+            {
+              key: "claude-code-plugins",
+              page: "claude-code-plugins",
+              label: "Claude Code Plugins",
+              icon: <ToolOutlined />,
               roles: all_admin_roles,
             },
             {
