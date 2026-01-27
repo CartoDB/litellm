@@ -143,11 +143,10 @@ jobs:
 
           echo "::group::Calling n8n webhook for release"
 
+          # No version needed - cloud-native fetches latest release directly
           PAYLOAD=$(cat <<EOF
           {
-            "event_type": "release",
-            "version": "${{ github.event.release.tag_name }}",
-            "release_url": "${{ github.event.release.html_url }}"
+            "event_type": "release"
           }
           EOF
           )
