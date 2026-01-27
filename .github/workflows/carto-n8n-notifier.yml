@@ -102,8 +102,7 @@ jobs:
 
           # Construct Docker image tag (matching carto-ghcr-deploy.yaml logic)
           # Sanitize branch name: replace / and _ with -
-          BRANCH_TAG=$(echo "${BRANCH}" | sed 's/[/_]/-/g')
-          IMAGE_TAG="ghcr.io/${{ github.repository }}-non_root:${BRANCH_TAG}"
+          IMAGE_TAG=$(echo "${BRANCH}" | sed 's/[/_]/-/g')
           echo "image-tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
           echo "[Notifier] Docker image tag: ${IMAGE_TAG}"
 
@@ -151,15 +150,14 @@ jobs:
 
           echo "::group::Calling n8n webhook for release"
 
-          # Construct image tag from release tag
+          # Use release tag as image tag
           RELEASE_TAG="${{ github.event.release.tag_name }}"
-          IMAGE_TAG="ghcr.io/${{ github.repository }}-non_root:${RELEASE_TAG}"
 
           PAYLOAD=$(cat <<EOF
           {
             "event_type": "release",
             "version": "${RELEASE_TAG}",
-            "image_tag": "${IMAGE_TAG}",
+            "image_tag": "${RELEASE_TAG}",
             "release_url": "${{ github.event.release.html_url }}"
           }
           EOF
