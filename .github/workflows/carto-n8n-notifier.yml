@@ -100,6 +100,13 @@ jobs:
           VERSION=$(echo "${BRANCH}" | sed 's|upstream-sync/||')
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
 
+          # Construct Docker image tag (matching carto-ghcr-deploy.yaml logic)
+          # Sanitize branch name: replace / and _ with -
+          BRANCH_TAG=$(echo "${BRANCH}" | sed 's/[/_]/-/g')
+          IMAGE_TAG="ghcr.io/${{ github.repository }}-non_root:${BRANCH_TAG}"
+          echo "image-tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+          echo "[Notifier] Docker image tag: ${IMAGE_TAG}"
+
           echo "::endgroup::"
 
       - name: Call n8n webhook
@@ -113,6 +120,7 @@ jobs:
           {
             "event_type": "upstream_sync_ready",
             "version": "${{ steps.check-ready.outputs.version }}",
+            "image_tag": "${{ steps.check-ready.outputs.image-tag }}",
             "pr_url": "${{ steps.check-ready.outputs.pr-url }}"
           }
           EOF
@@ -143,10 +151,16 @@ jobs:
 
           echo "::group::Calling n8n webhook for release"
 
-          # No version needed - cloud-native fetches latest release directly
+          # Construct image tag from release tag
+          RELEASE_TAG="${{ github.event.release.tag_name }}"
+          IMAGE_TAG="ghcr.io/${{ github.repository }}-non_root:${RELEASE_TAG}"
+
           PAYLOAD=$(cat <<EOF
           {
-            "event_type": "release"
+            "event_type": "release",
+            "version": "${RELEASE_TAG}",
+            "image_tag": "${IMAGE_TAG}",
+            "release_url": "${{ github.event.release.html_url }}"
           }
           EOF
           )
