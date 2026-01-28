@@ -108,6 +108,81 @@ jobs:
 
           echo "::endgroup::"
 
+      - name: Generate JWT Token
+        if: steps.check-ready.outputs.is-ready == 'true'
+        id: jwt
+        run: |
+          set -eu
+
+          echo "::group::Generating JWT token"
+
+          # Base64url encode function (URL-safe base64 without padding)
+          base64url() {
+            openssl base64 -e | tr -d '=' | tr '/+' '_-' | tr -d '\n'
+          }
+
+          # Write private key to temp file
+          echo "${{ secrets.N8N_JWT_PRIVATE_KEY }}" > /tmp/jwt-key.pem
+
+          # Create JWT header and payload
+          HEADER=$(echo -n '{"alg":"ES256","typ":"JWT"}' | base64url)
+          NOW=$(date +%s)
+          EXP=$((NOW + 300))  # 5 minute expiry
+          PAYLOAD=$(echo -n "{\"iat\":${NOW},\"exp\":${EXP},\"iss\":\"litellm-fork\"}" | base64url)
+
+          # Create signing input
+          SIGNING_INPUT="${HEADER}.${PAYLOAD}"
+
+          # Sign with ES256 and get DER-encoded signature
+          DER_SIG=$(echo -n "${SIGNING_INPUT}" | openssl dgst -sha256 -sign /tmp/jwt-key.pem | xxd -p | tr -d '\n')
+
+          # Parse DER structure to extract R and S values
+          # DER format: 30 <total_len> 02 <r_len> <r_bytes> 02 <s_len> <s_bytes>
+          # We need to convert to raw R||S format (64 bytes total for P-256)
+
+          # Get R length (byte at position 3, 0-indexed)
+          R_LEN=$((16#${DER_SIG:6:2}))
+          R_START=8
+
+          # Handle R with leading zero padding
+          if [[ $R_LEN -eq 33 ]]; then
+            # Skip leading zero byte (33 bytes = 32 + 1 padding)
+            R_HEX=${DER_SIG:$((R_START + 2)):64}
+          else
+            R_HEX=${DER_SIG:${R_START}:$((R_LEN * 2))}
+            # Left-pad with zeros if needed
+            while [[ ${#R_HEX} -lt 64 ]]; do R_HEX="00${R_HEX}"; done
+          fi
+
+          # Calculate S position
+          S_POS=$((R_START + R_LEN * 2 + 2))
+          S_LEN=$((16#${DER_SIG:${S_POS}:2}))
+          S_START=$((S_POS + 2))
+
+          # Handle S with leading zero padding
+          if [[ $S_LEN -eq 33 ]]; then
+            S_HEX=${DER_SIG:$((S_START + 2)):64}
+          else
+            S_HEX=${DER_SIG:${S_START}:$((S_LEN * 2))}
+            while [[ ${#S_HEX} -lt 64 ]]; do S_HEX="00${S_HEX}"; done
+          fi
+
+          # Create raw signature (R||S) and base64url encode
+          RAW_SIG=$(echo -n "${R_HEX}${S_HEX}" | xxd -r -p | base64url)
+
+          # Construct final JWT
+          JWT_TOKEN="${HEADER}.${PAYLOAD}.${RAW_SIG}"
+
+          # Mask token in logs and set output
+          echo "::add-mask::${JWT_TOKEN}"
+          echo "token=${JWT_TOKEN}" >> $GITHUB_OUTPUT
+
+          # Clean up private key
+          rm -f /tmp/jwt-key.pem
+
+          echo "[Notifier] JWT token generated successfully"
+          echo "::endgroup::"
+
       - name: Call n8n webhook
         if: steps.check-ready.outputs.is-ready == 'true'
         run: |
@@ -130,7 +205,7 @@ jobs:
 
           curl -X POST \
             -H "Content-Type: application/json" \
-            -H "Authorization: Bearer ${{ secrets.N8N_WEBHOOK_TOKEN }}" \
+            -H "Authorization: Bearer ${{ steps.jwt.outputs.token }}" \
             -d "${PAYLOAD}" \
             "${{ secrets.N8N_WEBHOOK_URL }}" \
             --fail --silent --show-error
@@ -144,6 +219,66 @@ jobs:
     if: github.event_name == 'release'
 
     steps:
+      - name: Generate JWT Token
+        id: jwt
+        run: |
+          set -eu
+
+          echo "::group::Generating JWT token"
+
+          # Base64url encode function (URL-safe base64 without padding)
+          base64url() {
+            openssl base64 -e | tr -d '=' | tr '/+' '_-' | tr -d '\n'
+          }
+
+          # Write private key to temp file
+          echo "${{ secrets.N8N_JWT_PRIVATE_KEY }}" > /tmp/jwt-key.pem
+
+          # Create JWT header and payload
+          HEADER=$(echo -n '{"alg":"ES256","typ":"JWT"}' | base64url)
+          NOW=$(date +%s)
+          EXP=$((NOW + 300))  # 5 minute expiry
+          PAYLOAD=$(echo -n "{\"iat\":${NOW},\"exp\":${EXP},\"iss\":\"litellm-fork\"}" | base64url)
+
+          # Create signing input
+          SIGNING_INPUT="${HEADER}.${PAYLOAD}"
+
+          # Sign with ES256 and get DER-encoded signature
+          DER_SIG=$(echo -n "${SIGNING_INPUT}" | openssl dgst -sha256 -sign /tmp/jwt-key.pem | xxd -p | tr -d '\n')
+
+          # Parse DER structure to extract R and S values
+          R_LEN=$((16#${DER_SIG:6:2}))
+          R_START=8
+
+          if [[ $R_LEN -eq 33 ]]; then
+            R_HEX=${DER_SIG:$((R_START + 2)):64}
+          else
+            R_HEX=${DER_SIG:${R_START}:$((R_LEN * 2))}
+            while [[ ${#R_HEX} -lt 64 ]]; do R_HEX="00${R_HEX}"; done
+          fi
+
+          S_POS=$((R_START + R_LEN * 2 + 2))
+          S_LEN=$((16#${DER_SIG:${S_POS}:2}))
+          S_START=$((S_POS + 2))
+
+          if [[ $S_LEN -eq 33 ]]; then
+            S_HEX=${DER_SIG:$((S_START + 2)):64}
+          else
+            S_HEX=${DER_SIG:${S_START}:$((S_LEN * 2))}
+            while [[ ${#S_HEX} -lt 64 ]]; do S_HEX="00${S_HEX}"; done
+          fi
+
+          RAW_SIG=$(echo -n "${R_HEX}${S_HEX}" | xxd -r -p | base64url)
+          JWT_TOKEN="${HEADER}.${PAYLOAD}.${RAW_SIG}"
+
+          echo "::add-mask::${JWT_TOKEN}"
+          echo "token=${JWT_TOKEN}" >> $GITHUB_OUTPUT
+
+          rm -f /tmp/jwt-key.pem
+
+          echo "[Notifier] JWT token generated successfully"
+          echo "::endgroup::"
+
       - name: Call n8n webhook for release
         run: |
           set -eu
@@ -168,7 +303,7 @@ jobs:
 
           curl -X POST \
             -H "Content-Type: application/json" \
-            -H "Authorization: Bearer ${{ secrets.N8N_WEBHOOK_TOKEN }}" \
+            -H "Authorization: Bearer ${{ steps.jwt.outputs.token }}" \
             -d "${PAYLOAD}" \
             "${{ secrets.N8N_WEBHOOK_URL }}" \
             --fail --silent --show-error
