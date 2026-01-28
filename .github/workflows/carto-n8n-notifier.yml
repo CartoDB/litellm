@@ -1,0 +1,450 @@
+name: CARTO - n8n Webhook Notifier
+
+# Triggers when CI workflows complete on upstream-sync branches
+on:
+  workflow_run:
+    workflows:
+      - "LiteLLM Mock Tests (folder - tests/test_litellm)"
+      - "CARTO - Deploy Docker Image (CI)"
+      - "LiteLLM Linting"
+    types:
+      - completed
+    branches:
+      - 'upstream-sync/**'
+
+  # Also trigger on releases
+  release:
+    types:
+      - published
+
+  # Manual trigger for testing
+  workflow_dispatch:
+    inputs:
+      test_event:
+        description: 'Event type to test'
+        required: true
+        type: choice
+        options:
+          - upstream_sync_ready
+          - release
+      test_version:
+        description: 'Version/tag to use in test payload'
+        required: false
+        default: 'v1.79.1-test'
+      test_image_tag:
+        description: 'Docker image tag to use in test payload'
+        required: false
+        default: 'upstream-sync-v1.79.1-test'
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  notify-upstream-sync-ready:
+    name: Notify n8n - Upstream Sync PR Ready
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      - name: Check if PR is fully ready
+        id: check-ready
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+
+          BRANCH="${{ github.event.workflow_run.head_branch }}"
+          echo "::group::Checking if PR from ${BRANCH} is ready"
+
+          # Find PR for this branch
+          PR_JSON=$(gh pr list \
+            --repo ${{ github.repository }} \
+            --head "${BRANCH}" \
+            --base "carto/main" \
+            --json number,mergeable,labels,headRefOid,title,url \
+            --jq '.[0]')
+
+          if [[ -z "${PR_JSON}" || "${PR_JSON}" == "null" ]]; then
+            echo "[Notifier] No PR found for branch ${BRANCH}"
+            echo "is-ready=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          PR_NUMBER=$(echo "${PR_JSON}" | jq -r '.number')
+          MERGEABLE=$(echo "${PR_JSON}" | jq -r '.mergeable')
+          PR_URL=$(echo "${PR_JSON}" | jq -r '.url')
+          PR_TITLE=$(echo "${PR_JSON}" | jq -r '.title')
+          HEAD_SHA=$(echo "${PR_JSON}" | jq -r '.headRefOid')
+          LABELS=$(echo "${PR_JSON}" | jq -r '.labels[].name' | tr '\n' ',' | sed 's/,$//')
+
+          echo "[Notifier] PR #${PR_NUMBER}: ${PR_TITLE}"
+          echo "[Notifier] Mergeable: ${MERGEABLE}"
+          echo "[Notifier] Labels: ${LABELS}"
+
+          # Check 1: Must have upstream-sync label
+          if [[ ! "${LABELS}" =~ "upstream-sync" ]]; then
+            echo "[Notifier] Missing upstream-sync label"
+            echo "is-ready=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Check 2: Must be mergeable (no conflicts)
+          if [[ "${MERGEABLE}" != "MERGEABLE" ]]; then
+            echo "[Notifier] PR not mergeable (status: ${MERGEABLE})"
+            echo "is-ready=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Check 3: All required checks must pass
+          FAILED_CHECKS=$(gh pr checks ${PR_NUMBER} \
+            --repo ${{ github.repository }} \
+            --json name,state \
+            --jq '[.[] | select(.state == "FAILURE" or .state == "PENDING")] | length')
+
+          if [[ "${FAILED_CHECKS}" -gt 0 ]]; then
+            echo "[Notifier] ${FAILED_CHECKS} checks still failing/pending"
+            echo "is-ready=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "[Notifier] PR is ready! All checks passed, no conflicts"
+          echo "is-ready=true" >> $GITHUB_OUTPUT
+          echo "pr-number=${PR_NUMBER}" >> $GITHUB_OUTPUT
+          echo "pr-url=${PR_URL}" >> $GITHUB_OUTPUT
+          echo "pr-title=${PR_TITLE}" >> $GITHUB_OUTPUT
+          echo "branch=${BRANCH}" >> $GITHUB_OUTPUT
+
+          # Extract version from branch name
+          VERSION=$(echo "${BRANCH}" | sed 's|upstream-sync/||')
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+          # Construct Docker image tag (matching carto-ghcr-deploy.yaml logic)
+          # Sanitize branch name: replace / and _ with -
+          IMAGE_TAG=$(echo "${BRANCH}" | sed 's/[/_]/-/g')
+          echo "image-tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+          echo "[Notifier] Docker image tag: ${IMAGE_TAG}"
+
+          echo "::endgroup::"
+
+      - name: Generate JWT Token
+        if: steps.check-ready.outputs.is-ready == 'true'
+        id: jwt
+        run: |
+          set -eu
+
+          echo "::group::Generating JWT token"
+
+          # Base64url encode function (URL-safe base64 without padding)
+          base64url() {
+            openssl base64 -e | tr -d '=' | tr '/+' '_-' | tr -d '\n'
+          }
+
+          # Write private key to temp file
+          echo "${{ secrets.N8N_JWT_PRIVATE_KEY }}" > /tmp/jwt-key.pem
+
+          # Create JWT header and payload
+          HEADER=$(echo -n '{"alg":"ES256","typ":"JWT"}' | base64url)
+          NOW=$(date +%s)
+          EXP=$((NOW + 300))  # 5 minute expiry
+          PAYLOAD=$(echo -n "{\"iat\":${NOW},\"exp\":${EXP},\"iss\":\"litellm-fork\"}" | base64url)
+
+          # Create signing input
+          SIGNING_INPUT="${HEADER}.${PAYLOAD}"
+
+          # Sign with ES256 and get DER-encoded signature
+          DER_SIG=$(echo -n "${SIGNING_INPUT}" | openssl dgst -sha256 -sign /tmp/jwt-key.pem | xxd -p | tr -d '\n')
+
+          # Parse DER structure to extract R and S values
+          # DER format: 30 <total_len> 02 <r_len> <r_bytes> 02 <s_len> <s_bytes>
+          # We need to convert to raw R||S format (64 bytes total for P-256)
+
+          # Get R length (byte at position 3, 0-indexed)
+          R_LEN=$((16#${DER_SIG:6:2}))
+          R_START=8
+
+          # Handle R with leading zero padding
+          if [[ $R_LEN -eq 33 ]]; then
+            # Skip leading zero byte (33 bytes = 32 + 1 padding)
+            R_HEX=${DER_SIG:$((R_START + 2)):64}
+          else
+            R_HEX=${DER_SIG:${R_START}:$((R_LEN * 2))}
+            # Left-pad with zeros if needed
+            while [[ ${#R_HEX} -lt 64 ]]; do R_HEX="00${R_HEX}"; done
+          fi
+
+          # Calculate S position
+          S_POS=$((R_START + R_LEN * 2 + 2))
+          S_LEN=$((16#${DER_SIG:${S_POS}:2}))
+          S_START=$((S_POS + 2))
+
+          # Handle S with leading zero padding
+          if [[ $S_LEN -eq 33 ]]; then
+            S_HEX=${DER_SIG:$((S_START + 2)):64}
+          else
+            S_HEX=${DER_SIG:${S_START}:$((S_LEN * 2))}
+            while [[ ${#S_HEX} -lt 64 ]]; do S_HEX="00${S_HEX}"; done
+          fi
+
+          # Create raw signature (R||S) and base64url encode
+          RAW_SIG=$(echo -n "${R_HEX}${S_HEX}" | xxd -r -p | base64url)
+
+          # Construct final JWT
+          JWT_TOKEN="${HEADER}.${PAYLOAD}.${RAW_SIG}"
+
+          # Mask token in logs and set output
+          echo "::add-mask::${JWT_TOKEN}"
+          echo "token=${JWT_TOKEN}" >> $GITHUB_OUTPUT
+
+          # Clean up private key
+          rm -f /tmp/jwt-key.pem
+
+          echo "[Notifier] JWT token generated successfully"
+          echo "::endgroup::"
+
+      - name: Call n8n webhook
+        if: steps.check-ready.outputs.is-ready == 'true'
+        run: |
+          set -eu
+
+          echo "::group::Calling n8n webhook"
+
+          PAYLOAD=$(cat <<EOF
+          {
+            "event_type": "upstream_sync_ready",
+            "version": "${{ steps.check-ready.outputs.version }}",
+            "image_tag": "${{ steps.check-ready.outputs.image-tag }}",
+            "pr_url": "${{ steps.check-ready.outputs.pr-url }}"
+          }
+          EOF
+          )
+
+          echo "[Notifier] Sending payload to n8n..."
+          echo "${PAYLOAD}" | jq .
+
+          curl -X POST \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ steps.jwt.outputs.token }}" \
+            -d "${PAYLOAD}" \
+            "${{ secrets.N8N_WEBHOOK_URL }}" \
+            --fail --silent --show-error
+
+          echo "[Notifier] Webhook called successfully"
+          echo "::endgroup::"
+
+  notify-release:
+    name: Notify n8n - Release Created
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+
+    steps:
+      - name: Generate JWT Token
+        id: jwt
+        run: |
+          set -eu
+
+          echo "::group::Generating JWT token"
+
+          # Base64url encode function (URL-safe base64 without padding)
+          base64url() {
+            openssl base64 -e | tr -d '=' | tr '/+' '_-' | tr -d '\n'
+          }
+
+          # Write private key to temp file
+          echo "${{ secrets.N8N_JWT_PRIVATE_KEY }}" > /tmp/jwt-key.pem
+
+          # Create JWT header and payload
+          HEADER=$(echo -n '{"alg":"ES256","typ":"JWT"}' | base64url)
+          NOW=$(date +%s)
+          EXP=$((NOW + 300))  # 5 minute expiry
+          PAYLOAD=$(echo -n "{\"iat\":${NOW},\"exp\":${EXP},\"iss\":\"litellm-fork\"}" | base64url)
+
+          # Create signing input
+          SIGNING_INPUT="${HEADER}.${PAYLOAD}"
+
+          # Sign with ES256 and get DER-encoded signature
+          DER_SIG=$(echo -n "${SIGNING_INPUT}" | openssl dgst -sha256 -sign /tmp/jwt-key.pem | xxd -p | tr -d '\n')
+
+          # Parse DER structure to extract R and S values
+          R_LEN=$((16#${DER_SIG:6:2}))
+          R_START=8
+
+          if [[ $R_LEN -eq 33 ]]; then
+            R_HEX=${DER_SIG:$((R_START + 2)):64}
+          else
+            R_HEX=${DER_SIG:${R_START}:$((R_LEN * 2))}
+            while [[ ${#R_HEX} -lt 64 ]]; do R_HEX="00${R_HEX}"; done
+          fi
+
+          S_POS=$((R_START + R_LEN * 2 + 2))
+          S_LEN=$((16#${DER_SIG:${S_POS}:2}))
+          S_START=$((S_POS + 2))
+
+          if [[ $S_LEN -eq 33 ]]; then
+            S_HEX=${DER_SIG:$((S_START + 2)):64}
+          else
+            S_HEX=${DER_SIG:${S_START}:$((S_LEN * 2))}
+            while [[ ${#S_HEX} -lt 64 ]]; do S_HEX="00${S_HEX}"; done
+          fi
+
+          RAW_SIG=$(echo -n "${R_HEX}${S_HEX}" | xxd -r -p | base64url)
+          JWT_TOKEN="${HEADER}.${PAYLOAD}.${RAW_SIG}"
+
+          echo "::add-mask::${JWT_TOKEN}"
+          echo "token=${JWT_TOKEN}" >> $GITHUB_OUTPUT
+
+          rm -f /tmp/jwt-key.pem
+
+          echo "[Notifier] JWT token generated successfully"
+          echo "::endgroup::"
+
+      - name: Call n8n webhook for release
+        run: |
+          set -eu
+
+          echo "::group::Calling n8n webhook for release"
+
+          # Use release tag as image tag
+          RELEASE_TAG="${{ github.event.release.tag_name }}"
+
+          PAYLOAD=$(cat <<EOF
+          {
+            "event_type": "release",
+            "version": "${RELEASE_TAG}",
+            "image_tag": "${RELEASE_TAG}",
+            "release_url": "${{ github.event.release.html_url }}"
+          }
+          EOF
+          )
+
+          echo "[Notifier] Sending release payload to n8n..."
+          echo "${PAYLOAD}" | jq .
+
+          curl -X POST \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ steps.jwt.outputs.token }}" \
+            -d "${PAYLOAD}" \
+            "${{ secrets.N8N_WEBHOOK_URL }}" \
+            --fail --silent --show-error
+
+          echo "[Notifier] Release webhook called successfully"
+          echo "::endgroup::"
+
+  # Manual test job for workflow_dispatch
+  test-webhook:
+    name: Test n8n Webhook
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Generate JWT Token
+        id: jwt
+        run: |
+          set -eu
+
+          echo "::group::Generating JWT token"
+
+          base64url() {
+            openssl base64 -e | tr -d '=' | tr '/+' '_-' | tr -d '\n'
+          }
+
+          echo "${{ secrets.N8N_JWT_PRIVATE_KEY }}" > /tmp/jwt-key.pem
+
+          HEADER=$(echo -n '{"alg":"ES256","typ":"JWT"}' | base64url)
+          NOW=$(date +%s)
+          EXP=$((NOW + 300))
+          PAYLOAD=$(echo -n "{\"iat\":${NOW},\"exp\":${EXP},\"iss\":\"litellm-fork\"}" | base64url)
+
+          SIGNING_INPUT="${HEADER}.${PAYLOAD}"
+          DER_SIG=$(echo -n "${SIGNING_INPUT}" | openssl dgst -sha256 -sign /tmp/jwt-key.pem | xxd -p | tr -d '\n')
+
+          R_LEN=$((16#${DER_SIG:6:2}))
+          R_START=8
+
+          if [[ $R_LEN -eq 33 ]]; then
+            R_HEX=${DER_SIG:$((R_START + 2)):64}
+          else
+            R_HEX=${DER_SIG:${R_START}:$((R_LEN * 2))}
+            while [[ ${#R_HEX} -lt 64 ]]; do R_HEX="00${R_HEX}"; done
+          fi
+
+          S_POS=$((R_START + R_LEN * 2 + 2))
+          S_LEN=$((16#${DER_SIG:${S_POS}:2}))
+          S_START=$((S_POS + 2))
+
+          if [[ $S_LEN -eq 33 ]]; then
+            S_HEX=${DER_SIG:$((S_START + 2)):64}
+          else
+            S_HEX=${DER_SIG:${S_START}:$((S_LEN * 2))}
+            while [[ ${#S_HEX} -lt 64 ]]; do S_HEX="00${S_HEX}"; done
+          fi
+
+          RAW_SIG=$(echo -n "${R_HEX}${S_HEX}" | xxd -r -p | base64url)
+          JWT_TOKEN="${HEADER}.${PAYLOAD}.${RAW_SIG}"
+
+          echo "::add-mask::${JWT_TOKEN}"
+          echo "token=${JWT_TOKEN}" >> $GITHUB_OUTPUT
+
+          rm -f /tmp/jwt-key.pem
+
+          echo "[Test] JWT token generated successfully"
+          echo "::endgroup::"
+
+      - name: Call n8n webhook (test mode)
+        run: |
+          set -eu
+
+          EVENT_TYPE="${{ inputs.test_event }}"
+          VERSION="${{ inputs.test_version }}"
+          IMAGE_TAG="${{ inputs.test_image_tag }}"
+
+          echo "::group::Testing n8n webhook - ${EVENT_TYPE}"
+
+          if [[ "${EVENT_TYPE}" == "upstream_sync_ready" ]]; then
+            PAYLOAD=$(cat <<EOF
+          {
+            "event_type": "upstream_sync_ready",
+            "version": "${VERSION}",
+            "image_tag": "${IMAGE_TAG}",
+            "pr_url": "https://github.com/${{ github.repository }}/pull/0",
+            "test": true
+          }
+          EOF
+            )
+          else
+            PAYLOAD=$(cat <<EOF
+          {
+            "event_type": "release",
+            "version": "${VERSION}",
+            "image_tag": "${VERSION}",
+            "release_url": "https://github.com/${{ github.repository }}/releases/tag/${VERSION}",
+            "test": true
+          }
+          EOF
+            )
+          fi
+
+          echo "[Test] Sending test payload to n8n..."
+          echo "${PAYLOAD}" | jq .
+
+          RESPONSE=$(curl -X POST \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ steps.jwt.outputs.token }}" \
+            -d "${PAYLOAD}" \
+            "${{ secrets.N8N_WEBHOOK_URL }}" \
+            --fail --silent --show-error -w "\n%{http_code}")
+
+          HTTP_CODE=$(echo "${RESPONSE}" | tail -n1)
+          BODY=$(echo "${RESPONSE}" | head -n -1)
+
+          echo "[Test] Response code: ${HTTP_CODE}"
+          echo "[Test] Response body: ${BODY}"
+
+          if [[ "${HTTP_CODE}" -ge 200 && "${HTTP_CODE}" -lt 300 ]]; then
+            echo "[Test] ✅ Webhook test successful!"
+          else
+            echo "[Test] ❌ Webhook test failed with HTTP ${HTTP_CODE}"
+            exit 1
+          fi
+
+          echo "::endgroup::"
