@@ -85,7 +85,8 @@ jobs:
             PR_TITLE=$(echo "${PR}" | jq -r '.title')
             BRANCH=$(echo "${PR}" | jq -r '.headRefName')
             INITIAL_MERGEABLE=$(echo "${PR}" | jq -r '.mergeable')
-            HAS_SYNC_READY=$(echo "${PR}" | jq -r '.labels[].name' | grep -c "sync-ready" || echo "0")
+            # Use jq for exact label matching (avoid substring matches)
+            HAS_SYNC_READY=$(echo "${PR}" | jq '[.labels[].name] | any(. == "sync-ready")')
 
             # If status is UNKNOWN, retry with delays
             if [[ "${INITIAL_MERGEABLE}" == "UNKNOWN" ]]; then
@@ -101,7 +102,7 @@ jobs:
             echo "[Conflict Detector]   Has sync-ready: ${HAS_SYNC_READY}"
 
             # If PR has sync-ready label but is now CONFLICTING, remove the label
-            if [[ "${MERGEABLE}" == "CONFLICTING" && "${HAS_SYNC_READY}" -gt 0 ]]; then
+            if [[ "${MERGEABLE}" == "CONFLICTING" && "${HAS_SYNC_READY}" == "true" ]]; then
               echo "[Conflict Detector] ⚠️ PR #${PR_NUMBER} has conflicts but still has sync-ready label"
               echo "[Conflict Detector] Removing sync-ready label..."
 

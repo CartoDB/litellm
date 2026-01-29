@@ -72,14 +72,17 @@ jobs:
           fi
 
           # Verify PR has upstream-sync label (added when PR was created)
-          LABELS=$(gh pr view ${PR_NUMBER} \
+          LABELS_JSON=$(gh pr view ${PR_NUMBER} \
             --repo ${{ github.repository }} \
-            --json labels \
-            --jq '.labels[].name' | tr '\n' ',' | sed 's/,$//')
+            --json labels)
+
+          LABELS=$(echo "${LABELS_JSON}" | jq -r '.labels[].name' | tr '\n' ',' | sed 's/,$//')
+          # Use jq for exact label matching (avoid substring matches)
+          HAS_UPSTREAM_SYNC=$(echo "${LABELS_JSON}" | jq '[.labels[].name] | any(. == "upstream-sync")')
 
           echo "[Notifier] Labels: ${LABELS}"
 
-          if [[ ! "${LABELS}" =~ "upstream-sync" ]]; then
+          if [[ "${HAS_UPSTREAM_SYNC}" != "true" ]]; then
             echo "[Notifier] ❌ Missing upstream-sync label - not a valid sync PR"
             echo "is-valid=false" >> $GITHUB_OUTPUT
             echo "::endgroup::"

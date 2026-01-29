@@ -60,20 +60,23 @@ jobs:
           PR_URL=$(echo "${PR_JSON}" | jq -r '.url')
           PR_TITLE=$(echo "${PR_JSON}" | jq -r '.title')
           LABELS=$(echo "${PR_JSON}" | jq -r '.labels[].name' | tr '\n' ',' | sed 's/,$//')
+          # Use jq for exact label matching (avoid substring matches)
+          HAS_UPSTREAM_SYNC=$(echo "${PR_JSON}" | jq '[.labels[].name] | any(. == "upstream-sync")')
+          HAS_SYNC_READY=$(echo "${PR_JSON}" | jq '[.labels[].name] | any(. == "sync-ready")')
 
           echo "[Ready Checker] PR #${PR_NUMBER}: ${PR_TITLE}"
           echo "[Ready Checker] Mergeable: ${MERGEABLE}"
           echo "[Ready Checker] Labels: ${LABELS}"
 
           # Check 1: Must have upstream-sync label
-          if [[ ! "${LABELS}" =~ "upstream-sync" ]]; then
+          if [[ "${HAS_UPSTREAM_SYNC}" != "true" ]]; then
             echo "[Ready Checker] ❌ Missing upstream-sync label - not an upstream sync PR"
             echo "::endgroup::"
             exit 0
           fi
 
           # Check 2: Must NOT already have sync-ready label (avoid duplicate work)
-          if [[ "${LABELS}" =~ "sync-ready" ]]; then
+          if [[ "${HAS_SYNC_READY}" == "true" ]]; then
             echo "[Ready Checker] ✅ Already has sync-ready label - nothing to do"
             echo "::endgroup::"
             exit 0
@@ -271,10 +274,10 @@ jobs:
 
           PR_NUMBER=$(echo "${PR_JSON}" | jq -r '.number')
           PR_URL=$(echo "${PR_JSON}" | jq -r '.url')
-          LABELS=$(echo "${PR_JSON}" | jq -r '.labels[].name' | tr '\n' ',' | sed 's/,$//')
+          HAS_UPSTREAM_SYNC=$(echo "${PR_JSON}" | jq '[.labels[].name] | any(. == "upstream-sync")')
 
-          # Only notify for upstream-sync PRs
-          if [[ ! "${LABELS}" =~ "upstream-sync" ]]; then
+          # Only notify for upstream-sync PRs (exact label match)
+          if [[ "${HAS_UPSTREAM_SYNC}" != "true" ]]; then
             echo "[Failure Notifier] Not an upstream-sync PR - skipping"
             echo "::endgroup::"
             exit 0
