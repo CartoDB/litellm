@@ -139,10 +139,6 @@ from litellm._logging import verbose_proxy_logger, verbose_router_logger
 from litellm.caching.caching import DualCache, RedisCache
 from litellm.caching.redis_cluster_cache import RedisClusterCache
 from litellm.constants import (
-    APSCHEDULER_COALESCE,
-    APSCHEDULER_MAX_INSTANCES,
-    APSCHEDULER_MISFIRE_GRACE_TIME,
-    APSCHEDULER_REPLACE_EXISTING,
     DAYS_IN_A_MONTH,
     DEFAULT_HEALTH_CHECK_INTERVAL,
     DEFAULT_MODEL_CREATED_AT_TIME,
