@@ -734,6 +734,15 @@ def construct_target_url(
     return updated_url
 
 
+def get_vertex_base_url(vertex_location: Optional[str]) -> str:
+    """
+    Returns the base URL for Vertex AI based on the provided location.
+    """
+    if vertex_location == "global":
+        return "https://aiplatform.googleapis.com/"
+    return f"https://{vertex_location}-aiplatform.googleapis.com/"
+
+
 def is_global_only_vertex_model(model: str) -> bool:
     """
     Check if a model is only available in the global region.
