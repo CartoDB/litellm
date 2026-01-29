@@ -675,6 +675,18 @@ def get_vertex_location_from_url(url: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
+def get_vertex_base_url(
+    vertex_location: Optional[str],
+) -> str:
+    """
+    Get the base URL for Vertex AI API calls.
+    """
+    if vertex_location == "global":
+        return "https://aiplatform.googleapis.com"
+    else:
+        return f"https://{vertex_location}-aiplatform.googleapis.com"
+
+
 def replace_project_and_location_in_route(
     requested_route: str, vertex_project: str, vertex_location: str
 ) -> str:
