@@ -12,7 +12,7 @@ import { RequestResponsePanel } from "./RequestResponsePanel";
 import { ErrorViewer } from "./ErrorViewer";
 import { internalUserRoles } from "../../utils/roles";
 import { ConfigInfoMessage } from "./ConfigInfoMessage";
-import { Tooltip } from "antd";
+import { Button, Tooltip } from "antd";
 import { KeyResponse, Team } from "../key_team_helpers/key_list";
 import KeyInfoView from "../templates/key_info_view";
 import { SessionView } from "./SessionView";
@@ -31,6 +31,8 @@ import { truncateString } from "@/utils/textUtils";
 import DeletedKeysPage from "../DeletedKeysPage/DeletedKeysPage";
 import DeletedTeamsPage from "../DeletedTeamsPage/DeletedTeamsPage";
 import NewBadge from "../common_components/NewBadge";
+import SpendLogsSettingsModal from "./SpendLogsSettingsModal/SpendLogsSettingsModal";
+import { SettingOutlined } from "@ant-design/icons";
 
 interface SpendLogsTableProps {
   accessToken: string | null;
@@ -91,6 +93,7 @@ export default function SpendLogsTable({
 
   const [expandedRequestId, setExpandedRequestId] = useState<string | null>(null);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [isSpendLogsSettingsModalVisible, setIsSpendLogsSettingsModalVisible] = useState(false);
 
   const queryClient = useQueryClient();
 
@@ -461,6 +464,11 @@ export default function SpendLogsTable({
       label: "Key Hash",
       isSearchable: false,
     },
+    {
+      name: "Error Message",
+      label: "Error Message",
+      isSearchable: false,
+    },
   ];
 
   // When a session is selected, render the SessionView component
@@ -526,6 +534,13 @@ export default function SpendLogsTable({
                   "Request Logs"
                 )}
               </h1>
+              {!selectedSessionId && (
+                <Button
+                  icon={<SettingOutlined />}
+                  onClick={() => setIsSpendLogsSettingsModalVisible(true)}
+                  title="Spend Logs Settings"
+                />
+              )}
             </div>
             {selectedKeyInfo && selectedKeyIdInfoView && selectedKeyInfo.api_key === selectedKeyIdInfoView ? (
               <KeyInfoView
@@ -540,7 +555,7 @@ export default function SpendLogsTable({
                 <DataTable
                   columns={columns}
                   data={sessionData}
-                  renderSubComponent={RequestViewer}
+                  renderSubComponent={({ row }) => <RequestViewer row={row} onOpenSettings={() => setIsSpendLogsSettingsModalVisible(true)} />}
                   getRowCanExpand={() => true}
                 // Optionally: add session-specific row expansion state
                 />
@@ -551,6 +566,11 @@ export default function SpendLogsTable({
                   options={logFilterOptions}
                   onApplyFilters={handleFilterChange}
                   onResetFilters={handleFilterReset}
+                />
+                <SpendLogsSettingsModal
+                  isVisible={isSpendLogsSettingsModalVisible}
+                  onCancel={() => setIsSpendLogsSettingsModalVisible(false)}
+                  onSuccess={() => setIsSpendLogsSettingsModalVisible(false)}
                 />
                 <div className="bg-white rounded-lg shadow w-full max-w-full box-border">
                   <div className="border-b px-6 py-4 w-full max-w-full box-border">
@@ -734,7 +754,7 @@ export default function SpendLogsTable({
                   <DataTable
                     columns={columns}
                     data={filteredData}
-                    renderSubComponent={RequestViewer}
+                    renderSubComponent={({ row }) => <RequestViewer row={row} onOpenSettings={() => setIsSpendLogsSettingsModalVisible(true)} />}
                     getRowCanExpand={() => true}
                   />
                 </div>
@@ -760,7 +780,7 @@ export default function SpendLogsTable({
   );
 }
 
-export function RequestViewer({ row }: { row: Row<LogEntry> }) {
+export function RequestViewer({ row, onOpenSettings }: { row: Row<LogEntry>; onOpenSettings?: () => void }) {
   // Helper function to clean metadata by removing specific fields
   const formatData = (input: any) => {
     if (typeof input === "string") {
@@ -971,7 +991,7 @@ export function RequestViewer({ row }: { row: Row<LogEntry> }) {
       <CostBreakdownViewer costBreakdown={row.original.metadata?.cost_breakdown} totalSpend={row.original.spend || 0} />
 
       {/* Configuration Info Message - Show when data is missing */}
-      <ConfigInfoMessage show={missingData} />
+      <ConfigInfoMessage show={missingData} onOpenSettings={onOpenSettings} />
 
       {/* Request/Response Panel */}
       <div className="w-full max-w-full overflow-hidden">
