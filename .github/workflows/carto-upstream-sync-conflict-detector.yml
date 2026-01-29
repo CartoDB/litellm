@@ -7,6 +7,10 @@ on:
   push:
     branches:
       - 'carto/main'
+  # Note: We only trigger on carto/main pushes because:
+  # - That's when conflicts can be introduced to existing upstream-sync PRs
+  # - upstream-sync/** pushes are handled by the resolver workflow
+  # - The workflow exits early if no open upstream-sync PRs exist (efficient)  
 
 permissions:
   contents: read
