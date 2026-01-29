@@ -584,13 +584,32 @@ jobs:
           EXISTING_PR_URL: ${{ needs.check-carto-main-sync.outputs.pr-url }}
           NEW_PR_URL: ${{ needs.create-sync-pr.outputs.pr-url }}
           NEW_PR_NUMBER: ${{ needs.create-sync-pr.outputs.pr-number }}
-          SYNC_STATUS: ${{ needs.sync-main-branch.result }}
+          # Job results for all dependencies
+          RESULT_CHECK_RELEASE: ${{ needs.check-new-release.result }}
+          RESULT_SYNC_MAIN: ${{ needs.sync-main-branch.result }}
+          RESULT_CHECK_CARTO: ${{ needs.check-carto-main-sync.result }}
+          RESULT_CREATE_PR: ${{ needs.create-sync-pr.result }}
         run: |
           set -eu
 
           echo "::group::Building Slack notification"
 
           WORKFLOW_RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          # Check if any job failed
+          WORKFLOW_FAILED=false
+          FAILED_JOBS=""
+          for job_result in "check-release:${RESULT_CHECK_RELEASE}" "sync-main:${RESULT_SYNC_MAIN}" "check-carto:${RESULT_CHECK_CARTO}" "create-pr:${RESULT_CREATE_PR}"; do
+            job_name="${job_result%%:*}"
+            result="${job_result##*:}"
+            if [[ "$result" == "failure" ]]; then
+              WORKFLOW_FAILED=true
+              FAILED_JOBS="${FAILED_JOBS} ${job_name}"
+            fi
+          done
+
+          echo "[Slack] Job results: check-release=${RESULT_CHECK_RELEASE}, sync-main=${RESULT_SYNC_MAIN}, check-carto=${RESULT_CHECK_CARTO}, create-pr=${RESULT_CREATE_PR}"
+          echo "[Slack] Workflow failed: ${WORKFLOW_FAILED}, Failed jobs:${FAILED_JOBS:-none}"
 
           # Extract clean version and PR info
           NEW_VERSION_CLEAN=$(echo "${NEW_VERSION}" | sed -E 's/^v//; s/-stable$//')
@@ -612,6 +631,19 @@ jobs:
             echo "$result"
           }
 
+          # Check for workflow failure first - override other states
+          if [[ "${WORKFLOW_FAILED}" == "true" ]]; then
+            COLOR="#F44336"  # Red - error
+            PROGRESS=$(make_progress 1)
+            TITLE="LiteLLM Upstream Sync Failed"
+            STEP_TEXT="Workflow Error"
+            STEP_EMOJI=":x:"
+            SUMMARY="Workflow failed in:${FAILED_JOBS}"
+            VERSION_FIELD="*Version*\n\`v${CURRENT_VERSION:-unknown}\`"
+            STATUS_FIELD="*Status*\n:x: Failed"
+            NEXT_ACTION="Check workflow logs and fix the issue."
+            PR_URL="${WORKFLOW_RUN_URL}"
+          else
           # Determine notification type and build content
           case "${NEEDS_SYNC}:${PR_EXISTS}" in
             true:false)
@@ -688,6 +720,7 @@ jobs:
               PR_URL="${WORKFLOW_RUN_URL}"
               ;;
           esac
+          fi  # End of WORKFLOW_FAILED check
 
           echo "::endgroup::"
 
@@ -795,6 +828,11 @@ jobs:
                         "type": "button",
                         "text": { "type": "plain_text", "text": "Docs", "emoji": true },
                         "url": "${DOCS_URL}"
+                      }
+                      ,{
+                        "type": "button",
+                        "text": { "type": "plain_text", "text": "View Logs", "emoji": true },
+                        "url": "${WORKFLOW_RUN_URL}"
                       }
                     ]
                   }
