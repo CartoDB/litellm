@@ -262,7 +262,7 @@ jobs:
             | Remove CARTO-specific code to make tests pass | Loses critical fixes (Azure URL, Snowflake auth, etc.) |
             | Delete CARTO fixes that "break" upstream tests | Tests should adapt to CARTO, not vice versa |
             | Accept upstream version when CARTO version exists | CARTO changes are intentional |
-            | Undo changes made by `@carto.com` or `@cartodb.com` authors | These are authorized CARTO modifications |
+            | Undo changes made by CartoDB GitHub org members | These are authorized CARTO modifications |
 
             ## ✅ REQUIRED ACTIONS (ALWAYS DO THESE)
 

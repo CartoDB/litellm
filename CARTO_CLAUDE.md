@@ -400,7 +400,7 @@ When conflicts are detected, the `carto-upstream-sync-resolver.yml` workflow:
 | 5 | `pyproject.toml` | Merge carefully | Upstream version + CARTO deps |
 | 6 | `Dockerfile`, `Makefile` | Merge carefully | Keep `# CARTO:` sections |
 
-\* CARTO commits = commits from `@carto.com` or `@cartodb.com` email authors
+\* CARTO commits = commits by CartoDB GitHub org members (verified via `gh api orgs/CartoDB/members`)
 
 **Known CARTO Customizations (MUST be preserved):**
 
