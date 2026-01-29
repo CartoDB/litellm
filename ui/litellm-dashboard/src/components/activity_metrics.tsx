@@ -4,7 +4,7 @@ import { AreaChart, BarChart } from "@tremor/react";
 import { DailyData, ModelActivityData, KeyMetricWithMetadata, TopApiKeyData } from "./usage/types";
 import { Collapse } from "antd";
 import { formatNumberWithCommas } from "@/utils/dataUtils";
-import { valueFormatter } from "../components/usage/utils/value_formatters";
+import { valueFormatter } from "./UsagePage/utils/value_formatters";
 import { CustomTooltip, CustomLegend } from "./common_components/chartUtils";
 
 interface ActivityMetricsProps {

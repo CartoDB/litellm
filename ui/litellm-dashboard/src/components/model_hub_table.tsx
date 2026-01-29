@@ -5,7 +5,7 @@ import { getConfigFieldSetting } from "./networking";
 import { ModelDataTable } from "./model_dashboard/table";
 import { modelHubColumns } from "./model_hub_table_columns";
 import PublicModelHub from "./public_model_hub";
-import MakeModelPublicForm from "./make_model_public_form";
+import MakeModelPublicForm from "./AIHub/forms/MakeModelPublicForm";
 import ModelFilters from "./model_filters";
 import UsefulLinksManagement from "./useful_links_management";
 import { Card, Text, Title, Button, Badge } from "@tremor/react";

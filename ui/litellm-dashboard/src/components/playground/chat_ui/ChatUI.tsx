@@ -4,14 +4,14 @@ import { Card, Title, Text, TextInput, Button as TremorButton } from "@tremor/re
 import { v4 as uuidv4 } from "uuid";
 
 import { Select, Spin, Typography, Tooltip, Input, Upload, Modal, Button } from "antd";
-import { makeOpenAIChatCompletionRequest } from "./llm_calls/chat_completion";
-import { makeOpenAIImageGenerationRequest } from "./llm_calls/image_generation";
-import { makeOpenAIImageEditsRequest } from "./llm_calls/image_edits";
-import { makeOpenAIResponsesRequest } from "./llm_calls/responses_api";
-import { makeAnthropicMessagesRequest } from "./llm_calls/anthropic_messages";
-import { fetchAvailableModels, ModelGroup } from "./llm_calls/fetch_models";
-import { fetchAvailableMCPTools } from "./llm_calls/fetch_mcp_tools";
-import type { MCPTool } from "./llm_calls/fetch_mcp_tools";
+import { makeOpenAIChatCompletionRequest } from "../llm_calls/chat_completion";
+import { makeOpenAIImageGenerationRequest } from "../llm_calls/image_generation";
+import { makeOpenAIImageEditsRequest } from "../llm_calls/image_edits";
+import { makeOpenAIResponsesRequest } from "../llm_calls/responses_api";
+import { makeAnthropicMessagesRequest } from "../llm_calls/anthropic_messages";
+import { fetchAvailableModels, ModelGroup } from "../llm_calls/fetch_models";
+import { fetchAvailableMCPTools } from "../llm_calls/fetch_mcp_tools";
+import type { MCPTool } from "../llm_calls/fetch_mcp_tools";
 import { EndpointType } from "./mode_endpoint_mapping";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { coy } from "react-syntax-highlighter/dist/esm/styles/prism";
@@ -51,7 +51,7 @@ import {
   ArrowUpOutlined,
 } from "@ant-design/icons";
 import NotificationsManager from "../molecules/notifications_manager";
-import { makeOpenAIEmbeddingsRequest } from "./llm_calls/embeddings_api";
+import { makeOpenAIEmbeddingsRequest } from "../llm_calls/embeddings_api";
 import { truncateString } from "./chatUtils";
 
 const { TextArea } = Input;
