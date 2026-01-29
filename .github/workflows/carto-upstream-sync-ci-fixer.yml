@@ -52,34 +52,38 @@ jobs:
             PR_NUMBER="${{ github.event.inputs.pr-number }}"
             PR_JSON=$(gh pr view ${PR_NUMBER} --repo ${{ github.repository }} --json headRefName,labels)
             BRANCH_NAME=$(echo "${PR_JSON}" | jq -r '.headRefName')
-            LABELS=$(echo "${PR_JSON}" | jq -r '.labels[].name')
           else
             # Automatic trigger from workflow_run
             BRANCH_NAME="${{ github.event.workflow_run.head_branch }}"
-            
+
             # Find PR for this branch
             PR_JSON=$(gh pr list \
               --repo ${{ github.repository }} \
               --head "${BRANCH_NAME}" \
               --json number,labels \
               --jq '.[0]')
-            
+
             if [[ "${PR_JSON}" == "null" || -z "${PR_JSON}" ]]; then
               echo "[Fixer] ❌ No PR found for branch ${BRANCH_NAME}"
               echo "should-fix=false" >> $GITHUB_OUTPUT
               exit 0
             fi
-            
+
             PR_NUMBER=$(echo "${PR_JSON}" | jq -r '.number')
-            LABELS=$(echo "${PR_JSON}" | jq -r '.labels[].name')
           fi
+
+          # Use jq for exact label matching (avoid substring matches)
+          LABELS=$(echo "${PR_JSON}" | jq -r '.labels[].name' | tr '\n' ', ' | sed 's/, $//')
+          HAS_CONFLICT_RESOLUTION=$(echo "${PR_JSON}" | jq '[.labels[].name] | any(. == "conflict-resolution")')
+          HAS_AUTOMATED=$(echo "${PR_JSON}" | jq '[.labels[].name] | any(. == "automated")')
+          HAS_UPSTREAM_SYNC=$(echo "${PR_JSON}" | jq '[.labels[].name] | any(. == "upstream-sync")')
 
           echo "[Fixer] Branch: ${BRANCH_NAME}"
           echo "[Fixer] PR: #${PR_NUMBER}"
           echo "[Fixer] Labels: ${LABELS}"
 
-          # Only fix PRs with upstream sync related labels
-          if [[ ! "${LABELS}" =~ "conflict-resolution" && ! "${LABELS}" =~ "automated" && ! "${LABELS}" =~ "upstream-sync" ]]; then
+          # Only fix PRs with upstream sync related labels (exact match)
+          if [[ "${HAS_CONFLICT_RESOLUTION}" != "true" && "${HAS_AUTOMATED}" != "true" && "${HAS_UPSTREAM_SYNC}" != "true" ]]; then
             echo "[Fixer] ❌ PR doesn't have required labels (need: conflict-resolution, automated, or upstream-sync) - skipping"
             echo "should-fix=false" >> $GITHUB_OUTPUT
             exit 0

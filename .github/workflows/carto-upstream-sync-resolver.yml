@@ -198,6 +198,8 @@ jobs:
           MERGEABLE=$(echo "${PR_JSON}" | jq -r '.mergeable')
           echo "MERGEABLE: ${MERGEABLE}"
           LABELS=$(echo "${PR_JSON}" | jq -r '.labels[].name' | tr '\n' ' ')
+          # Use jq for exact label matching (avoid substring matches)
+          HAS_UPSTREAM_SYNC=$(echo "${PR_JSON}" | jq '[.labels[].name] | any(. == "upstream-sync")')
           echo "LABELS: ${LABELS}"
 
           echo "[Resolver] Base: ${BASE_BRANCH}, Head: ${HEAD_BRANCH}"
@@ -211,8 +213,8 @@ jobs:
             exit 0
           fi
 
-          # Check 2: Must have upstream-sync label
-          if [[ ! "${LABELS}" =~ "upstream-sync" ]]; then
+          # Check 2: Must have upstream-sync label (exact match)
+          if [[ "${HAS_UPSTREAM_SYNC}" != "true" ]]; then
             echo "[Resolver] ❌ Missing 'upstream-sync' label - skipping"
             echo "is-sync-pr=false" >> $GITHUB_OUTPUT
             echo "eligible=false" >> $GITHUB_OUTPUT
