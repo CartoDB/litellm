@@ -71,6 +71,37 @@ jobs:
             exit 0
           fi
 
+          # Verify PR has upstream-sync label (added when PR was created)
+          LABELS=$(gh pr view ${PR_NUMBER} \
+            --repo ${{ github.repository }} \
+            --json labels \
+            --jq '.labels[].name' | tr '\n' ',' | sed 's/,$//')
+
+          echo "[Notifier] Labels: ${LABELS}"
+
+          if [[ ! "${LABELS}" =~ "upstream-sync" ]]; then
+            echo "[Notifier] ❌ Missing upstream-sync label - not a valid sync PR"
+            echo "is-valid=false" >> $GITHUB_OUTPUT
+            echo "::endgroup::"
+            exit 0
+          fi
+
+          # Verify PR is still mergeable (no conflicts since label was added)
+          MERGEABLE=$(gh pr view ${PR_NUMBER} \
+            --repo ${{ github.repository }} \
+            --json mergeable \
+            --jq '.mergeable')
+
+          echo "[Notifier] Mergeable: ${MERGEABLE}"
+
+          if [[ "${MERGEABLE}" != "MERGEABLE" ]]; then
+            echo "[Notifier] ❌ PR is not mergeable (status: ${MERGEABLE}) - skipping webhook"
+            echo "is-valid=false" >> $GITHUB_OUTPUT
+            echo "::endgroup::"
+            exit 0
+          fi
+
+          echo "[Notifier] ✅ All validations passed"
           echo "is-valid=true" >> $GITHUB_OUTPUT
           echo "pr-number=${PR_NUMBER}" >> $GITHUB_OUTPUT
           echo "pr-url=${PR_URL}" >> $GITHUB_OUTPUT
