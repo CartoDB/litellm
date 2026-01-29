@@ -24,6 +24,8 @@ class PromptInfo(BaseModel):
 class PromptLiteLLMParams(BaseModel):
     prompt_id: str
     prompt_integration: str
+    api_key: Optional[str] = None
+    api_base: Optional[str] = None
 
     model_config = ConfigDict(extra="allow", protected_namespaces=())
 
