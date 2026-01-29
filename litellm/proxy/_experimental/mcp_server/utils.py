@@ -80,6 +80,10 @@ def add_server_prefix_to_name(name: str, server_name: str) -> str:
     )
 
 
+# Alias for backwards compatibility
+add_server_prefix_to_tool_name = add_server_prefix_to_name
+
+
 def get_server_prefix(server: Any) -> str:
     """Return the prefix for a server: alias if present, else server_name, else server_id"""
     if hasattr(server, "alias") and server.alias:
@@ -98,6 +102,10 @@ def split_server_prefix_from_name(prefixed_name: str) -> Tuple[str, str]:
         if len(parts) == 2:
             return parts[1], parts[0]
     return prefixed_name, ""
+
+
+# Alias for backwards compatibility
+get_server_name_prefix_tool_mcp = split_server_prefix_from_name
 
 
 def is_tool_name_prefixed(tool_name: str) -> bool:
