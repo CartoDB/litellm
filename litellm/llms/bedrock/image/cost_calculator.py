@@ -1,7 +1,7 @@
 from typing import Optional
 
 import litellm
-from litellm.llms.bedrock.image.amazon_titan_transformation import (
+from litellm.llms.bedrock.image_generation.amazon_titan_transformation import (
     AmazonTitanImageGenerationConfig,
 )
 from litellm.types.utils import ImageResponse

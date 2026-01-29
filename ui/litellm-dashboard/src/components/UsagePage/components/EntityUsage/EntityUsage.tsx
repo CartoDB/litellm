@@ -21,14 +21,14 @@ import {
   TabPanels,
   Subtitle,
 } from "@tremor/react";
-import { ActivityMetrics, processActivityData } from "./activity_metrics";
-import { DailyData, BreakdownMetrics, KeyMetricWithMetadata, EntityMetricWithMetadata, TagUsage } from "./usage/types";
-import { tagDailyActivityCall, teamDailyActivityCall } from "./networking";
-import TopKeyView from "./top_key_view";
+import { ActivityMetrics, processActivityData } from "../../../activity_metrics";
+import { DailyData, BreakdownMetrics, KeyMetricWithMetadata, EntityMetricWithMetadata, TagUsage } from "../../types";
+import { tagDailyActivityCall, teamDailyActivityCall } from "../../../networking";
+import TopKeyView from "./TopKeyView";
 import { formatNumberWithCommas } from "@/utils/dataUtils";
-import { valueFormatterSpend } from "./usage/utils/value_formatters";
-import { getProviderLogoAndName } from "./provider_info_helpers";
-import { UsageExportHeader } from "./EntityUsageExport";
+import { valueFormatterSpend } from "../../utils/value_formatters";
+import { getProviderLogoAndName } from "../../../provider_info_helpers";
+import { UsageExportHeader } from "../../../EntityUsageExport";
 
 interface EntityMetrics {
   metrics: {
