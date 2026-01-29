@@ -31,10 +31,6 @@ from litellm.constants import (
     AIOHTTP_CONNECTOR_LIMIT,
     AIOHTTP_KEEPALIVE_TIMEOUT,
     AIOHTTP_TTL_DNS_CACHE,
-    APSCHEDULER_COALESCE,
-    APSCHEDULER_MISFIRE_GRACE_TIME,
-    APSCHEDULER_MAX_INSTANCES,
-    APSCHEDULER_REPLACE_EXISTING,
     BASE_MCP_ROUTE,
     DEFAULT_MAX_RECURSE_DEPTH,
     DEFAULT_SHARED_HEALTH_CHECK_LOCK_TTL,
@@ -4037,7 +4033,7 @@ class ProxyStartupEvent:
             )
 
     @classmethod
-    async def initialize_scheduled_background_jobs(
+    async def initialize_scheduled_background_jobs(  # noqa: PLR0915
         cls,
         general_settings: dict,
         prisma_client: PrismaClient,

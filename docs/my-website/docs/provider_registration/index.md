@@ -95,7 +95,7 @@ Add yourself to `main.py` so requests can be routed to your config class
 ```py
 from .llms.bedrock.chat import BedrockConverseLLM, BedrockLLM
 from .llms.bedrock.embed.embedding import BedrockEmbedding
-from .llms.bedrock.image.image_handler import BedrockImageGeneration
+from .llms.bedrock.image_generation.image_handler import BedrockImageGeneration
 from .llms.bytez.chat.transformation import BytezChatConfig
 from .llms.codestral.completion.handler import CodestralTextCompletion
 from .llms.cohere.embed import handler as cohere_embed

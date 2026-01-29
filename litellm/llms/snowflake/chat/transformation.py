@@ -326,21 +326,6 @@ class SnowflakeConfig(OpenAIGPTConfig):
 
         return api_base
 
-    def get_model_response_iterator(
-        self,
-        streaming_response: Any,
-        sync_stream: bool,
-        json_mode: Optional[bool] = False,
-    ) -> Any:
-        """
-        Return custom streaming handler for Snowflake that handles missing fields.
-        """
-        return SnowflakeStreamingHandler(
-            streaming_response=streaming_response,
-            sync_stream=sync_stream,
-            json_mode=json_mode,
-        )
-
     def _transform_tools(self, tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Transform OpenAI tool format to Snowflake tool format.
@@ -650,7 +635,7 @@ class SnowflakeConfig(OpenAIGPTConfig):
             verbose_logger.debug(f"Snowflake: Received {len(tools)} tools in OpenAI format")
             transformed_tools = self._transform_tools(tools)
             optional_params["tools"] = transformed_tools
-            verbose_logger.debug(f"Snowflake: Transformed tools to Snowflake format")
+            verbose_logger.debug("Snowflake: Transformed tools to Snowflake format")
         else:
             verbose_logger.debug("Snowflake: No tools in request")
 
