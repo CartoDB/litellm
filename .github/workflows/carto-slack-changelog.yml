@@ -339,56 +339,43 @@ jobs:
 
             # OUTPUT: Create TWO files
 
-            ## 1. Main Message → `slack_message.txt`
+            ## OUTPUT: Create a JSON file → `slack_data.json`
 
-            ${{ steps.context.outputs.mode == 'pr_merge' && '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            :rocket:  *LiteLLM Fork Update*' || '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            :tada:  *LiteLLM CARTO Release*' }}
+            You MUST create a JSON file with this exact structure:
 
-            *[GROUNDED 1-line summary with specific evidence]*
+            ```json
+            {
+              "summary": "One-line GROUNDED summary with specific evidence (max 150 chars)",
+              "type": "Infrastructure | Feature | Bug Fix | Upstream Sync",
+              "impact": "Providers | Proxy | CI/CD | Docker | Core",
+              "risk": "Low | Medium | High",
+              "risk_reason": "Brief reason for risk level (max 50 chars)",
+              "insight": "GROUNDED key insight - MUST reference specific evidence from diff/history (max 300 chars)",
+              "thread_detail": "Detailed analysis for thread reply - What changed, Why, Historical context, Impact (500-1000 chars, use \\n for newlines)"
+            }
+            ```
 
-            ┌───────────────────────────────────────
-            │  :label:  *Type:* [Infrastructure | Feature | Bug Fix | Upstream Sync]
-            │  :dart:  *Impact:* [Providers | Proxy | CI/CD | Docker | Core]
-            │  :warning:  *Risk:* [Low | Medium | High] - [1-line reason]
-            └───────────────────────────────────────
+            **Field requirements:**
+            - `summary`: One powerful sentence summarizing the change with evidence
+            - `type`: Exactly one of: Infrastructure, Feature, Bug Fix, Upstream Sync
+            - `impact`: Primary area affected
+            - `risk`: Low, Medium, or High
+            - `risk_reason`: Why this risk level (e.g., "No production code changes")
+            - `insight`: The KEY thing reviewers should know, with evidence
+            - `thread_detail`: Deeper analysis with What Changed, Why, Historical Context, Technical Details
 
-            :bulb: *Key Insight*
-            [GROUNDED analysis - MUST reference specific evidence from diff/history]
-
-            ${{ steps.context.outputs.mode == 'pr_merge' && format(':link: <{0}|PR #{1}>  •  @{2}', steps.context.outputs.pr_url, steps.context.outputs.pr_number, steps.context.outputs.pr_author) || format(':link: <{0}|Release {1}>  •  @{2}  •  _{3} commit(s)_', steps.context.outputs.release_url, steps.context.outputs.release_tag, steps.context.outputs.pr_author, steps.context.outputs.commit_count) }}
-            ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-            ## 2. Thread Reply → `slack_thread.txt`
-
-            :mag: *Deep Dive Analysis*
-            ━━━━━━━━━━━━━━━━━━━━━━━━
-
-            *What Changed (from diff):*
-            • [Specific change 1 with file:line reference]
-            • [Specific change 2]
-
-            *Why (from PR body/commits):*
-            "[Quote actual text from PR body or commit message]"
-
-            *Historical Context:*
-            • Previous changes to affected files: [from /tmp/file_history.txt]
-            • Related PRs: [from /tmp/related_prs.txt if relevant]
-            • Author's recent work: [pattern from /tmp/author_recent_prs.txt]
-
-            *Impact Analysis:*
-            • *Scope:* X files, +Y/-Z lines
-            • *Areas:* [from /tmp/change_scope.txt]
-            • *Risk factors:* [specific risks]
-            • *Deployment:* [what happens next]
-
-            [FOR UPSTREAM SYNCS - add these sections:]
-            ━━━ UPSTREAM SYNC ━━━
-            :sparkles: *New from Upstream:* [cite release notes]
-            :rotating_light: *Breaking Changes:* [cite diff]
-
-            *Technical Details:*
-            [Deeper context for curious readers]
+            **Example output:**
+            ```json
+            {
+              "summary": "Adds GitHub org membership check for CARTO file detection in upstream sync resolver",
+              "type": "Infrastructure",
+              "impact": "CI/CD - Upstream Sync Automation",
+              "risk": "Low",
+              "risk_reason": "Workflow changes only, no production code",
+              "insight": "Replaces email-based detection with GitHub API org membership check, matching the approach in calculate_carto_version.sh. Files modified by CartoDB members are now automatically preserved during merges.",
+              "thread_detail": "What Changed:\\n• Added pre-resolution step to identify CARTO-modified files via gh api orgs/CartoDB/members\\n• Updated resolver prompt with CARTO-FIRST priority table\\n• CI Fixer now has FORBIDDEN ACTIONS section\\n\\nWhy:\\n• Previous approach accepted upstream for litellm/** blindly\\n• CARTO fixes (Azure URL, Snowflake auth) were being lost\\n\\nFiles: 3 changed, +263/-103 lines"
+            }
+            ```
 
             ---
 
@@ -399,24 +386,16 @@ jobs:
             3. **Connect to history** - Reference prior commits/PRs when relevant
             4. **Be specific** - "Changed base image on Dockerfile:15" not "Updated Docker"
             5. **Use dynamic investigation** - Run git/gh commands if data is sparse
-
-            **Format rules:**
-            - Slack mrkdwn: *bold*, `code`, <url|text>
-            - Use • for bullets
-            - Emojis: :rocket: :zap: :label: :dart: :warning: :bulb: :link: :mag: :sparkles: :rotating_light:
-            - Box chars: ━ ┌ │ └
-            - Main message: under 1000 chars
-            - Thread: 1500-2500 chars
+            6. **Output valid JSON** - The workflow will parse your JSON to build Block Kit
 
             ## CRITICAL: OUTPUT REQUIRED
 
-            You MUST create these two files in the current working directory before finishing:
-            1. `slack_message.txt` - Main Slack message (under 1000 chars)
-            2. `slack_thread.txt` - Thread reply (1500-2500 chars)
+            You MUST create ONE file: `slack_data.json`
 
-            Use the Write tool to create each file. Do NOT skip this step.
+            Use the Write tool to create this file with valid JSON. Do NOT skip this step.
+            The workflow will use your JSON to build a Block Kit message with buttons.
 
-            NOW: Read the data files, analyze, and IMMEDIATELY write both files.
+            NOW: Read the data files, analyze, and IMMEDIATELY write `slack_data.json`.
         timeout-minutes: 10
         env:
           ANTHROPIC_VERTEX_PROJECT_ID: carto-ci-resources
@@ -427,57 +406,222 @@ jobs:
         if: always()
         run: rm -f /tmp/gcp-sa.json
 
-      - name: Verify messages were created
+      - name: Verify and parse Claude output
         id: verify
         run: |
           echo "::group::Checking generated files"
 
-          if [ -f "slack_message.txt" ]; then
-            echo "✅ Main message generated"
-            echo "message_exists=true" >> $GITHUB_OUTPUT
-            echo "--- Main message ---"
-            cat slack_message.txt
-            echo "--- End ---"
-          else
-            echo "❌ Main message not found"
-            echo "message_exists=false" >> $GITHUB_OUTPUT
-            exit 1
-          fi
+          if [ -f "slack_data.json" ]; then
+            echo "✅ slack_data.json generated"
 
-          if [ -f "slack_thread.txt" ]; then
-            echo "✅ Thread message generated"
-            echo "thread_exists=true" >> $GITHUB_OUTPUT
-            echo "--- Thread message ---"
-            cat slack_thread.txt
-            echo "--- End ---"
+            # Validate JSON
+            if jq empty slack_data.json 2>/dev/null; then
+              echo "✅ Valid JSON"
+              echo "data_exists=true" >> $GITHUB_OUTPUT
+
+              # Extract fields for Block Kit
+              echo "summary=$(jq -r '.summary // "Update merged"' slack_data.json)" >> $GITHUB_OUTPUT
+              echo "type=$(jq -r '.type // "Update"' slack_data.json)" >> $GITHUB_OUTPUT
+              echo "impact=$(jq -r '.impact // "General"' slack_data.json)" >> $GITHUB_OUTPUT
+              echo "risk=$(jq -r '.risk // "Low"' slack_data.json)" >> $GITHUB_OUTPUT
+              echo "risk_reason=$(jq -r '.risk_reason // ""' slack_data.json)" >> $GITHUB_OUTPUT
+              echo "insight=$(jq -r '.insight // ""' slack_data.json)" >> $GITHUB_OUTPUT
+
+              # Thread detail needs special handling for multiline
+              jq -r '.thread_detail // ""' slack_data.json > /tmp/thread_detail.txt
+
+              echo "--- JSON content ---"
+              cat slack_data.json
+              echo "--- End ---"
+            else
+              echo "❌ Invalid JSON"
+              cat slack_data.json
+              echo "data_exists=false" >> $GITHUB_OUTPUT
+              exit 1
+            fi
           else
-            echo "⚠️ Thread message not found (optional)"
-            echo "thread_exists=false" >> $GITHUB_OUTPUT
+            echo "❌ slack_data.json not found"
+            echo "data_exists=false" >> $GITHUB_OUTPUT
+            exit 1
           fi
 
           echo "::endgroup::"
 
-      - name: Post main message to Slack
+      - name: Post main message to Slack (Block Kit)
         id: slack_post
-        if: steps.verify.outputs.message_exists == 'true'
+        if: steps.verify.outputs.data_exists == 'true'
         env:
           SLACK_CHANNEL: "C0A11FKJHDK"
+          DOCS_URL: "https://cartodb.getoutline.com/doc/ci-litellm-fork-pMyvwMTU3l"
         run: |
           set -eu
-          echo "::group::Posting main message to Slack"
+          echo "::group::Building and posting Block Kit message"
 
           if [[ -z "${{ secrets.SLACK_KEY }}" ]]; then
             echo "::warning::SLACK_KEY not configured - skipping"
             exit 0
           fi
 
-          MESSAGE=$(cat slack_message.txt)
+          # Get values from verify step
+          SUMMARY="${{ steps.verify.outputs.summary }}"
+          TYPE="${{ steps.verify.outputs.type }}"
+          IMPACT="${{ steps.verify.outputs.impact }}"
+          RISK="${{ steps.verify.outputs.risk }}"
+          RISK_REASON="${{ steps.verify.outputs.risk_reason }}"
+          INSIGHT="${{ steps.verify.outputs.insight }}"
 
+          # Determine color based on type
+          case "${TYPE}" in
+            "Feature") COLOR="#2196F3" ;;  # Blue
+            "Bug Fix") COLOR="#4CAF50" ;;  # Green
+            "Infrastructure") COLOR="#9C27B0" ;;  # Purple
+            "Upstream Sync") COLOR="#FF9800" ;;  # Orange
+            *) COLOR="#607D8B" ;;  # Gray
+          esac
+
+          # Determine emoji based on type
+          case "${TYPE}" in
+            "Feature") EMOJI="✨" ;;
+            "Bug Fix") EMOJI="🐛" ;;
+            "Infrastructure") EMOJI="🔧" ;;
+            "Upstream Sync") EMOJI="🔄" ;;
+            *) EMOJI="📦" ;;
+          esac
+
+          # Risk emoji
+          case "${RISK}" in
+            "High") RISK_EMOJI="🔴" ;;
+            "Medium") RISK_EMOJI="🟡" ;;
+            *) RISK_EMOJI="🟢" ;;
+          esac
+
+          # Get PR/Release info from context
+          MODE="${{ steps.context.outputs.mode }}"
+          if [[ "${MODE}" == "pr_merge" ]]; then
+            TITLE="LiteLLM Fork Update"
+            HEADER_EMOJI="🚀"
+            LINK_URL="${{ steps.context.outputs.pr_url }}"
+            LINK_TEXT="PR #${{ steps.context.outputs.pr_number }}"
+            AUTHOR="${{ steps.context.outputs.pr_author }}"
+          else
+            TITLE="LiteLLM CARTO Release"
+            HEADER_EMOJI="🎉"
+            LINK_URL="${{ steps.context.outputs.release_url }}"
+            LINK_TEXT="${{ steps.context.outputs.release_tag }}"
+            AUTHOR="${{ steps.context.outputs.pr_author }}"
+          fi
+
+          WORKFLOW_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          # Build Block Kit payload
+          cat > /tmp/slack_payload.json << EOF
+          {
+            "channel": "${SLACK_CHANNEL}",
+            "text": "${HEADER_EMOJI} ${TITLE}: ${SUMMARY}",
+            "unfurl_links": false,
+            "unfurl_media": false,
+            "attachments": [
+              {
+                "color": "${COLOR}",
+                "blocks": [
+                  {
+                    "type": "header",
+                    "text": {
+                      "type": "plain_text",
+                      "text": "${HEADER_EMOJI} ${TITLE}",
+                      "emoji": true
+                    }
+                  },
+                  {
+                    "type": "section",
+                    "text": {
+                      "type": "mrkdwn",
+                      "text": "${SUMMARY}"
+                    }
+                  },
+                  {
+                    "type": "divider"
+                  },
+                  {
+                    "type": "section",
+                    "fields": [
+                      {
+                        "type": "mrkdwn",
+                        "text": "*Type*\n${EMOJI} ${TYPE}"
+                      },
+                      {
+                        "type": "mrkdwn",
+                        "text": "*Impact*\n${IMPACT}"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "section",
+                    "fields": [
+                      {
+                        "type": "mrkdwn",
+                        "text": "*Risk*\n${RISK_EMOJI} ${RISK}"
+                      },
+                      {
+                        "type": "mrkdwn",
+                        "text": "*Author*\n@${AUTHOR}"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "section",
+                    "text": {
+                      "type": "mrkdwn",
+                      "text": "*💡 Key Insight*\n${INSIGHT}"
+                    }
+                  },
+                  {
+                    "type": "context",
+                    "elements": [
+                      {
+                        "type": "mrkdwn",
+                        "text": "📖 <${DOCS_URL}|LiteLLM Fork CI Docs>"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "actions",
+                    "elements": [
+                      {
+                        "type": "button",
+                        "text": { "type": "plain_text", "text": "View ${LINK_TEXT}", "emoji": true },
+                        "style": "primary",
+                        "url": "${LINK_URL}"
+                      },
+                      {
+                        "type": "button",
+                        "text": { "type": "plain_text", "text": "View Logs", "emoji": true },
+                        "url": "${WORKFLOW_URL}"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+          EOF
+
+          # Validate JSON
+          if ! jq empty /tmp/slack_payload.json 2>/dev/null; then
+            echo "::error::Invalid JSON payload"
+            cat /tmp/slack_payload.json
+            exit 1
+          fi
+
+          echo "--- Block Kit payload ---"
+          jq . /tmp/slack_payload.json
+          echo "--- End ---"
+
+          # Post to Slack
           RESPONSE=$(curl -s -X POST https://slack.com/api/chat.postMessage \
             -H "Authorization: Bearer ${{ secrets.SLACK_KEY }}" \
-            -H "Content-Type: application/x-www-form-urlencoded" \
-            --data-urlencode "channel=${SLACK_CHANNEL}" \
-            --data-urlencode "text=${MESSAGE}")
+            -H "Content-Type: application/json" \
+            -d @/tmp/slack_payload.json)
 
           # Extract timestamp for threading
           MESSAGE_TS=$(echo "$RESPONSE" | jq -r '.ts // empty')
@@ -491,28 +635,65 @@ jobs:
           else
             ERROR=$(echo "$RESPONSE" | jq -r '.error // "unknown"')
             echo "❌ Slack API error: ${ERROR}"
+            echo "Response: $RESPONSE"
             exit 1
           fi
 
           echo "::endgroup::"
 
       - name: Post thread reply to Slack
-        if: steps.slack_post.outputs.message_ts != '' && steps.verify.outputs.thread_exists == 'true'
+        if: steps.slack_post.outputs.message_ts != ''
         env:
           SLACK_CHANNEL: "C0A11FKJHDK"
         run: |
           set -eu
           echo "::group::Posting thread reply"
 
-          THREAD_MSG=$(cat slack_thread.txt)
           MESSAGE_TS="${{ steps.slack_post.outputs.message_ts }}"
 
+          # Get thread detail from file
+          THREAD_DETAIL=""
+          if [ -f "/tmp/thread_detail.txt" ]; then
+            THREAD_DETAIL=$(cat /tmp/thread_detail.txt)
+          fi
+
+          # If no thread detail, create a simple one
+          if [ -z "$THREAD_DETAIL" ]; then
+            THREAD_DETAIL="See the PR for full details."
+          fi
+
+          # Build thread reply Block Kit
+          cat > /tmp/thread_payload.json << EOF
+          {
+            "channel": "${SLACK_CHANNEL}",
+            "thread_ts": "${MESSAGE_TS}",
+            "text": "🔍 Deep Dive Analysis",
+            "unfurl_links": false,
+            "blocks": [
+              {
+                "type": "header",
+                "text": {
+                  "type": "plain_text",
+                  "text": "🔍 Deep Dive Analysis",
+                  "emoji": true
+                }
+              },
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": "$(echo "$THREAD_DETAIL" | sed 's/"/\\"/g' | sed 's/\\n/\n/g')"
+                }
+              }
+            ]
+          }
+          EOF
+
+          # Post to Slack
           RESPONSE=$(curl -s -X POST https://slack.com/api/chat.postMessage \
             -H "Authorization: Bearer ${{ secrets.SLACK_KEY }}" \
-            -H "Content-Type: application/x-www-form-urlencoded" \
-            --data-urlencode "channel=${SLACK_CHANNEL}" \
-            --data-urlencode "thread_ts=${MESSAGE_TS}" \
-            --data-urlencode "text=${THREAD_MSG}")
+            -H "Content-Type: application/json" \
+            -d @/tmp/thread_payload.json)
 
           if echo "$RESPONSE" | jq -e '.ok == true' > /dev/null 2>&1; then
             echo "✅ Thread reply posted"
@@ -531,21 +712,21 @@ jobs:
           echo "**Mode:** ${{ steps.context.outputs.mode }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          if [ -f "slack_message.txt" ]; then
-            echo "### Main Message" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            cat slack_message.txt >> $GITHUB_STEP_SUMMARY
+          if [ -f "slack_data.json" ]; then
+            echo "### Claude Analysis (JSON)" >> $GITHUB_STEP_SUMMARY
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            cat slack_data.json >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
           fi
 
-          if [ -f "slack_thread.txt" ]; then
+          if [ -f "/tmp/slack_payload.json" ]; then
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### Thread Reply" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            cat slack_thread.txt >> $GITHUB_STEP_SUMMARY
+            echo "### Block Kit Payload" >> $GITHUB_STEP_SUMMARY
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            jq . /tmp/slack_payload.json >> $GITHUB_STEP_SUMMARY 2>/dev/null || cat /tmp/slack_payload.json >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
           fi
 
-          if [ ! -f "slack_message.txt" ]; then
+          if [ ! -f "slack_data.json" ]; then
             echo "❌ Message generation failed" >> $GITHUB_STEP_SUMMARY
           fi
