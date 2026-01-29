@@ -1,6 +1,6 @@
 from unittest.mock import patch, MagicMock
 
-from litellm.llms.bedrock.image_generation.image_handler import BedrockImageGeneration
+from litellm.llms.bedrock.image.image_handler import BedrockImageGeneration
 
 def test_bedrock_image_prepare_request_with_arn() -> None:
     dummy_arn = "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abcdefghi123"
@@ -8,8 +8,8 @@ def test_bedrock_image_prepare_request_with_arn() -> None:
     image_generation = BedrockImageGeneration()
 
     with (
-        patch("litellm.llms.bedrock.image_generation.image_handler.BedrockImageGeneration._get_boto_credentials_from_optional_params"),
-        patch("litellm.llms.bedrock.image_generation.image_handler.BedrockImageGeneration.get_request_headers"),
+        patch("litellm.llms.bedrock.image.image_handler.BedrockImageGeneration._get_boto_credentials_from_optional_params"),
+        patch("litellm.llms.bedrock.image.image_handler.BedrockImageGeneration.get_request_headers"),
     ):
         request = image_generation._prepare_request(
             model="amazon.nova-canvas-v1:0",
@@ -30,8 +30,8 @@ def test_bedrock_image_prepare_request_without_arn() -> None:
     image_generation = BedrockImageGeneration()
 
     with (
-        patch("litellm.llms.bedrock.image_generation.image_handler.BedrockImageGeneration._get_boto_credentials_from_optional_params"),
-        patch("litellm.llms.bedrock.image_generation.image_handler.BedrockImageGeneration.get_request_headers"),
+        patch("litellm.llms.bedrock.image.image_handler.BedrockImageGeneration._get_boto_credentials_from_optional_params"),
+        patch("litellm.llms.bedrock.image.image_handler.BedrockImageGeneration.get_request_headers"),
     ):
         request = image_generation._prepare_request(
             model="amazon.nova-canvas-v1:0",
