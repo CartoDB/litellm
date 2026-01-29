@@ -240,13 +240,31 @@ def preserve_upstream_non_openai_attributes(
             setattr(model_response, key, value)
 
 
+def filter_internal_params(kwargs: dict) -> dict:
+    """
+    Filter out internal litellm parameters that shouldn't be sent to provider APIs.
+
+    This removes litellm-specific parameters (like litellm_call_id, litellm_logging_obj,
+    fallbacks, etc.) before passing kwargs to completion/embedding APIs.
+
+    Args:
+        kwargs: The keyword arguments dictionary to filter
+
+    Returns:
+        A new dictionary with internal parameters removed
+    """
+    from litellm.types.utils import all_litellm_params
+
+    return {k: v for k, v in kwargs.items() if k not in all_litellm_params}
+
+
 def safe_deep_copy(data):
     """
     Safe Deep Copy
 
     The LiteLLM request may contain objects that cannot be pickled/deep-copied
-    (e.g., tracing spans, locks, clients). 
-    
+    (e.g., tracing spans, locks, clients).
+
     This helper deep-copies each top-level key independently; on failure keeps
     original ref
     """

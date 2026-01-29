@@ -5,7 +5,7 @@ from typing import List, Optional
 
 from openai.types.image import Image
 
-from litellm.llms.bedrock.common_utils import get_cached_model_info
+import litellm
 from litellm.types.utils import ImageResponse
 
 
@@ -151,8 +151,7 @@ class AmazonStabilityConfig:
         size = size or "1024-x-1024"
         model = f"{size}/{steps}/{model}"
 
-        get_model_info = get_cached_model_info()
-        model_info = get_model_info(
+        model_info = litellm.get_model_info(
             model=model,
             custom_llm_provider="bedrock",
         )
