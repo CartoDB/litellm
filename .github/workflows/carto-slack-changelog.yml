@@ -470,6 +470,14 @@ jobs:
           RISK_REASON="${{ steps.verify.outputs.risk_reason }}"
           INSIGHT="${{ steps.verify.outputs.insight }}"
 
+          # Escape special characters for JSON (quotes, backslashes, newlines)
+          escape_json() {
+            echo "$1" | jq -Rs '.' | sed 's/^"//;s/"$//'
+          }
+          SUMMARY=$(escape_json "$SUMMARY")
+          INSIGHT=$(escape_json "$INSIGHT")
+          IMPACT=$(escape_json "$IMPACT")
+
           # Determine color based on type
           case "${TYPE}" in
             "Feature") COLOR="#2196F3" ;;  # Blue
@@ -651,7 +659,7 @@ jobs:
 
           MESSAGE_TS="${{ steps.slack_post.outputs.message_ts }}"
 
-          # Get thread detail from file
+          # Get thread detail from file and properly escape for JSON
           THREAD_DETAIL=""
           if [ -f "/tmp/thread_detail.txt" ]; then
             THREAD_DETAIL=$(cat /tmp/thread_detail.txt)
@@ -661,6 +669,9 @@ jobs:
           if [ -z "$THREAD_DETAIL" ]; then
             THREAD_DETAIL="See the PR for full details."
           fi
+
+          # Use jq to properly escape the thread detail for JSON
+          ESCAPED_DETAIL=$(echo "$THREAD_DETAIL" | jq -Rs '.' | sed 's/^"//;s/"$//')
 
           # Build thread reply Block Kit
           cat > /tmp/thread_payload.json << EOF
@@ -682,12 +693,19 @@ jobs:
                 "type": "section",
                 "text": {
                   "type": "mrkdwn",
-                  "text": "$(echo "$THREAD_DETAIL" | sed 's/"/\\"/g' | sed 's/\\n/\n/g')"
+                  "text": "${ESCAPED_DETAIL}"
                 }
               }
             ]
           }
           EOF
+
+          # Validate JSON before posting
+          if ! jq empty /tmp/thread_payload.json 2>/dev/null; then
+            echo "::warning::Invalid thread JSON payload, skipping thread reply"
+            cat /tmp/thread_payload.json
+            exit 0
+          fi
 
           # Post to Slack
           RESPONSE=$(curl -s -X POST https://slack.com/api/chat.postMessage \
