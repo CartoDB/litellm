@@ -24,7 +24,7 @@ permissions:
   pull-requests: read
 
 env:
-  SLACK_CHANNEL: C08US7RE8MZ  # #litellm-fork
+  SLACK_CHANNEL: C0A11FKJHDK  # #litellm-fork changelog
   DOCS_URL: "https://cartodb.getoutline.com/doc/ci-litellm-fork-pMyvwMTU3l"
 
 jobs:
