@@ -24,11 +24,11 @@ from litellm.proxy._experimental.mcp_server.auth.user_api_key_auth_mcp import (
     MCPRequestHandler,
 )
 from litellm.proxy._experimental.mcp_server.utils import (
-    add_server_prefix_to_tool_name,
-    get_server_name_prefix_tool_mcp,
+    add_server_prefix_to_name,
     get_server_prefix,
     is_tool_name_prefixed,
     normalize_server_name,
+    split_server_prefix_from_name,
     validate_mcp_server_name,
 )
 from litellm.proxy._types import (
@@ -328,7 +328,7 @@ class MCPServerManager:
                     base_tool_name = operation_id.replace(" ", "_").lower()
 
                     # Add server prefix to tool name
-                    prefixed_tool_name = add_server_prefix_to_tool_name(
+                    prefixed_tool_name = add_server_prefix_to_name(
                         base_tool_name, server_prefix
                     )
 
@@ -744,7 +744,7 @@ class MCPServerManager:
         prefix = get_server_prefix(server)
 
         for tool in tools:
-            prefixed_name = add_server_prefix_to_tool_name(tool.name, prefix)
+            prefixed_name = add_server_prefix_to_name(tool.name, prefix)
 
             name_to_use = prefixed_name if add_prefix else tool.name
 
@@ -798,7 +798,7 @@ class MCPServerManager:
             HTTPException: If allowed_params is configured for this tool but arguments contain disallowed params
         """
         from litellm.proxy._experimental.mcp_server.utils import (
-            get_server_name_prefix_tool_mcp,
+            split_server_prefix_from_name,
         )
 
         # If no allowed_params configured, return all arguments
@@ -806,7 +806,7 @@ class MCPServerManager:
             return
 
         # Get the unprefixed tool name to match against config
-        unprefixed_tool_name, _ = get_server_name_prefix_tool_mcp(tool_name)
+        unprefixed_tool_name, _ = split_server_prefix_from_name(tool_name)
 
         # Check both prefixed and unprefixed tool names
         allowed_params_list = server.allowed_params.get(
@@ -1207,7 +1207,7 @@ class MCPServerManager:
         start_time = datetime.datetime.now()
 
         # Remove prefix if present to get the original tool name
-        original_tool_name, server_name_from_prefix = get_server_name_prefix_tool_mcp(
+        original_tool_name, server_name_from_prefix = split_server_prefix_from_name(
             name
         )
 
@@ -1327,7 +1327,7 @@ class MCPServerManager:
             for tool in tools:
                 # The tool.name here is already prefixed from _get_tools_from_server
                 # Extract original name for mapping
-                original_name, _ = get_server_name_prefix_tool_mcp(tool.name)
+                original_name, _ = split_server_prefix_from_name(tool.name)
                 self.tool_name_to_mcp_server_name_mapping[original_name] = server.name
                 self.tool_name_to_mcp_server_name_mapping[tool.name] = server.name
 
@@ -1352,7 +1352,7 @@ class MCPServerManager:
 
         # If not found and tool name is prefixed, try extracting server name from prefix
         if is_tool_name_prefixed(tool_name):
-            _, server_name_from_prefix = get_server_name_prefix_tool_mcp(tool_name)
+            _, server_name_from_prefix = split_server_prefix_from_name(tool_name)
             for server in self.get_registry().values():
                 if normalize_server_name(server.name) == normalize_server_name(
                     server_name_from_prefix

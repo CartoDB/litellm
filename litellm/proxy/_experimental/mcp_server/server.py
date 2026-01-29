@@ -66,7 +66,7 @@ if MCP_AVAILABLE:
         global_mcp_tool_registry,
     )
     from litellm.proxy._experimental.mcp_server.utils import (
-        get_server_name_prefix_tool_mcp,
+        split_server_prefix_from_name,
     )
 
     ######################################################
@@ -376,7 +376,7 @@ if MCP_AVAILABLE:
             True if the tool name (prefixed or unprefixed) is in the filter list
         """
         from litellm.proxy._experimental.mcp_server.utils import (
-            get_server_name_prefix_tool_mcp,
+            split_server_prefix_from_name,
         )
 
         # Check if the full name is in the list
@@ -384,7 +384,7 @@ if MCP_AVAILABLE:
             return True
 
         # Check if the unprefixed name is in the list
-        unprefixed_name, _ = get_server_name_prefix_tool_mcp(tool_name)
+        unprefixed_name, _ = split_server_prefix_from_name(tool_name)
         return unprefixed_name in filter_list
 
     def filter_tools_by_allowed_tools(
@@ -548,7 +548,7 @@ if MCP_AVAILABLE:
             filtered_tools = []
             for t in tools:
                 # Get tool name without server prefix
-                unprefixed_tool_name, _ = get_server_name_prefix_tool_mcp(t.name)
+                unprefixed_tool_name, _ = split_server_prefix_from_name(t.name)
                 if unprefixed_tool_name in allowed_tool_names:
                     filtered_tools.append(t)
         else:
@@ -622,7 +622,7 @@ if MCP_AVAILABLE:
             )
 
         # Remove prefix from tool name for logging and processing
-        original_tool_name, server_name_from_prefix = get_server_name_prefix_tool_mcp(
+        original_tool_name, server_name_from_prefix = split_server_prefix_from_name(
             name
         )
 
