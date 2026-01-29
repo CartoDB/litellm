@@ -617,7 +617,7 @@ jobs:
             true:false)
               # New PR created - Step 2: PR Created
               if [[ -n "${NEW_PR_URL}" ]]; then
-                COLOR="#2196F3"  # Blue - in progress
+                COLOR="#1E88E5"  # Blue - neutral/informative
                 PROGRESS=$(make_progress 2)
                 TITLE="LiteLLM Upstream Sync"
                 STEP_TEXT="Step 2 of 4: PR Created"
@@ -633,7 +633,7 @@ jobs:
                 STATUS_FIELD="*Status*\n:hourglass_flowing_sand: Tests running"
                 NEXT_ACTION="Automated tests will run. Review when ready."
               else
-                COLOR="#FF9800"  # Orange - warning
+                COLOR="#1E88E5"  # Blue - neutral/informative
                 PROGRESS=$(make_progress 2)
                 TITLE="LiteLLM Upstream Sync"
                 STEP_TEXT="Step 2: Error"
@@ -647,7 +647,7 @@ jobs:
               ;;
             true:true)
               # PR already exists - info only
-              COLOR="#4CAF50"  # Green - info
+              COLOR="#1E88E5"  # Blue - neutral/informative
               PROGRESS=$(make_progress 2)
               TITLE="LiteLLM Upstream Sync"
               STEP_TEXT="PR Already Exists"
@@ -659,7 +659,7 @@ jobs:
               ;;
             false:*)
               # Already up to date - minimal notification
-              COLOR="#4CAF50"  # Green - success
+              COLOR="#1E88E5"  # Blue - neutral/informative
               PROGRESS=$(make_progress 4)
               TITLE="LiteLLM Upstream Sync"
               STEP_TEXT="Up to Date"
@@ -671,7 +671,7 @@ jobs:
               ;;
             *)
               # Error state
-              COLOR="#FF9800"  # Orange - warning
+              COLOR="#1E88E5"  # Blue - neutral/informative
               PROGRESS=$(make_progress 1)
               TITLE="LiteLLM Upstream Sync"
               if [[ "${SYNC_STATUS}" == "failure" ]]; then
@@ -700,7 +700,13 @@ jobs:
             exit 0
           fi
 
-          # Build Block Kit payload with colored attachment bar
+          # Build compare URL for viewing changes between versions
+          COMPARE_URL=""
+          if [[ -n "${CURRENT_VERSION}" && -n "${NEW_VERSION}" ]]; then
+            COMPARE_URL="https://github.com/BerriAI/litellm/compare/v${CURRENT_VERSION}-stable...${NEW_VERSION}"
+          fi
+
+          # Build improved Block Kit payload with colored sidebar and better visual hierarchy
           cat > /tmp/slack_payload.json << EOF
           {
             "channel": "${SLACK_CHANNEL_LITELLM}",
@@ -761,15 +767,6 @@ jobs:
                     ]
                   }}
                   ,{
-                    "type": "context",
-                    "elements": [
-                      {
-                        "type": "mrkdwn",
-                        "text": ":book: <${DOCS_URL}|LiteLLM Fork CI Docs>"
-                      }
-                    ]
-                  },
-                  {
                     "type": "actions",
                     "elements": [
                       {
@@ -777,11 +774,16 @@ jobs:
                         "text": { "type": "plain_text", "text": "View PR", "emoji": true },
                         "style": "primary",
                         "url": "${PR_URL}"
-                      },
-                      {
+                      }
+                      ${COMPARE_URL:+,{
                         "type": "button",
-                        "text": { "type": "plain_text", "text": "View Logs", "emoji": true },
-                        "url": "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                        "text": { "type": "plain_text", "text": "View Changes", "emoji": true },
+                        "url": "${COMPARE_URL}"
+                      }}
+                      ,{
+                        "type": "button",
+                        "text": { "type": "plain_text", "text": "Docs", "emoji": true },
+                        "url": "${DOCS_URL}"
                       }
                     ]
                   }

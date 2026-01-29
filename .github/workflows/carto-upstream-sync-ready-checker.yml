@@ -158,8 +158,8 @@ jobs:
             | head -1 || echo "")
 
           if [[ -n "${THREAD_TS}" ]]; then
-            echo "[Slack] Found thread_ts: ${THREAD_TS} - will reply in thread"
-            THREAD_PARAM="\"thread_ts\": \"${THREAD_TS}\","
+            echo "[Slack] Found thread_ts: ${THREAD_TS} - will reply in thread with broadcast"
+            THREAD_PARAM="\"thread_ts\": \"${THREAD_TS}\", \"reply_broadcast\": true,"
           else
             echo "[Slack] No thread_ts found - will post new message"
             THREAD_PARAM=""
@@ -177,7 +177,10 @@ jobs:
           # Progress bar (step 4 of 4 complete)
           PROGRESS="◼️◼️◼️◼️"
 
-          # Build Block Kit payload with green color bar (success)
+          # Build compare URL for upstream changes
+          COMPARE_URL="https://github.com/BerriAI/litellm/releases/tag/${VERSION}"
+
+          # Build improved Block Kit payload with colored sidebar
           cat > /tmp/slack_payload.json << EOF
           {
             "channel": "${SLACK_CHANNEL_LITELLM}",
@@ -187,7 +190,7 @@ jobs:
             "unfurl_media": false,
             "attachments": [
               {
-                "color": "#4CAF50",
+                "color": "#1E88E5",
                 "blocks": [
                   {
                     "type": "header",
@@ -239,15 +242,6 @@ jobs:
                     ]
                   },
                   {
-                    "type": "context",
-                    "elements": [
-                      {
-                        "type": "mrkdwn",
-                        "text": ":book: <${DOCS_URL}|LiteLLM Fork CI Docs>"
-                      }
-                    ]
-                  },
-                  {
                     "type": "actions",
                     "elements": [
                       {
@@ -255,6 +249,11 @@ jobs:
                         "text": { "type": "plain_text", "text": "Review PR", "emoji": true },
                         "style": "primary",
                         "url": "${PR_URL}"
+                      },
+                      {
+                        "type": "button",
+                        "text": { "type": "plain_text", "text": "View Release", "emoji": true },
+                        "url": "${COMPARE_URL}"
                       },
                       {
                         "type": "button",
@@ -360,8 +359,8 @@ jobs:
             | head -1 || echo "")
 
           if [[ -n "${THREAD_TS}" ]]; then
-            echo "[Slack] Found thread_ts: ${THREAD_TS} - will reply in thread"
-            THREAD_PARAM="\"thread_ts\": \"${THREAD_TS}\","
+            echo "[Slack] Found thread_ts: ${THREAD_TS} - will reply in thread with broadcast"
+            THREAD_PARAM="\"thread_ts\": \"${THREAD_TS}\", \"reply_broadcast\": true,"
           else
             echo "[Slack] No thread_ts found - will post new message"
             THREAD_PARAM=""
@@ -374,7 +373,7 @@ jobs:
           # Progress bar (step 3 stuck - tests failed)
           PROGRESS="◼️◼️◼️◻️"
 
-          # Build Block Kit payload with red color bar (failure)
+          # Build improved Block Kit payload with colored sidebar
           cat > /tmp/slack_payload.json << EOF
           {
             "channel": "${SLACK_CHANNEL_LITELLM}",
@@ -384,7 +383,7 @@ jobs:
             "unfurl_media": false,
             "attachments": [
               {
-                "color": "#F44336",
+                "color": "#1E88E5",
                 "blocks": [
                   {
                     "type": "header",
@@ -432,15 +431,6 @@ jobs:
                       {
                         "type": "mrkdwn",
                         "text": ":arrow_right: Check logs, fix issues, and re-run the pipeline."
-                      }
-                    ]
-                  },
-                  {
-                    "type": "context",
-                    "elements": [
-                      {
-                        "type": "mrkdwn",
-                        "text": ":book: <${DOCS_URL}|LiteLLM Fork CI Docs>"
                       }
                     ]
                   },
