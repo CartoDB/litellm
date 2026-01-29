@@ -211,8 +211,9 @@ jobs:
           IMPACT="${{ steps.meta.outputs.impact }}"
           VERSION="${{ steps.meta.outputs.version }}"
 
-          # Escape title for JSON
+          # Escape strings for JSON
           TITLE_ESCAPED=$(echo "$TITLE" | jq -Rs '.' | sed 's/^"//;s/"$//')
+          AUTHOR_ESCAPED=$(echo "$AUTHOR" | jq -Rs '.' | sed 's/^"//;s/"$//')
 
           # Build Block Kit payload
           cat > /tmp/slack_payload.json << EOF
@@ -241,7 +242,7 @@ jobs:
                   {
                     "type": "section",
                     "fields": [
-                      { "type": "mrkdwn", "text": "*Author:*\n${AUTHOR}" },
+                      { "type": "mrkdwn", "text": "*Author:*\n${AUTHOR_ESCAPED}" },
                       { "type": "mrkdwn", "text": "*Impact:*\n${IMPACT}" },
                       { "type": "mrkdwn", "text": "*Files:*\n${FILES} files" },
                       { "type": "mrkdwn", "text": "*Changes:*\n+${ADDITIONS} -${DELETIONS}" }
@@ -321,8 +322,9 @@ jobs:
           EMOJI="${{ steps.release_meta.outputs.emoji }}"
           COLOR="${{ steps.release_meta.outputs.color }}"
 
-          # Escape name for JSON
+          # Escape strings for JSON
           NAME_ESCAPED=$(echo "$NAME" | jq -Rs '.' | sed 's/^"//;s/"$//')
+          AUTHOR_ESCAPED=$(echo "$AUTHOR" | jq -Rs '.' | sed 's/^"//;s/"$//')
 
           # Build Block Kit payload
           cat > /tmp/slack_payload.json << EOF
@@ -351,7 +353,7 @@ jobs:
                   {
                     "type": "section",
                     "fields": [
-                      { "type": "mrkdwn", "text": "*Author:*\n${AUTHOR}" },
+                      { "type": "mrkdwn", "text": "*Author:*\n${AUTHOR_ESCAPED}" },
                       { "type": "mrkdwn", "text": "*Commits:*\n${COMMITS}" },
                       { "type": "mrkdwn", "text": "*Previous:*\n${PREV_TAG:-N/A}" },
                       { "type": "mrkdwn", "text": "*Type:*\n${TYPE}" }
@@ -423,6 +425,16 @@ jobs:
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             gh pr diff "${{ steps.meta.outputs.number }}" --patch 2>/dev/null | head -500 > /tmp/pr_diff.txt || echo "" > /tmp/pr_diff.txt
             gh pr view "${{ steps.meta.outputs.number }}" --json body --jq '.body // ""' > /tmp/pr_body.txt 2>/dev/null || echo "" > /tmp/pr_body.txt
+          else
+            # For releases: get commit log and release body
+            PREV_TAG="${{ steps.release_meta.outputs.prev_tag }}"
+            RELEASE_TAG="${{ steps.release_meta.outputs.tag }}"
+            if [[ -n "$PREV_TAG" ]]; then
+              git log "${PREV_TAG}..${RELEASE_TAG}" --oneline > /tmp/pr_diff.txt 2>/dev/null || echo "" > /tmp/pr_diff.txt
+            else
+              git log -20 --oneline > /tmp/pr_diff.txt 2>/dev/null || echo "" > /tmp/pr_diff.txt
+            fi
+            echo "${{ github.event.release.body }}" > /tmp/pr_body.txt
           fi
 
       - name: Setup GCP credentials
@@ -482,8 +494,18 @@ jobs:
           EXECUTION_FILE="${{ steps.insight.outputs.execution_file }}"
 
           if [[ -f "$EXECUTION_FILE" ]]; then
-            # Extract the assistant's final text response
-            INSIGHT=$(jq -r '.[] | select(.type == "assistant") | .message.content[] | select(.type == "text") | .text' "$EXECUTION_FILE" 2>/dev/null | tail -1 || echo "")
+            # Extract the final result text from Claude's execution
+            # Try multiple extraction methods for robustness
+            INSIGHT=$(jq -r '
+              [.[] | select(.type == "result") | .result // empty] | last //
+              [.[] | select(.type == "assistant") | .message.content[] | select(.type == "text") | .text] | last //
+              ""
+            ' "$EXECUTION_FILE" 2>/dev/null || echo "")
+
+            # Fallback: if still empty, try simpler extraction
+            if [[ -z "$INSIGHT" || "$INSIGHT" == "null" ]]; then
+              INSIGHT=$(jq -r 'last | .result // .message.content[0].text // ""' "$EXECUTION_FILE" 2>/dev/null || echo "")
+            fi
           else
             INSIGHT=""
           fi
