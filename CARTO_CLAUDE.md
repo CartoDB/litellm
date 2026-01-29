@@ -387,14 +387,32 @@ When conflicts are detected, the `carto-upstream-sync-resolver.yml` workflow:
 4. **Workflow** creates merge commit with both parents (preserves history)
 5. **Pushes** directly to the sync branch (PR auto-updates!)
 
-**Resolution priorities:**
-| File Pattern | Keep | Reason |
-|--------------|------|--------|
-| `carto_*.yaml`, `carto-*.yml` | CARTO version | CARTO workflows |
-| `CARTO_*.md` | CARTO version | CARTO docs |
-| `litellm/**` (core) | Upstream | Upstream improvements |
-| `tests/**` | Upstream | Upstream tests |
-| `Dockerfile`, `Makefile` | Merge carefully | Keep `# CARTO:` sections |
+**Resolution priorities (CARTO-FIRST):**
+
+> ⚠️ **Key Principle:** CARTO customizations made by CartoDB organization members are **INTENTIONAL and MUST be preserved**. Upstream changes should be merged **AROUND** CARTO code, not replacing it.
+
+| Priority | File Pattern | Resolution | Reason |
+|----------|--------------|------------|--------|
+| 1 | Files with CARTO commits* | **KEEP carto/main** | CartoDB org members made intentional changes |
+| 2 | `carto_*.yaml`, `carto-*.yml` | **KEEP carto/main** | CARTO workflows |
+| 3 | `CARTO_*.md` | **KEEP carto/main** | CARTO docs |
+| 4 | Files with ONLY upstream commits | Accept upstream | No CARTO changes to preserve |
+| 5 | `pyproject.toml` | Merge carefully | Upstream version + CARTO deps |
+| 6 | `Dockerfile`, `Makefile` | Merge carefully | Keep `# CARTO:` sections |
+
+\* CARTO commits = commits from `@carto.com` or `@cartodb.com` email authors
+
+**Known CARTO Customizations (MUST be preserved):**
+
+| File Path | CARTO Fix | Description |
+|-----------|-----------|-------------|
+| `litellm/llms/azure/*` | URL sanitization | Azure endpoint URL fixes |
+| `litellm/llms/databricks/*` | GPT-5 streaming | Databricks streaming support |
+| `litellm/llms/oci/*` | Tool calling | OCI tool calling support |
+| `litellm/llms/snowflake_api/*` | PAT auth, Claude streaming | Snowflake auth and streaming fixes |
+| `litellm/responses/*` | SessionHandler fix | Response handling improvements |
+| `litellm/llms/vertex_ai/*` | Labels field filtering | Vertex AI label support |
+| `litellm/litellm_core_utils/streaming*` | JSON repair | Streaming JSON parsing fixes |
 
 #### Why Single-PR Workflow?
 
@@ -1095,6 +1113,6 @@ For questions about this fork:
 
 ---
 
-**Last Updated:** 2025-12-03
+**Last Updated:** 2026-01-29
 **Maintained By:** CARTO Engineering Team
 **For:** AI Assistants & Developers working on CARTO's LiteLLM fork

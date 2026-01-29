@@ -381,6 +381,47 @@ jobs:
           echo '${{ secrets.CI_RESOURCES_SERVICE_ACCOUNT }}' > /tmp/gcp-sa.json
           echo "GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-sa.json" >> $GITHUB_ENV
 
+      - name: Analyze CARTO-modified files (pre-resolution)
+        id: carto-files
+        run: |
+          echo "::group::Identifying CARTO-modified files"
+
+          # Get list of conflicted files
+          CONFLICTS="${{ steps.start-merge.outputs.conflicts }}"
+
+          # Create file to store CARTO-modified files
+          echo "" > /tmp/carto_modified.txt
+          echo "" > /tmp/upstream_only.txt
+
+          # Check each conflicted file for CARTO commits
+          for FILE in $CONFLICTS; do
+            # Count commits from CartoDB org members (case-insensitive email match)
+            CARTO_COMMITS=$(git log --oneline carto/main -- "$FILE" 2>/dev/null | \
+              grep -iE "@carto\.com|@cartodb\.com|Cartofante" | wc -l | tr -d ' ')
+
+            if [ "$CARTO_COMMITS" -gt 0 ]; then
+              echo "CARTO-MODIFIED ($CARTO_COMMITS commits): $FILE"
+              echo "$FILE" >> /tmp/carto_modified.txt
+            else
+              echo "UPSTREAM-ONLY: $FILE"
+              echo "$FILE" >> /tmp/upstream_only.txt
+            fi
+          done
+
+          # Output results for Claude
+          CARTO_FILES=$(cat /tmp/carto_modified.txt | grep -v '^$' || echo "")
+          UPSTREAM_FILES=$(cat /tmp/upstream_only.txt | grep -v '^$' || echo "")
+
+          echo "carto-files<<EOF" >> $GITHUB_OUTPUT
+          echo "$CARTO_FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          echo "upstream-files<<EOF" >> $GITHUB_OUTPUT
+          echo "$UPSTREAM_FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          echo "::endgroup::"
+
       - name: Run Claude Code for conflict resolution (FILE EDITS ONLY)
         id: claude-run
         uses: anthropics/claude-code-action@v1
@@ -390,9 +431,11 @@ jobs:
           show_full_output: true
           claude_args: "--model claude-opus-4-5@20251101 --max-turns 250 --allowedTools Read,Write,Edit,Bash,Grep,Glob ${{ github.event.inputs.debug == 'true' && '--debug' || '' }}"
           prompt: |
-            # Conflict Resolution Task - EDIT FILES ONLY
+            # Conflict Resolution Task - CARTO-FIRST STRATEGY
 
-            ## ⚠️ CRITICAL: YOUR ONLY JOB IS TO EDIT FILES
+            ## ⚠️ CRITICAL: CARTO CUSTOMIZATIONS ARE MANDATORY TO PRESERVE
+
+            **Key Principle:** CARTO customizations made by CartoDB organization members are **INTENTIONAL and MUST be preserved**. Upstream changes should be merged **AROUND** CARTO code, not replacing it.
 
             The git merge has ALREADY been started by the workflow.
             You are in a merge conflict state with ${{ steps.start-merge.outputs.conflict-count }} conflicted files.
@@ -405,11 +448,25 @@ jobs:
 
             **YOUR ONLY JOB:**
             1. Read conflicted files
-            2. Edit files to remove conflict markers
+            2. Edit files to remove conflict markers (PRESERVING CARTO CODE)
             3. Run tests and fix issues
             4. Say "RESOLUTION COMPLETE" when done
 
-            ## Conflicted Files (${{ steps.start-merge.outputs.conflict-count }} files)
+            ## Pre-Analysis: CARTO vs Upstream Files
+
+            The workflow has analyzed which files have CARTO commits:
+
+            **🔒 CARTO-MODIFIED FILES (MUST KEEP CARTO VERSION):**
+            ```
+            ${{ steps.carto-files.outputs.carto-files }}
+            ```
+
+            **📥 UPSTREAM-ONLY FILES (Accept upstream):**
+            ```
+            ${{ steps.carto-files.outputs.upstream-files }}
+            ```
+
+            ## All Conflicted Files (${{ steps.start-merge.outputs.conflict-count }} files)
 
             ```
             ${{ steps.start-merge.outputs.conflicts }}
@@ -421,7 +478,7 @@ jobs:
             cat CARTO_CLAUDE.md
             ```
 
-            ## Step 2: Resolution Rules
+            ## Step 2: Resolution Rules (CARTO-FIRST PRIORITY)
 
             **Conflict markers look like this:**
             ```
@@ -432,24 +489,68 @@ jobs:
             >>>>>>> carto/main
             ```
 
-            **Resolution priorities:**
+            **Resolution priorities (CARTO-FIRST):**
 
-            | File Pattern | Keep | Reason |
-            |--------------|------|--------|
-            | `carto_*.yaml`, `carto-*.yml` | carto/main (bottom) | CARTO workflows |
-            | `CARTO_*.md` | carto/main (bottom) | CARTO docs |
-            | `litellm/**` (core) | HEAD (top) | Upstream improvements |
-            | `tests/**` | HEAD (top) | Upstream tests |
-            | `Dockerfile`, `Makefile` | Merge carefully | Keep `# CARTO:` sections |
+            | Priority | File Pattern | Resolution | Reason |
+            |----------|--------------|------------|--------|
+            | 1 | Files in CARTO-MODIFIED list above | **KEEP carto/main** | CartoDB org members made intentional changes |
+            | 2 | `carto_*.yaml`, `carto-*.yml` | **KEEP carto/main** | CARTO workflows |
+            | 3 | `CARTO_*.md` | **KEEP carto/main** | CARTO docs |
+            | 4 | Files in UPSTREAM-ONLY list above | Accept HEAD (upstream) | No CARTO changes |
+            | 5 | `pyproject.toml` | Merge carefully | Upstream version + CARTO deps |
+            | 6 | `Dockerfile`, `Makefile` | Merge carefully | Keep `# CARTO:` sections |
 
-            ## Step 3: Resolve Each File
+            ## Known CARTO Customizations (NEVER LOSE THESE)
+
+            These are critical CARTO fixes that MUST be preserved:
+
+            | File Path | CARTO Fix | Description |
+            |-----------|-----------|-------------|
+            | `litellm/llms/azure/*` | URL sanitization | Azure endpoint URL fixes |
+            | `litellm/llms/databricks/*` | GPT-5 streaming | Databricks streaming support |
+            | `litellm/llms/oci/*` | Tool calling | OCI tool calling support |
+            | `litellm/llms/snowflake_api/*` | PAT auth, Claude streaming | Snowflake auth and streaming fixes |
+            | `litellm/responses/*` | SessionHandler fix | Response handling improvements |
+            | `litellm/llms/vertex_ai/*` | Labels field filtering | Vertex AI label support |
+            | `litellm/litellm_core_utils/streaming*` | JSON repair | Streaming JSON parsing fixes |
+
+            ## Step 3: Resolve Each File (CARTO-FIRST)
 
             For EACH conflicted file:
+
+            ### If file is in CARTO-MODIFIED list:
             1. **Read** the file
-            2. **Find** all `<<<<<<<`, `=======`, `>>>>>>>` markers
-            3. **Decide** which version to keep (using rules above)
-            4. **Edit** the file to remove markers and keep correct content
-            5. **Verify** no markers remain in the file
+            2. **KEEP the CARTO version** (after `=======`, before `>>>>>>> carto/main`)
+            3. **ALSO check if upstream added NEW code** that doesn't conflict with CARTO fix
+            4. **Merge BOTH** if possible: Keep CARTO fix + add non-conflicting upstream additions
+
+            ### If file is in UPSTREAM-ONLY list:
+            1. **Read** the file
+            2. **Accept upstream version** (after `<<<<<<< HEAD`, before `=======`)
+            3. Remove conflict markers
+
+            ### Correct Merge Example (keeping BOTH):
+            ```python
+            # CORRECT: Keep CARTO fix, add upstream feature
+            def process(self, data):
+                # CARTO fix: Handle null metadata (PRESERVED)
+                if data.get('metadata') is None:
+                    data['metadata'] = {}
+                # New upstream feature (ADDED)
+                if data.get('new_flag'):
+                    self.handle_new_flag(data)
+                return self.transform(data)
+            ```
+
+            ### WRONG Merge (losing CARTO code):
+            ```python
+            # WRONG: Lost CARTO fix, only kept upstream
+            def process(self, data):
+                # CARTO fix is GONE - this is WRONG!
+                if data.get('new_flag'):
+                    self.handle_new_flag(data)
+                return self.transform(data)
+            ```
 
             ## Step 4: Run Tests
 
@@ -480,7 +581,7 @@ jobs:
 
             ---
 
-            **Begin resolving conflicts now!**
+            **REMEMBER: CARTO code is INTENTIONAL. Preserve it. Begin resolving conflicts now!**
 
         env:
           ANTHROPIC_VERTEX_PROJECT_ID: carto-ci-resources
