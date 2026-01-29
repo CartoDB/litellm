@@ -29,6 +29,9 @@ DEFAULT_MAX_RECURSE_DEPTH_SENSITIVE_DATA_MASKER = int(
 DEFAULT_FAILURE_THRESHOLD_PERCENT = float(
     os.getenv("DEFAULT_FAILURE_THRESHOLD_PERCENT", 0.5)
 )  # default cooldown a deployment if 50% of requests fail in a given minute
+DEFAULT_FAILURE_THRESHOLD_MINIMUM_REQUESTS = int(
+    os.getenv("DEFAULT_FAILURE_THRESHOLD_MINIMUM_REQUESTS", 10)
+)  # minimum number of requests before applying failure percentage threshold for cooldown
 DEFAULT_MAX_TOKENS = int(os.getenv("DEFAULT_MAX_TOKENS", 4096))
 DEFAULT_ALLOWED_FAILS = int(os.getenv("DEFAULT_ALLOWED_FAILS", 3))
 DEFAULT_REDIS_SYNC_INTERVAL = int(os.getenv("DEFAULT_REDIS_SYNC_INTERVAL", 1))
@@ -1002,7 +1005,8 @@ RATE_LIMIT_ERROR_MESSAGE_FOR_VIRTUAL_KEY = "LiteLLM Virtual Key user_api_key_has
 # Format: "gen0,gen1,gen2" e.g., "1000,50,50"
 PYTHON_GC_THRESHOLD = os.getenv("PYTHON_GC_THRESHOLD")
 
-# pass through route constansts
+# pass through route constants
+PASS_THROUGH_HEADER_PREFIX = "x-pass-"  # prefix for headers to pass through to provider APIs
 BEDROCK_AGENT_RUNTIME_PASS_THROUGH_ROUTES = [
     "agents/",
     "knowledgebases/",
