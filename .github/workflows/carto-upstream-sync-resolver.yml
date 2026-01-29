@@ -534,17 +534,16 @@ jobs:
           |-----|-------|--------|-------|-------|
           ${PR_SUMMARY}"
 
-          # Output the detailed context
-          echo "context<<EOF" >> $GITHUB_OUTPUT
-          echo "$CONTEXT_OUTPUT" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          # Write context to files instead of outputs (to avoid "argument too long" errors)
+          echo "$CONTEXT_OUTPUT" > /tmp/carto_pr_context.md
+          echo "$PR_TABLE" > /tmp/carto_pr_table.md
 
-          # Output the summary table
-          echo "pr-table<<EOF" >> $GITHUB_OUTPUT
-          echo "$PR_TABLE" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          echo "[Resolver] Context written to /tmp/carto_pr_context.md ($(wc -c < /tmp/carto_pr_context.md) bytes)"
+          echo "[Resolver] PR table written to /tmp/carto_pr_table.md ($(wc -c < /tmp/carto_pr_table.md) bytes)"
 
-          # Output total count
+          # Output just a flag that context exists
+          echo "context-file=/tmp/carto_pr_context.md" >> $GITHUB_OUTPUT
+          echo "table-file=/tmp/carto_pr_table.md" >> $GITHUB_OUTPUT
           echo "total-prs=${TOTAL_PRS}" >> $GITHUB_OUTPUT
 
           echo "::endgroup::"
@@ -630,15 +629,18 @@ jobs:
             ## CARTO Customizations for Conflicted Files
 
             The workflow has analyzed ${{ steps.carto-context.outputs.total-prs }} merged PRs to carto/main.
-            Below is the context for each CARTO-modified file that has conflicts:
 
-            ${{ steps.carto-context.outputs.context }}
+            **Read these files for CARTO context:**
+            - `/tmp/carto_pr_context.md` - Detailed context for each CARTO-modified conflicted file
+            - `/tmp/carto_pr_table.md` - Summary table of all CARTO PRs
 
-            ---
+            ```bash
+            # Read CARTO context for conflicted files
+            cat /tmp/carto_pr_context.md
 
-            ## All CARTO PRs Reference (most recent first)
-
-            ${{ steps.carto-context.outputs.pr-table }}
+            # Read summary of all CARTO PRs (if needed)
+            cat /tmp/carto_pr_table.md
+            ```
 
             **To get full details about a specific PR (description, discussion, files):**
             ```bash
