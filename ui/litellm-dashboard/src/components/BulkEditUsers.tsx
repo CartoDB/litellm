@@ -18,7 +18,7 @@ import NotificationsManager from "./molecules/notifications_manager";
 const { Text, Title } = Typography;
 
 interface BulkEditUserModalProps {
-  open: boolean;
+  visible: boolean;
   onCancel: () => void;
   selectedUsers: any[];
   possibleUIRoles: Record<string, Record<string, string>> | null;
@@ -31,7 +31,7 @@ interface BulkEditUserModalProps {
 }
 
 const BulkEditUserModal: React.FC<BulkEditUserModalProps> = ({
-  open,
+  visible,
   onCancel,
   selectedUsers,
   possibleUIRoles,
@@ -75,7 +75,7 @@ const BulkEditUserModal: React.FC<BulkEditUserModalProps> = ({
       keys: [],
       teams: teams || [],
     }),
-    [teams, open],
+    [teams, visible],
   );
 
   const handleSubmit = async (formValues: any) => {
@@ -145,7 +145,7 @@ const BulkEditUserModal: React.FC<BulkEditUserModalProps> = ({
             if (updateAllUsers) {
               members = null;
             } else {
-              members = selectedUsers.map((user) => ({
+              const members = selectedUsers.map((user) => ({
                 user_id: user.user_id,
                 role: "user" as const, // Default role for bulk add
                 user_email: user.user_email || null,
@@ -214,7 +214,7 @@ const BulkEditUserModal: React.FC<BulkEditUserModalProps> = ({
 
   return (
     <Modal
-      open={open}
+      visible={visible}
       onCancel={handleCancel}
       footer={null}
       title={updateAllUsers ? "Bulk Edit All Users" : `Bulk Edit ${selectedUsers.length} User(s)`}

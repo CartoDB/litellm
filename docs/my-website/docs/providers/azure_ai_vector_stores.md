@@ -1,9 +1,9 @@
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 
-# Azure AI Search - Vector Store (Unified API)
+# Azure AI Search - Vector Store
 
-Use this to **search** Azure AI Search Vector Stores, with LiteLLM's unified `/chat/completions` API.
+Use Azure AI Search as a vector store for RAG.
 
 ## Quick Start
 

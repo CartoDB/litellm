@@ -9,7 +9,6 @@ export async function makeOpenAIImageGenerationRequest(
   accessToken: string,
   tags?: string[],
   signal?: AbortSignal,
-  customBaseUrl?: string,
 ) {
   // base url should be the current base_url
   const isLocal = process.env.NODE_ENV === "development";
@@ -17,7 +16,7 @@ export async function makeOpenAIImageGenerationRequest(
     console.log = function () {};
   }
   console.log("isLocal:", isLocal);
-  const proxyBaseUrl = customBaseUrl || getProxyBaseUrl();
+  const proxyBaseUrl = getProxyBaseUrl();
   const client = new openai.OpenAI({
     apiKey: accessToken,
     baseURL: proxyBaseUrl,

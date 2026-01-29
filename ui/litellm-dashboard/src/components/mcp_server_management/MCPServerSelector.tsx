@@ -1,12 +1,15 @@
-import { useMCPAccessGroups } from "@/app/(dashboard)/hooks/mcpServers/useMCPAccessGroups";
-import { useMCPServers } from "@/app/(dashboard)/hooks/mcpServers/useMCPServers";
+import React, { useEffect, useState } from "react";
 import { Select } from "antd";
-import React from "react";
+import { fetchMCPServers, fetchMCPAccessGroups } from "../networking";
+import { MCPServer } from "../mcp_tools/types";
 
 interface MCPServerSelectorProps {
-  onChange: (selected: { servers: string[]; accessGroups: string[] }) => void;
-  value?: {
-    servers: string[];
+  onChange: (selected: { 
+    servers: string[]; 
+    accessGroups: string[];
+  }) => void;
+  value?: { 
+    servers: string[]; 
     accessGroups: string[];
   };
   className?: string;
@@ -23,10 +26,31 @@ const MCPServerSelector: React.FC<MCPServerSelectorProps> = ({
   placeholder = "Select MCP servers",
   disabled = false,
 }) => {
-  const { data: mcpServers = [], isLoading: serversLoading } = useMCPServers();
-  const { data: accessGroups = [], isLoading: groupsLoading } = useMCPAccessGroups();
+  const [mcpServers, setMCPServers] = useState<MCPServer[]>([]);
+  const [accessGroups, setAccessGroups] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
 
-  const loading = serversLoading || groupsLoading;
+  useEffect(() => {
+    const fetchData = async () => {
+      if (!accessToken) return;
+      setLoading(true);
+      try {
+        const [serversRes, groupsRes] = await Promise.all([
+          fetchMCPServers(accessToken),
+          fetchMCPAccessGroups(accessToken),
+        ]);
+        let servers = Array.isArray(serversRes) ? serversRes : serversRes.data || [];
+        let groups = Array.isArray(groupsRes) ? groupsRes : groupsRes.data || [];
+        setMCPServers(servers);
+        setAccessGroups(groups);
+      } catch (error) {
+        console.error("Error fetching MCP servers or access groups:", error);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchData();
+  }, [accessToken]);
 
   // Combine options, access groups first
   const options = [
@@ -63,7 +87,6 @@ const MCPServerSelector: React.FC<MCPServerSelectorProps> = ({
         value={selectedValues}
         loading={loading}
         className={className}
-        allowClear
         showSearch
         style={{ width: "100%" }}
         disabled={disabled}

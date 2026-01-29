@@ -16,7 +16,6 @@ Log Proxy input, output, and exceptions using:
 - Custom Callbacks - Custom code and API endpoints
 - Langsmith
 - DataDog
-- Azure Sentinel
 - DynamoDB
 - etc.
 
@@ -67,7 +66,7 @@ Set `litellm.turn_off_message_logging=True` This will prevent the messages and r
 
 <TabItem value="global" label="Global">
 
-**1. Setup config.yaml**
+**1. Setup config.yaml **
 ```yaml
 model_list:
  - model_name: gpt-3.5-turbo
@@ -982,8 +981,6 @@ OTEL_ENDPOINT="http:/0.0.0.0:4317"
 OTEL_HEADERS="x-honeycomb-team=<your-api-key>" # Optional
 ```
 
-> Note: OTLP gRPC requires `grpcio`. Install via `pip install "litellm[grpc]"` (or `grpcio`).
-
 Add `otel` as a callback on your `litellm_config.yaml`
 
 ```shell
@@ -1338,7 +1335,6 @@ litellm_settings:
     s3_aws_secret_access_key: os.environ/AWS_SECRET_ACCESS_KEY  # AWS Secret Access Key for S3
     s3_path: my-test-path # [OPTIONAL] set path in bucket you want to write logs to
     s3_endpoint_url: https://s3.amazonaws.com  # [OPTIONAL] S3 endpoint URL, if you want to use Backblaze/cloudflare s3 buckets
-    s3_strip_base64_files: false # [OPTIONAL] remove base64 files before storing in s3
 ```
 
 **Step 3**: Start the proxy, make a test request
@@ -1369,12 +1365,14 @@ Your logs should be available on the specified s3 Bucket
 
 ### Team Alias Prefix in Object Key
 
-You can add the team alias to the object key by setting the `team_alias` in the `config.yaml` file. 
-This will prefix the object key with the team alias.
+**This is a preview feature**
+
+You can add the team alias to the object key by setting the `team_alias` in the `config.yaml` file. This will prefix the object key with the team alias.
 
 ```yaml
 litellm_settings:
   callbacks: ["s3_v2"]
+  enable_preview_features: true
   s3_callback_params:
     s3_bucket_name: logs-bucket-litellm
     s3_region_name: us-west-2
@@ -1386,28 +1384,6 @@ litellm_settings:
 ```
 
 On s3 bucket, you will see the object key as `my-test-path/my-team-alias/...`
-
-### Key Alias Prefix in Object Key
-
-You can add the user api key alias to the s3 object key by enabling s3_use_key_prefix.
-
-```yaml
-litellm_settings:
-  callbacks: ["s3_v2"]
-  s3_callback_params:
-    s3_bucket_name: logs-bucket-litellm
-    s3_region_name: us-west-2
-    s3_aws_access_key_id: os.environ/AWS_ACCESS_KEY_ID
-    s3_aws_secret_access_key: os.environ/AWS_SECRET_ACCESS_KEY
-    s3_path: my-test-path
-    s3_endpoint_url: https://s3.amazonaws.com
-    s3_use_key_prefix: true
-```
-
-On s3 bucket, you will see the object key as `my-test-path/my-key-alias/...`
-
-if both team alias and key alias are enabled then the path becomes
-`my-test-path/my-team-alias/my-key-alias/...`
 
 ## AWS SQS
 
@@ -1455,13 +1431,9 @@ litellm_settings:
     # AWS Region for your SQS queue (e.g., us-east-1, eu-central-1, etc.)
     
     # --- Logging Controls ---
-    sqs_strip_base64_files: false
+    sqs_strip_base64_files: true
     # If true, LiteLLM will remove or redact base64-encoded binary data (e.g., PDFs, images, audio)
     # from logged messages to avoid large payloads. SQS has a 1 MB payload size limit.
-    s3_use_team_prefix: false
-    # If true, Litellm will add the team alias prefix to s3 path
-    s3_use_key_prefix: false
-    # If true, Litellm will add the key alias prefix to s3 path
 
 ```
 
@@ -1576,10 +1548,6 @@ curl --location 'http://0.0.0.0:4000/chat/completions' \
 ## [Datadog](../observability/datadog)
 
 👉 Go here for using [Datadog LLM Observability](../observability/datadog) with LiteLLM Proxy
-
-## [Azure Sentinel](../observability/azure_sentinel)
-
-👉 Go here for using [Azure Sentinel](../observability/azure_sentinel) with LiteLLM Proxy
 
 
 ## Lunary
@@ -1738,6 +1706,7 @@ class MyCustomHandler(CustomLogger):
 proxy_handler_instance = MyCustomHandler()
 
 # Set litellm.callbacks = [proxy_handler_instance] on the proxy
+# need to set litellm.callbacks = [proxy_handler_instance] # on the proxy
 ```
 
 #### Step 2 - Pass your custom callback class in `config.yaml`
@@ -1828,64 +1797,6 @@ This approach allows you to:
 - Centrally manage callback files across multiple proxy instances
 - Share callbacks across different environments
 - Version control callback files in cloud storage
-
-#### Step 2c - Mounting Custom Callbacks in Helm/Kubernetes (Alternative)
-
-When deploying with Helm or Kubernetes, you can mount custom callback Python files alongside your `config.yaml` using `subPath` to avoid overwriting the config directory.
-
-**The Problem:**
-Mounting a volume to a directory (e.g., `/app/`) would normally hide all existing files in that directory, including your `config.yaml`.
-
-**The Solution:**
-Use `subPath` in your `volumeMounts` to mount individual files without overwriting the entire directory.
-
-**Example - Helm values.yaml:**
-
-```yaml
-# values.yaml
-volumes:
-  - name: callback-files
-    configMap:
-      name: litellm-callback-files
-
-volumeMounts:
-  - name: callback-files
-    mountPath: /app/custom_callbacks.py  # Mount to specific FILE path
-    subPath: custom_callbacks.py         # Required to avoid overwriting directory
-```
-
-**Create the ConfigMap with your callback file:**
-
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: litellm-callback-files
-data:
-  custom_callbacks.py: |
-    from litellm.integrations.custom_logger import CustomLogger
-    
-    class MyCustomHandler(CustomLogger):
-        async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
-            print(f"Success! Model: {kwargs.get('model')}")
-    
-    proxy_handler_instance = MyCustomHandler()
-```
-
-**Reference in your config.yaml:**
-
-```yaml
-litellm_settings:
-  callbacks: custom_callbacks.proxy_handler_instance
-```
-
-**How it works:**
-1. The `subPath` parameter tells Kubernetes to mount only the specific file
-2. This places `custom_callbacks.py` in `/app/` alongside your existing `config.yaml`
-3. LiteLLM automatically finds the callback file in the same directory as the config
-4. No files are overwritten or hidden
-
-**Note:** You can mount multiple callback files by adding more `volumeMounts` entries, each with its own `subPath`.
 
 #### Step 3 - Start proxy + test request
 

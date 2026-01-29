@@ -28,12 +28,7 @@ class DeepinfraRerankConfig(BaseRerankConfig):
     Deepinfra Rerank - Follows the same Spec as Cohere Rerank
     """
 
-    def get_complete_url(
-        self, 
-        api_base: Optional[str], 
-        model: str,
-        optional_params: Optional[dict] = None,
-    ) -> str:
+    def get_complete_url(self, api_base: Optional[str], model: str) -> str:
         """
         Constructs the complete DeepInfra inference endpoint URL for rerank.
 
@@ -68,7 +63,6 @@ class DeepinfraRerankConfig(BaseRerankConfig):
         headers: dict,
         model: str,
         api_key: Optional[str] = None,
-        optional_params: Optional[dict] = None,
     ) -> dict:
         if api_key is None:
             api_key = get_secret_str("DEEPINFRA_API_KEY")

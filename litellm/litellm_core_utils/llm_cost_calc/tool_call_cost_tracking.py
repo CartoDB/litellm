@@ -596,31 +596,6 @@ class StandardBuiltInToolCostTracking:
         return 0.0
 
     @staticmethod
-    def _get_code_interpreter_cost_from_model_map(
-        provider: str,
-    ) -> Optional[float]:
-        """
-        Get code interpreter cost per session from model cost map.
-        """
-        import litellm
-        
-        try:
-            container_model = f"{provider}/container"
-            model_info = litellm.get_model_info(
-                model=container_model,
-                custom_llm_provider=provider
-            )
-            model_key = model_info.get("key") if isinstance(model_info, dict) else getattr(model_info, "key", None)
-            
-            if model_key and model_key in litellm.model_cost:
-                return litellm.model_cost[model_key].get("code_interpreter_cost_per_session")
-            
-        except Exception:
-            pass
-        
-        return None
-
-    @staticmethod
     def get_cost_for_code_interpreter(
         sessions: Optional[int] = None,
         provider: Optional[str] = None,
@@ -629,8 +604,7 @@ class StandardBuiltInToolCostTracking:
         """
         Calculate cost for code interpreter feature.
 
-        Azure: $0.03 USD per session (from model cost map)
-        OpenAI: $0.03 USD per session (from model cost map)
+        Azure: $0.03 USD per session
         """
         if sessions is None or sessions == 0:
             return 0.0
@@ -639,15 +613,13 @@ class StandardBuiltInToolCostTracking:
         if model_info and "code_interpreter_cost_per_session" in model_info:
             return sessions * model_info["code_interpreter_cost_per_session"]
 
-        # Try to get cost from model cost map for any provider
-        if provider:
-            cost_per_session = StandardBuiltInToolCostTracking._get_code_interpreter_cost_from_model_map(
-                provider=provider
-            )
-            if cost_per_session is not None:
-                return sessions * cost_per_session
-            
+        # Azure pricing for code interpreter
+        if provider == "azure":
+            from litellm.constants import AZURE_CODE_INTERPRETER_COST_PER_SESSION
 
+            return sessions * AZURE_CODE_INTERPRETER_COST_PER_SESSION
+
+        # OpenAI doesn't charge separately for code interpreter yet
         return 0.0
 
     @staticmethod

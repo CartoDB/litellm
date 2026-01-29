@@ -29,7 +29,6 @@ def load_vertex_ai_credentials():
     # Define the path to the vertex_key.json file
     print("loading vertex ai credentials")
     os.environ["GCS_FLUSH_INTERVAL"] = "1"
-    os.environ["GCS_USE_BATCHED_LOGGING"] = "false"
     filepath = os.path.dirname(os.path.abspath(__file__))
     vertex_key_path = filepath + "/vertex_key.json"
 
@@ -84,7 +83,7 @@ async def test_aaabasic_gcs_logger():
         mock_response="Hi!",
         metadata={
             "tags": ["model-anthropic-claude-v2.1", "app-ishaan-prod"],
-            "user_api_key": "a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456",
+            "user_api_key": "88dc28d0f030c55ed4ab77ed8faf098196cb1c05df778539800c9f1243fe6b4b",
             "user_api_key_alias": None,
             "user_api_end_user_max_budget": None,
             "litellm_api_version": "0.0.0",
@@ -109,6 +108,7 @@ async def test_aaabasic_gcs_logger():
             },
             "endpoint": "http://localhost:4000/chat/completions",
             "model_group": "gpt-3.5-turbo",
+            "deployment": "azure/gpt-4.1-mini",
             "model_info": {
                 "id": "4bad40a1eb6bebd1682800f16f44b9f06c52a6703444c99c7f9f32e9de3693b4",
                 "db_model": False,
@@ -156,7 +156,7 @@ async def test_aaabasic_gcs_logger():
 
     assert (
         gcs_payload["metadata"]["user_api_key_hash"]
-        == "a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456"
+        == "88dc28d0f030c55ed4ab77ed8faf098196cb1c05df778539800c9f1243fe6b4b"
     )
     assert gcs_payload["metadata"]["user_api_key_user_id"] == "116544810872468347480"
 
@@ -192,7 +192,7 @@ async def test_basic_gcs_logger_failure():
             metadata={
                 "gcs_log_id": gcs_log_id,
                 "tags": ["model-anthropic-claude-v2.1", "app-ishaan-prod"],
-                "user_api_key": "a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456",
+                "user_api_key": "88dc28d0f030c55ed4ab77ed8faf098196cb1c05df778539800c9f1243fe6b4b",
                 "user_api_key_alias": None,
                 "user_api_end_user_max_budget": None,
                 "litellm_api_version": "0.0.0",
@@ -216,6 +216,7 @@ async def test_basic_gcs_logger_failure():
                 },
                 "endpoint": "http://localhost:4000/chat/completions",
                 "model_group": "gpt-3.5-turbo",
+                "deployment": "azure/gpt-4.1-mini",
                 "model_info": {
                     "id": "4bad40a1eb6bebd1682800f16f44b9f06c52a6703444c99c7f9f32e9de3693b4",
                     "db_model": False,
@@ -260,7 +261,7 @@ async def test_basic_gcs_logger_failure():
 
     assert (
         gcs_payload["metadata"]["user_api_key_hash"]
-        == "a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456"
+        == "88dc28d0f030c55ed4ab77ed8faf098196cb1c05df778539800c9f1243fe6b4b"
     )
     assert gcs_payload["metadata"]["user_api_key_user_id"] == "116544810872468347480"
 
@@ -600,7 +601,7 @@ async def test_basic_gcs_logger_with_folder_in_bucket_name():
         mock_response="Hi!",
         metadata={
             "tags": ["model-anthropic-claude-v2.1", "app-ishaan-prod"],
-            "user_api_key": "a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456",
+            "user_api_key": "88dc28d0f030c55ed4ab77ed8faf098196cb1c05df778539800c9f1243fe6b4b",
             "user_api_key_alias": None,
             "user_api_end_user_max_budget": None,
             "litellm_api_version": "0.0.0",
@@ -625,6 +626,7 @@ async def test_basic_gcs_logger_with_folder_in_bucket_name():
             },
             "endpoint": "http://localhost:4000/chat/completions",
             "model_group": "gpt-3.5-turbo",
+            "deployment": "azure/gpt-4.1-mini",
             "model_info": {
                 "id": "4bad40a1eb6bebd1682800f16f44b9f06c52a6703444c99c7f9f32e9de3693b4",
                 "db_model": False,
@@ -672,7 +674,7 @@ async def test_basic_gcs_logger_with_folder_in_bucket_name():
 
     assert (
         gcs_payload["metadata"]["user_api_key_hash"]
-        == "a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456"
+        == "88dc28d0f030c55ed4ab77ed8faf098196cb1c05df778539800c9f1243fe6b4b"
     )
     assert gcs_payload["metadata"]["user_api_key_user_id"] == "116544810872468347480"
 

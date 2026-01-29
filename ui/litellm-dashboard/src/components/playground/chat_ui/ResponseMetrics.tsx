@@ -7,7 +7,6 @@ import {
   ExportOutlined,
   BulbOutlined,
   ToolOutlined,
-  DollarOutlined,
 } from "@ant-design/icons";
 
 export interface TokenUsage {
@@ -15,18 +14,16 @@ export interface TokenUsage {
   promptTokens?: number;
   totalTokens?: number;
   reasoningTokens?: number;
-  cost?: number;
 }
 
 interface ResponseMetricsProps {
-  timeToFirstToken?: number;
-  totalLatency?: number;
+  timeToFirstToken?: number; // in milliseconds
   usage?: TokenUsage;
   toolName?: string;
 }
 
-const ResponseMetrics: React.FC<ResponseMetricsProps> = ({ timeToFirstToken, totalLatency, usage, toolName }) => {
-  if (!timeToFirstToken && !totalLatency && !usage) return null;
+const ResponseMetrics: React.FC<ResponseMetricsProps> = ({ timeToFirstToken, usage, toolName }) => {
+  if (!timeToFirstToken && !usage) return null;
 
   return (
     <div className="response-metrics mt-2 pt-2 border-t border-gray-100 text-xs text-gray-500 flex flex-wrap gap-3">
@@ -34,16 +31,7 @@ const ResponseMetrics: React.FC<ResponseMetricsProps> = ({ timeToFirstToken, tot
         <Tooltip title="Time to first token">
           <div className="flex items-center">
             <ClockCircleOutlined className="mr-1" />
-            <span>TTFT: {(timeToFirstToken / 1000).toFixed(2)}s</span>
-          </div>
-        </Tooltip>
-      )}
-
-      {totalLatency !== undefined && (
-        <Tooltip title="Total latency">
-          <div className="flex items-center">
-            <ClockCircleOutlined className="mr-1" />
-            <span>Total Latency: {(totalLatency / 1000).toFixed(2)}s</span>
+            <span>{(timeToFirstToken / 1000).toFixed(2)}s</span>
           </div>
         </Tooltip>
       )}
@@ -80,15 +68,6 @@ const ResponseMetrics: React.FC<ResponseMetricsProps> = ({ timeToFirstToken, tot
           <div className="flex items-center">
             <NumberOutlined className="mr-1" />
             <span>Total: {usage.totalTokens}</span>
-          </div>
-        </Tooltip>
-      )}
-
-      {usage?.cost !== undefined && (
-        <Tooltip title="Cost">
-          <div className="flex items-center">
-            <DollarOutlined className="mr-1" />
-            <span>${usage.cost.toFixed(6)}</span>
           </div>
         </Tooltip>
       )}

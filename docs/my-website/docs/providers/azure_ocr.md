@@ -1,4 +1,4 @@
-# Azure AI OCR (Mistral)
+# Azure AI OCR
 
 ## Overview
 

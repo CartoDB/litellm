@@ -17,6 +17,8 @@ from unittest.mock import MagicMock, patch
 import litellm
 from litellm import main as litellm_main
 
+from litellm import main as litellm_main
+
 
 @pytest.fixture(autouse=True)
 def add_api_keys_to_env(monkeypatch):

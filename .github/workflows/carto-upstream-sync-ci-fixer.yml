@@ -1,0 +1,601 @@
+name: CARTO Upstream Sync - CI Failure Auto-Fix
+
+# This workflow automatically fixes CI failures in upstream sync PRs.
+# Triggered when CI checks fail on PRs created by the upstream sync workflow
+# or the conflict resolver.
+
+on:
+  workflow_run:
+    workflows:
+      - "LiteLLM Mock Tests (folder - tests/test_litellm)"
+      - "CARTO - Deploy Docker Image (CI)"
+      - "LiteLLM Linting"
+    types:
+      - completed
+    branches:
+      - 'upstream-sync/**'
+      - 'upstream-sync-resolver/**'
+
+  workflow_dispatch:
+    inputs:
+      pr-number:
+        description: "PR number to fix CI for"
+        required: true
+        default: ""
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+
+jobs:
+  check-ci-status:
+    name: Check CI Status
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'failure' || github.event_name == 'workflow_dispatch'
+
+    outputs:
+      should-fix: ${{ steps.check.outputs.should-fix }}
+      pr-number: ${{ steps.check.outputs.pr-number }}
+      branch-name: ${{ steps.check.outputs.branch-name }}
+
+    steps:
+      - name: Get PR information
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          echo "::group::Determining PR and branch"
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            # Manual trigger
+            PR_NUMBER="${{ github.event.inputs.pr-number }}"
+            PR_JSON=$(gh pr view ${PR_NUMBER} --repo ${{ github.repository }} --json headRefName,labels)
+            BRANCH_NAME=$(echo "${PR_JSON}" | jq -r '.headRefName')
+          else
+            # Automatic trigger from workflow_run
+            BRANCH_NAME="${{ github.event.workflow_run.head_branch }}"
+
+            # Find PR for this branch
+            PR_JSON=$(gh pr list \
+              --repo ${{ github.repository }} \
+              --head "${BRANCH_NAME}" \
+              --json number,labels \
+              --jq '.[0]')
+
+            if [[ "${PR_JSON}" == "null" || -z "${PR_JSON}" ]]; then
+              echo "[Fixer] ❌ No PR found for branch ${BRANCH_NAME}"
+              echo "should-fix=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+
+            PR_NUMBER=$(echo "${PR_JSON}" | jq -r '.number')
+          fi
+
+          # Use jq for exact label matching (avoid substring matches)
+          LABELS=$(echo "${PR_JSON}" | jq -r '.labels[].name' | tr '\n' ', ' | sed 's/, $//')
+          HAS_CONFLICT_RESOLUTION=$(echo "${PR_JSON}" | jq '[.labels[].name] | any(. == "conflict-resolution")')
+          HAS_AUTOMATED=$(echo "${PR_JSON}" | jq '[.labels[].name] | any(. == "automated")')
+          HAS_UPSTREAM_SYNC=$(echo "${PR_JSON}" | jq '[.labels[].name] | any(. == "upstream-sync")')
+
+          echo "[Fixer] Branch: ${BRANCH_NAME}"
+          echo "[Fixer] PR: #${PR_NUMBER}"
+          echo "[Fixer] Labels: ${LABELS}"
+
+          # Only fix PRs with upstream sync related labels (exact match)
+          if [[ "${HAS_CONFLICT_RESOLUTION}" != "true" && "${HAS_AUTOMATED}" != "true" && "${HAS_UPSTREAM_SYNC}" != "true" ]]; then
+            echo "[Fixer] ❌ PR doesn't have required labels (need: conflict-resolution, automated, or upstream-sync) - skipping"
+            echo "should-fix=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Only fix upstream sync related branches
+          if [[ ! "${BRANCH_NAME}" =~ ^upstream-sync-resolver/ && ! "${BRANCH_NAME}" =~ ^upstream-sync/ ]]; then
+            echo "[Fixer] ❌ Not an upstream sync branch (need: upstream-sync-resolver/* or upstream-sync/*) - skipping"
+            echo "should-fix=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "should-fix=true" >> $GITHUB_OUTPUT
+          echo "pr-number=${PR_NUMBER}" >> $GITHUB_OUTPUT
+          echo "branch-name=${BRANCH_NAME}" >> $GITHUB_OUTPUT
+
+          echo "::endgroup::"
+
+  fix-ci-failures:
+    name: Fix CI Failures with Claude
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: check-ci-status
+    if: needs.check-ci-status.outputs.should-fix == 'true'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check-ci-status.outputs.branch-name }}
+          fetch-depth: 0
+          token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+
+      - name: Configure git
+        run: |
+          git config --global user.name "Cartofante"
+          git config --global user.email "cartofante@carto.com"
+
+      - name: Get failed workflow details
+        id: failures
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          echo "::group::Analyzing CI failures"
+
+          PR_NUMBER="${{ needs.check-ci-status.outputs.pr-number }}"
+
+          # Get PR head SHA
+          HEAD_SHA=$(gh pr view ${PR_NUMBER} --repo ${{ github.repository }} --json headRefOid --jq '.headRefOid')
+
+          # Get all failed workflow runs for this commit
+          gh run list \
+            --repo ${{ github.repository }} \
+            --commit ${HEAD_SHA} \
+            --status failure \
+            --json databaseId,name,url \
+            --limit 10 > /tmp/failed_runs.json
+
+          FAILED_COUNT=$(cat /tmp/failed_runs.json | jq 'length')
+
+          echo "[Fixer] Found ${FAILED_COUNT} failed workflow runs"
+          cat /tmp/failed_runs.json | jq -r '.[] | "  - \(.name): \(.url)"'
+
+          # Get check runs details (gh pr checks uses 'state' not 'conclusion')
+          gh pr checks ${PR_NUMBER} \
+            --repo ${{ github.repository }} \
+            --json name,state,link \
+            > /tmp/check_runs.json
+
+          FAILED_CHECKS=$(cat /tmp/check_runs.json | jq '[.[] | select(.state == "FAILURE" or .state == "TIMED_OUT")]')
+          echo "${FAILED_CHECKS}" > /tmp/failed_checks.json
+
+          echo "[Fixer] Failed checks:"
+          echo "${FAILED_CHECKS}" | jq -r '.[] | "  - \(.name): \(.state)"'
+
+          echo "failed-count=${FAILED_COUNT}" >> $GITHUB_OUTPUT
+          echo "head-sha=${HEAD_SHA}" >> $GITHUB_OUTPUT
+
+          echo "::endgroup::"
+
+      - name: Download workflow logs
+        if: steps.failures.outputs.failed-count > 0
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          echo "::group::Downloading workflow logs"
+
+          mkdir -p /tmp/workflow-logs
+
+          # Download logs for each failed run
+          cat /tmp/failed_runs.json | jq -r '.[] | .databaseId' | while read RUN_ID; do
+            echo "[Fixer] 📥 Downloading logs for run ${RUN_ID}..."
+            gh run download ${RUN_ID} \
+              --repo ${{ github.repository }} \
+              --dir /tmp/workflow-logs/${RUN_ID} 2>/dev/null || true
+          done
+
+          # List downloaded logs
+          echo "[Fixer] Downloaded logs:"
+          find /tmp/workflow-logs -type f -name "*.txt" | head -20
+
+          echo "::endgroup::"
+
+      - name: Comment on PR - Starting Fix
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          PR_NUMBER="${{ needs.check-ci-status.outputs.pr-number }}"
+
+          FAILED_CHECKS=$(cat /tmp/failed_checks.json | jq -r '.[] | "- **\(.name)**: \(.state)"' | head -10)
+
+          gh pr comment ${PR_NUMBER} \
+            --repo ${{ github.repository }} \
+            --body "$(cat <<EOF
+          ## 🔧 CI Auto-Fix Started
+
+          **Status:** ⏳ In progress...
+
+          Claude Code (Opus 4.5) is analyzing and fixing CI failures.
+
+          **Failed Checks:**
+          ${FAILED_CHECKS}
+
+          | Step | Status |
+          |------|--------|
+          | 🔍 Analyze failures | In progress |
+          | ✏️ Apply fixes | Pending |
+          | 📌 Push fixes | Pending |
+
+          > [!NOTE]
+          > This may take **15-30 minutes**. Fixes will be pushed directly to this PR.
+
+          [View workflow run →](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          EOF
+          )"
+
+      - name: Setup GCP credentials for Vertex AI
+        run: |
+          echo '${{ secrets.CI_RESOURCES_SERVICE_ACCOUNT }}' > /tmp/gcp-sa.json
+          echo "GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-sa.json" >> $GITHUB_ENV
+
+      - name: Run Claude Code to fix failures
+        id: claude-fix
+        uses: anthropics/claude-code-action@v1
+        with:
+          use_vertex: "true"
+          github_token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          show_full_output: true
+          claude_args: "--model claude-opus-4-5@20251101 --max-turns 150 --allowedTools Read,Write,Edit,Bash,Grep,Glob"
+          prompt: |
+            # Fix CI Failures in Upstream Sync Resolution PR - CARTO-FIRST STRATEGY
+
+            You are fixing CI failures in PR #${{ needs.check-ci-status.outputs.pr-number }}.
+
+            **Context:**
+            - Branch: `${{ needs.check-ci-status.outputs.branch-name }}`
+            - This PR resolves conflicts from an upstream sync
+            - CI checks have failed and need to be fixed
+
+            ---
+
+            ## ⛔ CRITICAL RULE: NEVER REVERT CARTO CUSTOMIZATIONS
+
+            **IF tests fail because of CARTO code:**
+            - The CARTO code is **INTENTIONAL and CORRECT**
+            - Fix or skip the **TESTS**, not the CARTO code
+            - CARTO customizations were made by CartoDB org members for good reasons
+
+            ---
+
+            ## 🚫 FORBIDDEN ACTIONS (NEVER DO THESE)
+
+            | Action | Why It's Forbidden |
+            |--------|-------------------|
+            | Revert a file to upstream version to fix tests | Destroys intentional CARTO work |
+            | Remove CARTO-specific code to make tests pass | Loses critical fixes (Azure URL, Snowflake auth, etc.) |
+            | Delete CARTO fixes that "break" upstream tests | Tests should adapt to CARTO, not vice versa |
+            | Accept upstream version when CARTO version exists | CARTO changes are intentional |
+            | Undo changes made by CartoDB GitHub org members | These are authorized CARTO modifications |
+
+            ## ✅ REQUIRED ACTIONS (ALWAYS DO THESE)
+
+            | Action | When to Use |
+            |--------|-------------|
+            | Preserve all CARTO customizations | Always |
+            | Fix tests to match CARTO behavior | When tests fail due to CARTO changes |
+            | Skip tests that test removed upstream functionality | When CARTO intentionally changed behavior |
+            | Add missing imports from CARTO code | When imports were lost in merge |
+            | Remove leftover conflict markers | Always (these are merge artifacts) |
+
+            ---
+
+            ## Step 1: Understand What Failed
+
+            Check the PR status and failed checks:
+            ```bash
+            gh pr view ${{ needs.check-ci-status.outputs.pr-number }} --repo ${{ github.repository }}
+            gh pr checks ${{ needs.check-ci-status.outputs.pr-number }} --repo ${{ github.repository }}
+            ```
+
+            ## Step 2: Categorize Failures
+
+            | Failure Type | Cause | Correct Action |
+            |--------------|-------|----------------|
+            | `SyntaxError` | Conflict markers left in file | Remove markers (keep CARTO code) |
+            | `ImportError` | Incomplete resolution | Add missing imports |
+            | `Test assertion` | CARTO changed behavior | **Fix TEST expectations** (not CARTO code!) |
+            | Lint errors | Formatting issues | Run `make format` |
+            | Type errors | Missing types | Add type annotations |
+
+            ## Step 3: Identify Common Issues
+
+            **Most common failures in conflict resolution:**
+
+            1. **Leftover conflict markers** (causes syntax errors) - **FIX THESE**
+               ```bash
+               # Search for conflict markers
+               grep -r "^<<<<<<< \|^=======$\|^>>>>>>>" --include="*.py" litellm/ tests/
+               ```
+
+            2. **Import errors** (incomplete resolution) - **FIX THESE**
+               - Check test output for `ImportError`, `ModuleNotFoundError`
+               - Missing imports from upstream or CARTO code
+
+            3. **Syntax errors** (incomplete code blocks) - **FIX THESE**
+               - Run: `python -m py_compile <file>` on suspected files
+               - Look for unbalanced brackets, quotes
+
+            4. **Test assertion failures** (behavior changes) - **FIX THE TESTS, NOT CARTO CODE**
+               - CARTO intentionally changed behavior
+               - Update test expectations to match CARTO behavior
+
+            ## Step 4: Handle Test Failures (CARTO-FIRST)
+
+            **Decision tree for test failures:**
+
+            1. **Test fails because CARTO changed behavior:**
+               - CARTO code is **CORRECT** - it was intentionally changed
+               - **Action:** Update the test to expect CARTO behavior
+               - Example: If CARTO adds null check, test should expect that behavior
+
+            2. **Test fails due to incomplete merge:**
+               - Check if CARTO code was accidentally removed
+               - **Action:** Restore the CARTO code, then test passes
+
+            3. **Test is testing upstream-specific functionality that CARTO removed:**
+               - **Action:** Skip the test with clear reason
+
+            **How to fix tests for CARTO behavior:**
+
+            ```python
+            # Option 1: Update test to expect CARTO behavior
+            def test_something():
+                result = function_under_test()
+                # Updated for CARTO: Now includes null check
+                assert result == "carto_expected_value"  # Not upstream_value
+
+            # Option 2: Skip test if behavior intentionally changed
+            @pytest.mark.skip(reason="CARTO: Behavior changed - see PR #XX for rationale")
+            def test_upstream_specific_behavior():
+                ...
+
+            # Option 3: Use xfail for known differences
+            @pytest.mark.xfail(reason="CARTO: Different behavior by design")
+            def test_that_differs_in_carto():
+                ...
+            ```
+
+            ## Step 5: Check if Test Also Fails Upstream (for unknown failures)
+
+            Only check upstream if you're unsure whether failure is CARTO-related:
+
+            ```bash
+            # Fetch upstream main
+            git fetch upstream main
+
+            # Check out upstream main in a separate worktree
+            git worktree add /tmp/upstream-main upstream/main
+
+            # Run the same failing test on upstream
+            cd /tmp/upstream-main
+            make install-dev
+            pytest <path-to-failing-test> -v
+
+            # Return to our branch
+            cd -
+            git worktree remove /tmp/upstream-main
+            ```
+
+            **If test fails on BOTH branches:**
+            - This is an **upstream bug**, not CARTO's problem
+            - Skip/xfail the test and document why
+
+            ## Step 6: Analyze Test Logs
+
+            Workflow logs are available in `/tmp/workflow-logs/*/`.
+
+            Look for:
+            - `SyntaxError: invalid syntax` → conflict markers
+            - `ImportError` / `ModuleNotFoundError` → missing imports
+            - `FAILED tests/...` → test assertion failures
+            - Build errors in Docker logs
+
+            ## Step 7: Fix Issues Systematically
+
+            ### For Conflict Markers:
+            ```bash
+            # Find them
+            grep -rn "^<<<<<<< \|^=======$\|^>>>>>>>" litellm/ tests/ requirements.txt
+
+            # Remove manually - ALWAYS KEEP CARTO CODE when in doubt
+            # Then verify file syntax
+            ```
+
+            ### For Import Errors:
+            ```bash
+            # Read the file with missing imports
+            # Check what was removed during conflict resolution
+            # Restore necessary imports from CARTO version first, then add upstream if needed
+            ```
+
+            ### For Test Failures:
+            ```bash
+            # Run failing test locally to understand
+            pytest tests/path/to/failing_test.py -v
+
+            # Determine if it's testing CARTO-modified behavior
+            # If yes: Update the TEST, not the CARTO code
+            # If no: Fix the conflict resolution issue
+            ```
+
+            ## Step 8: Run Tests Locally
+
+            **CRITICAL:** Verify fixes before pushing:
+
+            ```bash
+            # Install dependencies
+            make install-dev
+
+            # Run linting
+            make lint
+
+            # Run type checks
+            make lint-mypy
+
+            # Run unit tests
+            make test-unit
+
+            # If specific tests failed, run them directly
+            pytest tests/specific/test_file.py -v
+            ```
+
+            ## Step 9: Commit and Push Fixes
+
+            ```bash
+            git add <fixed-files>
+            git commit -m "fix: resolve CI failures (CARTO-first)
+
+            - Fixed syntax errors from leftover conflict markers
+            - Restored missing imports
+            - Updated tests to match CARTO behavior
+            - <specific fixes>
+
+            CARTO customizations preserved:
+            - <list of preserved CARTO code>
+
+            Failures fixed:
+            - <list failed checks>
+            "
+
+            git push origin ${{ needs.check-ci-status.outputs.branch-name }}
+            ```
+
+            ## Step 10: Comment on PR with Summary
+
+            **Always include CARTO preservation status:**
+            ```bash
+            gh pr comment ${{ needs.check-ci-status.outputs.pr-number }} \
+              --repo ${{ github.repository }} \
+              --body "✅ CI failures fixed using CARTO-first strategy.
+
+            **CARTO Customizations Status:** ✅ All preserved
+
+            **Fixes applied:**
+            - Removed leftover conflict markers in <files>
+            - Restored missing imports in <files>
+            - Updated tests to match CARTO behavior in <files>
+
+            **Tests modified (to match CARTO behavior):**
+            - \`tests/path/to/test.py::test_name\` - Updated assertion for CARTO behavior
+
+            All tests now pass with CARTO customizations intact.
+            "
+            ```
+
+            ## Important Notes
+
+            - **CARTO code is SACRED** - never revert it to fix tests
+            - Focus on **fixing actual errors**, not refactoring
+            - Don't introduce new changes unrelated to the failures
+            - If tests fail due to CARTO changes, **fix the tests**
+            - The most common issue is **conflict markers** - search thoroughly!
+            - Test locally before pushing to avoid repeated failures
+
+            ## Handling Docker Build Failures
+
+            If the Docker build fails:
+
+            1. **Check the build logs** in `/tmp/workflow-logs/*/`
+            2. **Common Docker issues:**
+               - Missing files referenced in Dockerfile
+               - Syntax errors in scripts called during build
+               - Dependency installation failures
+            3. **Test Docker build locally:**
+               ```bash
+               docker build -f docker/Dockerfile.non_root -t test-build .
+               ```
+            4. **If it's a complex Docker issue:**
+               - Comment on PR explaining the issue
+               - Tag it for manual review
+               - Don't attempt complex Docker fixes without testing
+
+            ## Success Criteria
+
+            - [ ] All CARTO customizations preserved
+            - [ ] All syntax errors resolved
+            - [ ] No conflict markers remain
+            - [ ] All imports are present
+            - [ ] `make lint` passes locally
+            - [ ] `make test-unit` passes locally (tests updated if needed)
+            - [ ] Changes committed and pushed
+        env:
+          ANTHROPIC_VERTEX_PROJECT_ID: carto-ci-resources
+          CLOUD_ML_REGION: global
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GITHUB_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+
+      - name: Cleanup GCP credentials
+        if: always()
+        run: rm -f /tmp/gcp-sa.json
+
+      - name: Comment on PR - Result
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          PR_NUMBER="${{ needs.check-ci-status.outputs.pr-number }}"
+
+          if [ "${{ steps.claude-fix.outcome }}" == "success" ]; then
+            gh pr comment ${PR_NUMBER} \
+              --repo ${{ github.repository }} \
+              --body "$(cat <<EOF
+          ## ✅ CI Fix Complete
+
+          Fixes applied and pushed to this PR.
+
+          | Step | Status |
+          |------|--------|
+          | 🔍 Analyze failures | ✅ Complete |
+          | ✏️ Apply fixes | ✅ Complete |
+          | 📌 Push fixes | ✅ Complete |
+
+          > [!NOTE]
+          > CI will re-run automatically. Monitor check results below.
+
+          ### Next Steps
+
+          1. Wait for CI checks to complete
+          2. If failures persist, manual review may be needed
+          3. Merge when all checks pass
+
+          <details>
+          <summary>🔧 Workflow Details (click to expand)</summary>
+
+          **Workflow Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          </details>
+          EOF
+          )"
+          else
+            gh pr comment ${PR_NUMBER} \
+              --repo ${{ github.repository }} \
+              --body "$(cat <<EOF
+          ## ❌ CI Fix Failed
+
+          The automated fix encountered an error.
+
+          | Step | Status |
+          |------|--------|
+          | 🔍 Analyze failures | ${{ steps.claude-fix.outcome }} |
+          | ✏️ Apply fixes | - |
+          | 📌 Push fixes | - |
+
+          > [!WARNING]
+          > Manual intervention required. Check the workflow logs below.
+
+          <details>
+          <summary>🔧 Troubleshooting (click to expand)</summary>
+
+          **Common issues:**
+          - Complex merge conflicts requiring human judgment
+          - Multiple interrelated failures
+          - Test failures requiring code logic changes
+
+          **Manual fix steps:**
+          1. Check the workflow logs
+          2. Review error messages
+          3. Fix issues locally and push
+
+          </details>
+
+          [View workflow logs →](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          EOF
+          )"
+          fi

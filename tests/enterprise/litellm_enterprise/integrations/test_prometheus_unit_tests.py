@@ -4,7 +4,7 @@ import pytest_asyncio
 from prometheus_client import REGISTRY
 
 try:
-    from litellm.integrations.prometheus import PrometheusLogger
+    from litellm_enterprise.integrations.prometheus import PrometheusLogger
 except Exception:
     PrometheusLogger = None
 
@@ -62,11 +62,9 @@ def prometheus_logger():
 
     with patch("litellm.proxy.proxy_server.premium_user", True):
         logger = PrometheusLogger()
-
         # Add the missing async_logging_hook method
         async def async_logging_hook(kwargs, result, call_type):
             return kwargs, result
-
         logger.async_logging_hook = async_logging_hook
         return logger
 
@@ -139,7 +137,7 @@ async def test_prometheus_metric_tracking():
     try:
         from unittest.mock import MagicMock
 
-        from litellm.integrations.prometheus import PrometheusLogger
+        from litellm_enterprise.integrations.prometheus import PrometheusLogger
     except Exception:
         PrometheusLogger = None
     if PrometheusLogger is None:
@@ -205,6 +203,7 @@ async def test_prometheus_metric_tracking():
     mock_prometheus.track_provider_remaining_budget.assert_called()
 
 
+
 class CustomPrometheusLogger(PrometheusLogger):
     def __init__(self):
         super().__init__()
@@ -239,7 +238,6 @@ class CustomPrometheusLogger(PrometheusLogger):
 async def test_router_cooldown_event_callback():
     # Clear Prometheus registry to avoid duplicate metric registration
     from prometheus_client import REGISTRY
-
     collectors = list(REGISTRY._collector_to_names.keys())
     for collector in collectors:
         REGISTRY.unregister(collector)
@@ -327,3 +325,4 @@ async def test_router_cooldown_event_callback_no_prometheus():
 
     # Assert that the router's get_deployment method was called
     mock_router.get_deployment.assert_called_once_with(model_id="test-deployment")
+

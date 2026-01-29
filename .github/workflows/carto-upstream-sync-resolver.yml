@@ -1,0 +1,954 @@
+name: CARTO Upstream Sync - Conflict Resolver # do not change the name since is referenced in the ci-fixer workflow
+
+# This workflow uses Claude Code to automatically resolve merge conflicts
+# for upstream sync PRs, pushing resolution directly to the sync branch.
+#
+# Architecture (Single-PR, Deterministic):
+#   1. Workflow starts merge (HARDCODED) - brings conflicts into working tree
+#   2. Claude edits files ONLY - resolves conflict markers
+#   3. Workflow completes merge commit (HARDCODED) - preserves both parents
+#   4. Workflow pushes to sync branch (HARDCODED) - updates existing PR
+#
+# This ensures:
+#   - Single PR workflow (no separate resolution PR)
+#   - Merge commit always has both parents (upstream + carto/main)
+#   - Git operations are deterministic (not dependent on Claude's actions)
+#
+# Security features:
+# - Only runs when triggered by authorized users (Cartofante, mateo-di)
+# - Only runs on PRs labeled 'upstream-sync'
+# - Only runs on upstream-sync/* branches (not main directly)
+# - Only runs when conflicts are detected
+# - Blocks external forks
+# - Rate limited (max-turns: 250, job timeout: 90 mins)
+
+on:
+  pull_request:
+    types: [opened, labeled, synchronize]
+    branches:
+      - carto/main
+  workflow_dispatch:
+    inputs:
+      pr-number:
+        description: "PR number to resolve conflicts for"
+        required: true
+        default: ""
+      debug:
+        description: "Enable debug logging"
+        type: boolean
+        default: false
+
+# Prevent duplicate runs on the same PR
+concurrency:
+  group: upstream-sync-resolver-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write      
+  pull-requests: write
+
+jobs:
+  # Job 1: Security verification - MUST PASS before any other checks
+  security-check:
+    name: Security Verification
+    runs-on: ubuntu-latest
+
+    outputs:
+      authorized: ${{ steps.verify.outputs.authorized }}
+
+    steps:
+      - name: Verify actor and PR source
+        id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+
+          echo "::group::Security verification"
+
+          # Security Check 1: Only allow specific authorized users
+          ACTOR="${{ github.actor }}"
+          ALLOWED_ACTORS="Cartofante mateo-di"
+
+          # Check if actor is in allowed list (case-insensitive)
+          ACTOR_LOWER="${ACTOR,,}"
+          ALLOWED=false
+          for allowed in ${ALLOWED_ACTORS}; do
+            if [[ "${ACTOR_LOWER}" == "${allowed,,}" ]]; then
+              ALLOWED=true
+              break
+            fi
+          done
+
+          if [[ "${ALLOWED}" == "false" ]]; then
+            echo "[Security] ❌ Unauthorized actor: ${ACTOR}"
+            echo "[Security] Allowed actors: ${ALLOWED_ACTORS}"
+            echo "authorized=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          echo "[Security] ✅ Actor verified: ${ACTOR}"
+
+          # Security Check 2: Verify branch flow (main → carto/main)
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            # Automatic trigger: validate PR directly from event
+            HEAD_BRANCH="${{ github.event.pull_request.head.ref }}"
+            BASE_BRANCH="${{ github.event.pull_request.base.ref }}"
+            HEAD_REPO="${{ github.event.pull_request.head.repo.full_name }}"
+            BASE_REPO="${{ github.repository }}"
+
+            # Check fork - head repo must match base repo
+            if [[ "${HEAD_REPO}" != "${BASE_REPO}" ]]; then
+              echo "[Security] ❌ External fork detected: ${HEAD_REPO}"
+              echo "[Security] Only internal branches allowed"
+              echo "authorized=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            echo "[Security] ✅ PR source verified: internal branch"
+
+            # Check branch flow - allow upstream-sync/* branches
+            if [[ ! "${HEAD_BRANCH}" =~ ^upstream-sync/ ]] || [[ "${BASE_BRANCH}" != "carto/main" ]]; then
+              echo "[Security] ❌ Invalid branch flow: ${HEAD_BRANCH} → ${BASE_BRANCH}"
+              echo "[Security] Required: upstream-sync/* → carto/main"
+              echo "authorized=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            echo "[Security] ✅ Branch flow verified: ${HEAD_BRANCH} → carto/main"
+          else
+            # Manual trigger: fetch PR details via gh CLI
+            PR_NUMBER="${{ github.event.inputs.pr-number }}"
+            if [[ -z "${PR_NUMBER}" ]]; then
+              echo "[Security] ❌ PR number required for manual dispatch"
+              echo "authorized=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+
+            echo "[Security] Manual dispatch for PR #${PR_NUMBER}"
+
+            # Fetch PR details
+            PR_JSON=$(gh pr view ${PR_NUMBER} --repo ${{ github.repository }} --json headRefName,baseRefName,headRepositoryOwner,isCrossRepository)
+            HEAD_BRANCH=$(echo "${PR_JSON}" | jq -r '.headRefName')
+            BASE_BRANCH=$(echo "${PR_JSON}" | jq -r '.baseRefName')
+            IS_FORK=$(echo "${PR_JSON}" | jq -r '.isCrossRepository')
+
+            # Check fork - isCrossRepository is true for external forks
+            if [[ "${IS_FORK}" == "true" ]]; then
+              REPO_OWNER=$(echo "${PR_JSON}" | jq -r '.headRepositoryOwner.login')
+              echo "[Security] ❌ External fork detected from: ${REPO_OWNER}"
+              echo "[Security] Only internal branches allowed"
+              echo "authorized=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            echo "[Security] ✅ PR source verified: internal branch"
+
+            # Check branch flow - allow upstream-sync/* branches
+            if [[ ! "${HEAD_BRANCH}" =~ ^upstream-sync/ ]] || [[ "${BASE_BRANCH}" != "carto/main" ]]; then
+              echo "[Security] ❌ Invalid branch flow: ${HEAD_BRANCH} → ${BASE_BRANCH}"
+              echo "[Security] Required: upstream-sync/* → carto/main"
+              echo "authorized=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            echo "[Security] ✅ Branch flow verified: ${HEAD_BRANCH} → carto/main"
+          fi
+
+          # All security checks passed
+          echo "[Security] ✅ All security checks passed"
+          echo "authorized=true" >> $GITHUB_OUTPUT
+          echo "::endgroup::"
+
+  # Job 2: Check if this PR is eligible for automated conflict resolution
+  check-eligibility:
+    name: Check PR Eligibility
+    runs-on: ubuntu-latest
+    needs: security-check
+    if: needs.security-check.outputs.authorized == 'true'
+
+    outputs:
+      eligible: ${{ steps.check.outputs.eligible }}
+      pr-number: ${{ steps.check.outputs.pr-number }}
+      has-conflicts: ${{ steps.check.outputs.has-conflicts }}
+      is-sync-pr: ${{ steps.check.outputs.is-sync-pr }}
+
+    steps:
+      - name: Check PR criteria
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+
+          # Get PR number based on trigger type
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            PR_NUMBER="${{ github.event.pull_request.number }}"
+          else
+            PR_NUMBER="${{ github.event.inputs.pr-number }}"
+          fi
+
+          echo "::group::Checking PR eligibility for conflict resolution"
+          echo "[Resolver] Checking PR #${PR_NUMBER}"
+
+          # Get PR details
+          PR_JSON=$(gh pr view ${PR_NUMBER} --repo ${{ github.repository }} --json labels,mergeable,headRefName,baseRefName)
+
+          # Extract details
+          echo "${PR_JSON}"
+          BASE_BRANCH=$(echo "${PR_JSON}" | jq -r '.baseRefName')
+          echo "BASE_BRANCH: ${BASE_BRANCH}"
+          HEAD_BRANCH=$(echo "${PR_JSON}" | jq -r '.headRefName')
+          echo "HEAD_BRANCH: ${HEAD_BRANCH}"
+          MERGEABLE=$(echo "${PR_JSON}" | jq -r '.mergeable')
+          echo "MERGEABLE: ${MERGEABLE}"
+          LABELS=$(echo "${PR_JSON}" | jq -r '.labels[].name' | tr '\n' ' ')
+          # Use jq for exact label matching (avoid substring matches)
+          HAS_UPSTREAM_SYNC=$(echo "${PR_JSON}" | jq '[.labels[].name] | any(. == "upstream-sync")')
+          echo "LABELS: ${LABELS}"
+
+          echo "[Resolver] Base: ${BASE_BRANCH}, Head: ${HEAD_BRANCH}"
+          echo "[Resolver] Mergeable status: ${MERGEABLE}"
+          echo "[Resolver] Labels: ${LABELS}"
+
+          # Check 1: Must be to carto/main
+          if [[ "${BASE_BRANCH}" != "carto/main" ]]; then
+            echo "[Resolver] ❌ Not targeting carto/main - skipping"
+            echo "eligible=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Check 2: Must have upstream-sync label (exact match)
+          if [[ "${HAS_UPSTREAM_SYNC}" != "true" ]]; then
+            echo "[Resolver] ❌ Missing 'upstream-sync' label - skipping"
+            echo "is-sync-pr=false" >> $GITHUB_OUTPUT
+            echo "eligible=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          echo "is-sync-pr=true" >> $GITHUB_OUTPUT
+
+          # Check 3: Must have conflicts (or manual trigger)
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            # Manual trigger: skip conflict check (user knows there are conflicts)
+            echo "[Resolver] ⚠️ Manual trigger - skipping conflict check (status: ${MERGEABLE})"
+            echo "[Resolver] Assuming conflicts exist (user manually triggered)"
+            echo "has-conflicts=true" >> $GITHUB_OUTPUT
+          elif [[ "${MERGEABLE}" == "CONFLICTING" ]]; then
+            # Automatic trigger: conflicts detected
+            echo "[Resolver] ⚠️ Conflicts detected (mergeable: ${MERGEABLE})"
+            echo "has-conflicts=true" >> $GITHUB_OUTPUT
+          elif [[ "${MERGEABLE}" == "UNKNOWN" ]]; then
+            # Status not computed yet - treat as potential conflict
+            echo "[Resolver] ⚠️ Mergeable status unknown - will attempt resolution"
+            echo "has-conflicts=true" >> $GITHUB_OUTPUT
+          else
+            # Clean merge - no action needed
+            echo "[Resolver] ✅ No conflicts detected (mergeable: ${MERGEABLE})"
+            echo "has-conflicts=false" >> $GITHUB_OUTPUT
+            echo "eligible=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # All checks passed
+          echo "[Resolver] ✅ PR is eligible for conflict resolution"
+          echo "eligible=true" >> $GITHUB_OUTPUT
+          echo "pr-number=${PR_NUMBER}" >> $GITHUB_OUTPUT
+          echo "::endgroup::"
+
+  # Job 3: Use Claude Code to resolve conflicts
+  claude-resolve:
+    name: Claude Code Conflict Resolution
+    runs-on: ubuntu-latest
+    timeout-minutes: 90  # Job timeout is the real limit (not max-turns)
+    needs: [security-check, check-eligibility]
+    if: needs.security-check.outputs.authorized == 'true' && needs.check-eligibility.outputs.eligible == 'true'
+
+    steps:
+      - name: Get PR branch info
+        id: pr-info
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          # Get head and base refs based on trigger type
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            HEAD_REF="${{ github.event.pull_request.head.ref }}"
+            BASE_REF="${{ github.event.pull_request.base.ref }}"
+          else
+            # For workflow_dispatch, fetch from PR
+            PR_NUMBER="${{ needs.check-eligibility.outputs.pr-number }}"
+            PR_JSON=$(gh pr view ${PR_NUMBER} --repo ${{ github.repository }} --json headRefName,baseRefName)
+            HEAD_REF=$(echo "${PR_JSON}" | jq -r '.headRefName')
+            BASE_REF=$(echo "${PR_JSON}" | jq -r '.baseRefName')
+          fi
+
+          echo "head-ref=${HEAD_REF}" >> $GITHUB_OUTPUT
+          echo "base-ref=${BASE_REF}" >> $GITHUB_OUTPUT
+          echo "[Resolver] PR: ${HEAD_REF} → ${BASE_REF}"
+          echo "[Resolver] Will checkout sync branch (${HEAD_REF}) and merge ${BASE_REF} into it"
+          echo "[Resolver] Resolution commits will be pushed directly to this PR's branch"
+
+      # IMPORTANT: Checkout the sync branch (upstream-sync/vX.Y.Z) which has upstream commit history
+      # Then merge BASE branch (carto/main) into it to bring CARTO customizations
+      # Resolution commits are pushed directly to this branch, updating the existing PR
+      - name: Checkout repository (sync branch - upstream with history)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr-info.outputs.head-ref }}
+          fetch-depth: 0
+          token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+
+      - name: Configure git
+        run: |
+          git config --global user.name "Cartofante"
+          git config --global user.email "cartofante@carto.com"
+
+      - name: Start merge with carto/main (HARDCODED - creates conflicts)
+        id: start-merge
+        run: |
+          echo "::group::Starting merge (WORKFLOW CONTROLLED)"
+          echo "[Resolver] Strategy: Checkout ${HEAD_REF} (upstream) → merge ${BASE_REF} (CARTO) into it"
+          echo "[Resolver] This preserves upstream commit history in the PR"
+
+          HEAD_REF="${{ steps.pr-info.outputs.head-ref }}"
+          BASE_REF="${{ steps.pr-info.outputs.base-ref }}"
+
+          # Fetch the base branch (carto/main with CARTO customizations)
+          git fetch origin ${BASE_REF}:${BASE_REF}
+
+          # Attempt merge of CARTO customizations into upstream
+          # This is the REVERSE of the original PR direction, but preserves history
+          if git merge ${BASE_REF} --no-commit --no-ff; then
+            echo "[Resolver] ✅ Clean merge - no conflicts found"
+            echo "[Resolver] This PR should be mergeable without Claude's help"
+            git merge --abort || true
+            echo "has-conflicts=false" >> $GITHUB_OUTPUT
+            exit 1
+          else
+            echo "[Resolver] ⚠️ Conflicts detected - Claude will resolve file contents"
+
+            # Save list of conflicted files for Claude
+            CONFLICTS=$(git diff --name-only --diff-filter=U)
+            echo "conflicts<<EOF" >> $GITHUB_OUTPUT
+            echo "$CONFLICTS" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+
+            CONFLICT_COUNT=$(echo "$CONFLICTS" | wc -l)
+            echo "conflict-count=${CONFLICT_COUNT}" >> $GITHUB_OUTPUT
+            echo "has-conflicts=true" >> $GITHUB_OUTPUT
+
+            echo "[Resolver] Conflicted files (${CONFLICT_COUNT}):"
+            echo "$CONFLICTS"
+          fi
+
+          echo "::endgroup::"
+
+      - name: Comment on PR - Starting
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          gh pr comment ${{ needs.check-eligibility.outputs.pr-number }} \
+            --repo ${{ github.repository }} \
+            --body "$(cat <<'EOF'
+          ## 🤖 Conflict Resolution Started
+
+          **Status:** ⏳ In progress...
+
+          Claude Code (Opus 4.5) is resolving merge conflicts in this PR.
+
+          | Step | Status |
+          |------|--------|
+          | 🔍 Analyze conflicts | In progress |
+          | ✏️ Resolve files | Pending |
+          | 🧪 Run tests | Pending |
+          | 📌 Push to PR | Pending |
+
+          > [!NOTE]
+          > This may take **30-90 minutes** for large PRs. Resolution commits will be pushed directly to this PR.
+
+          <details>
+          <summary>📋 Resolution Process (click to expand)</summary>
+
+          1. 🔍 Analyzing conflicts in all files
+          2. 📋 Reading CARTO customization guidelines
+          3. ⚖️ Applying resolution priorities (CARTO first, then upstream)
+          4. ✏️ Resolving conflicts file by file
+          5. 🧪 Running tests (lint, mypy, unit tests)
+          6. 📌 Pushing resolution directly to this PR
+
+          </details>
+
+          [View workflow run →](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          EOF
+          )"
+
+      - name: Setup GCP credentials for Vertex AI
+        run: |
+          echo '${{ secrets.CI_RESOURCES_SERVICE_ACCOUNT }}' > /tmp/gcp-sa.json
+          echo "GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-sa.json" >> $GITHUB_ENV
+
+      - name: Analyze CARTO-modified files (pre-resolution)
+        id: carto-files
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          echo "::group::Identifying CARTO-modified files via GitHub org membership"
+
+          # Get list of conflicted files
+          CONFLICTS="${{ steps.start-merge.outputs.conflicts }}"
+
+          # Fetch CartoDB org members (same approach as calculate_carto_version.sh)
+          echo "[Resolver] Fetching CartoDB org members..."
+          ORG_MEMBERS=$(gh api "orgs/CartoDB/members" --paginate --jq '.[].login' 2>/dev/null | tr '\n' '|' | sed 's/|$//')
+
+          if [ -z "$ORG_MEMBERS" ]; then
+            echo "[Resolver] Warning: Could not fetch org members, falling back to known accounts"
+            # Fallback: include known automation accounts and common patterns
+            ORG_MEMBERS="Cartofante|github-actions|mateo-di"
+          fi
+
+          echo "[Resolver] Org members pattern: ${ORG_MEMBERS:0:100}..."
+
+          # Create file to store CARTO-modified files
+          echo "" > /tmp/carto_modified.txt
+          echo "" > /tmp/upstream_only.txt
+
+          # Check each conflicted file for CARTO commits
+          for FILE in $CONFLICTS; do
+            echo "[Resolver] Checking: $FILE"
+
+            # Get commits for this file on carto/main using GitHub API
+            # Filter by org membership using the same logic as calculate_carto_version.sh
+            CARTO_COMMITS=0
+
+            # Use git log to get commit SHAs, then check each via GitHub API for author
+            COMMIT_SHAS=$(git log --format='%H' origin/carto/main -- "$FILE" 2>/dev/null | head -50)
+
+            for SHA in $COMMIT_SHAS; do
+              # Get commit author's GitHub login via API
+              AUTHOR=$(gh api "repos/${{ github.repository }}/commits/${SHA}" --jq '.author.login // empty' 2>/dev/null || echo "")
+
+              if [ -n "$AUTHOR" ]; then
+                # Check if author is a CartoDB org member
+                if echo "$AUTHOR" | grep -qE "^(${ORG_MEMBERS})$"; then
+                  CARTO_COMMITS=$((CARTO_COMMITS + 1))
+                  echo "  ✓ Commit ${SHA:0:7} by ${AUTHOR} (CartoDB member)"
+                  break  # Found at least one CARTO commit, that's enough
+                fi
+              fi
+            done
+
+            if [ "$CARTO_COMMITS" -gt 0 ]; then
+              echo "  → CARTO-MODIFIED: $FILE"
+              echo "$FILE" >> /tmp/carto_modified.txt
+            else
+              echo "  → UPSTREAM-ONLY: $FILE"
+              echo "$FILE" >> /tmp/upstream_only.txt
+            fi
+          done
+
+          # Output results for Claude
+          CARTO_FILES=$(cat /tmp/carto_modified.txt | grep -v '^$' || echo "")
+          UPSTREAM_FILES=$(cat /tmp/upstream_only.txt | grep -v '^$' || echo "")
+
+          echo ""
+          echo "[Resolver] Summary:"
+          echo "  CARTO-modified files: $(echo "$CARTO_FILES" | grep -c . || echo 0)"
+          echo "  Upstream-only files: $(echo "$UPSTREAM_FILES" | grep -c . || echo 0)"
+
+          echo "carto-files<<EOF" >> $GITHUB_OUTPUT
+          echo "$CARTO_FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          echo "upstream-files<<EOF" >> $GITHUB_OUTPUT
+          echo "$UPSTREAM_FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          echo "::endgroup::"
+
+      - name: Build CARTO customization context for conflicted files
+        id: carto-context
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          echo "::group::Building CARTO customization context"
+
+          # Get conflicted files from previous step
+          CONFLICTS="${{ steps.start-merge.outputs.conflicts }}"
+          CARTO_FILES="${{ steps.carto-files.outputs.carto-files }}"
+
+          echo "[Resolver] Building context for CARTO-modified conflicted files..."
+
+          # Fetch ALL merged PRs to carto/main with complete details
+          echo "[Resolver] Fetching all merged PRs to carto/main..."
+          gh pr list \
+            --repo ${{ github.repository }} \
+            --base carto/main \
+            --state merged \
+            --limit 1000 \
+            --json number,title,author,body,mergedAt,additions,deletions,files \
+            > /tmp/all_prs.json 2>/dev/null || echo "[]" > /tmp/all_prs.json
+
+          TOTAL_PRS=$(jq 'length' /tmp/all_prs.json)
+          echo "[Resolver] Found ${TOTAL_PRS} total merged PRs"
+
+          # Build detailed context for each CARTO-modified conflicted file
+          CONTEXT_OUTPUT=""
+
+          for FILE in $CARTO_FILES; do
+            echo "[Resolver] Analyzing: $FILE"
+
+            # Find PRs that touched this specific file
+            FILE_PRS=$(jq -r --arg file "$FILE" '
+              [.[] | select(.files | map(.path) | any(. == $file or (. | startswith($file | split("*")[0] // $file))))] |
+              map({
+                pr: .number,
+                title: .title,
+                author: .author.login,
+                additions: .additions,
+                deletions: .deletions,
+                merged: .mergedAt,
+                body: (.body | split("\n")[0:5] | join(" ") | .[0:200])
+              })
+            ' /tmp/all_prs.json)
+
+            PR_COUNT=$(echo "$FILE_PRS" | jq 'length')
+
+            if [ "$PR_COUNT" -gt 0 ]; then
+              # Format as readable context
+              FILE_CONTEXT=$(echo "$FILE_PRS" | jq -r '
+                .[] | "  - PR #\(.pr): \(.title)\n    Author: @\(.author) | +\(.additions)/-\(.deletions) lines | Merged: \(.merged | split("T")[0])\n    Summary: \(.body | gsub("\n"; " ") | .[0:150])..."
+              ')
+
+              CONTEXT_OUTPUT="${CONTEXT_OUTPUT}
+
+          ### \`${FILE}\`
+          **${PR_COUNT} CARTO PR(s) modified this file:**
+          ${FILE_CONTEXT}"
+            fi
+          done
+
+          # Also create a summary table of ALL CARTO PRs for reference
+          echo "[Resolver] Creating PR summary table..."
+          PR_SUMMARY=$(jq -r '
+            sort_by(.mergedAt) | reverse |
+            .[] |
+            "| #\(.number) | \(.title | .[0:45])... | @\(.author.login) | +\(.additions)/-\(.deletions) | \(.files | length) files |"
+          ' /tmp/all_prs.json | head -100)
+
+          PR_TABLE="| PR | Title | Author | Lines | Files |
+          |-----|-------|--------|-------|-------|
+          ${PR_SUMMARY}"
+
+          # Write context to files instead of outputs (to avoid "argument too long" errors)
+          echo "$CONTEXT_OUTPUT" > /tmp/carto_pr_context.md
+          echo "$PR_TABLE" > /tmp/carto_pr_table.md
+
+          echo "[Resolver] Context written to /tmp/carto_pr_context.md ($(wc -c < /tmp/carto_pr_context.md) bytes)"
+          echo "[Resolver] PR table written to /tmp/carto_pr_table.md ($(wc -c < /tmp/carto_pr_table.md) bytes)"
+
+          # Output just a flag that context exists
+          echo "context-file=/tmp/carto_pr_context.md" >> $GITHUB_OUTPUT
+          echo "table-file=/tmp/carto_pr_table.md" >> $GITHUB_OUTPUT
+          echo "total-prs=${TOTAL_PRS}" >> $GITHUB_OUTPUT
+
+          echo "::endgroup::"
+
+      - name: Run Claude Code for conflict resolution (FILE EDITS ONLY)
+        id: claude-run
+        uses: anthropics/claude-code-action@v1
+        with:
+          use_vertex: "true"
+          github_token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          show_full_output: true
+          claude_args: "--model claude-opus-4-5@20251101 --max-turns 250 --allowedTools Read,Write,Edit,Bash,Grep,Glob ${{ github.event.inputs.debug == 'true' && '--debug' || '' }}"
+          prompt: |
+            # Conflict Resolution Task - CARTO-FIRST STRATEGY
+
+            ## ⚠️ CRITICAL: CARTO CUSTOMIZATIONS ARE MANDATORY TO PRESERVE
+
+            **Key Principle:** CARTO customizations made by CartoDB organization members are **INTENTIONAL and MUST be preserved**. Upstream changes should be merged **AROUND** CARTO code, not replacing it.
+
+            The git merge has ALREADY been started by the workflow.
+            You are in a merge conflict state with ${{ steps.start-merge.outputs.conflict-count }} conflicted files.
+
+            **DO NOT RUN THESE COMMANDS - THE WORKFLOW WILL HANDLE THEM:**
+            - ❌ `git commit` - Workflow does this AFTER you finish
+            - ❌ `git checkout -b` - Workflow does this AFTER you finish
+            - ❌ `git push` - Workflow does this AFTER you finish
+            - ❌ `gh pr create` - Workflow does this AFTER you finish
+
+            **YOUR ONLY JOB:**
+            1. Read conflicted files
+            2. Edit files to remove conflict markers (PRESERVING CARTO CODE)
+            3. Run tests and fix issues
+            4. Say "RESOLUTION COMPLETE" when done
+
+            ## Pre-Analysis: CARTO vs Upstream Files
+
+            The workflow has analyzed which files have CARTO commits:
+
+            **🔒 CARTO-MODIFIED FILES (MUST KEEP CARTO VERSION):**
+            ```
+            ${{ steps.carto-files.outputs.carto-files }}
+            ```
+
+            **📥 UPSTREAM-ONLY FILES (Accept upstream):**
+            ```
+            ${{ steps.carto-files.outputs.upstream-files }}
+            ```
+
+            ## All Conflicted Files (${{ steps.start-merge.outputs.conflict-count }} files)
+
+            ```
+            ${{ steps.start-merge.outputs.conflicts }}
+            ```
+
+            ## Step 1: Read CARTO Guidelines
+
+            ```bash
+            cat CARTO_CLAUDE.md
+            ```
+
+            ## Step 2: Resolution Rules (CARTO-FIRST PRIORITY)
+
+            **Conflict markers look like this:**
+            ```
+            <<<<<<< HEAD
+            [upstream code from main branch]
+            =======
+            [CARTO code from carto/main branch]
+            >>>>>>> carto/main
+            ```
+
+            **Resolution priorities (CARTO-FIRST):**
+
+            | Priority | File Pattern | Resolution | Reason |
+            |----------|--------------|------------|--------|
+            | 1 | Files in CARTO-MODIFIED list above | **KEEP carto/main** | CartoDB org members made intentional changes |
+            | 2 | `carto_*.yaml`, `carto-*.yml` | **KEEP carto/main** | CARTO workflows |
+            | 3 | `CARTO_*.md` | **KEEP carto/main** | CARTO docs |
+            | 4 | Files in UPSTREAM-ONLY list above | Accept HEAD (upstream) | No CARTO changes |
+            | 5 | `pyproject.toml` | Merge carefully | Upstream version + CARTO deps |
+            | 6 | `Dockerfile`, `Makefile` | Merge carefully | Keep `# CARTO:` sections |
+
+            ## CARTO Customizations for Conflicted Files
+
+            The workflow has analyzed ${{ steps.carto-context.outputs.total-prs }} merged PRs to carto/main.
+
+            **Read these files for CARTO context:**
+            - `/tmp/carto_pr_context.md` - Detailed context for each CARTO-modified conflicted file
+            - `/tmp/carto_pr_table.md` - Summary table of all CARTO PRs
+
+            ```bash
+            # Read CARTO context for conflicted files
+            cat /tmp/carto_pr_context.md
+
+            # Read summary of all CARTO PRs (if needed)
+            cat /tmp/carto_pr_table.md
+            ```
+
+            **To get full details about a specific PR (description, discussion, files):**
+            ```bash
+            gh pr view <PR_NUMBER> --repo ${{ github.repository }}
+            ```
+
+            ## Step 3: Resolve Each File (CARTO-FIRST)
+
+            For EACH conflicted file:
+
+            ### If file is in CARTO-MODIFIED list:
+            1. **Read** the file
+            2. **KEEP the CARTO version** (after `=======`, before `>>>>>>> carto/main`)
+            3. **ALSO check if upstream added NEW code** that doesn't conflict with CARTO fix
+            4. **Merge BOTH** if possible: Keep CARTO fix + add non-conflicting upstream additions
+
+            ### If file is in UPSTREAM-ONLY list:
+            1. **Read** the file
+            2. **Accept upstream version** (after `<<<<<<< HEAD`, before `=======`)
+            3. Remove conflict markers
+
+            ### Correct Merge Example (keeping BOTH):
+            ```python
+            # CORRECT: Keep CARTO fix, add upstream feature
+            def process(self, data):
+                # CARTO fix: Handle null metadata (PRESERVED)
+                if data.get('metadata') is None:
+                    data['metadata'] = {}
+                # New upstream feature (ADDED)
+                if data.get('new_flag'):
+                    self.handle_new_flag(data)
+                return self.transform(data)
+            ```
+
+            ### WRONG Merge (losing CARTO code):
+            ```python
+            # WRONG: Lost CARTO fix, only kept upstream
+            def process(self, data):
+                # CARTO fix is GONE - this is WRONG!
+                if data.get('new_flag'):
+                    self.handle_new_flag(data)
+                return self.transform(data)
+            ```
+
+            ## Step 4: Run Tests
+
+            After resolving ALL files:
+
+            ```bash
+            # Verify no conflict markers remain
+            grep -r "^<<<<<<< \|^=======\|^>>>>>>>" --include="*.py" litellm/ tests/ || echo "✅ No conflict markers found"
+
+            # Install deps and run tests
+            make install-dev
+            make lint
+            make lint-mypy
+            ```
+
+            Fix any errors that occur.
+
+            ## Step 5: Confirm Completion
+
+            When ALL files are resolved and tests pass, say:
+
+            **"RESOLUTION COMPLETE"**
+
+            The workflow will then:
+            1. Stage all changes (`git add -A`)
+            2. Create merge commit (`git commit`)
+            3. Push directly to the sync branch (this PR will update automatically!)
+
+            ---
+
+            **REMEMBER: CARTO code is INTENTIONAL. Preserve it. Begin resolving conflicts now!**
+
+        env:
+          ANTHROPIC_VERTEX_PROJECT_ID: carto-ci-resources
+          CLOUD_ML_REGION: global
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GITHUB_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+
+      - name: Cleanup GCP credentials
+        if: always()
+        run: rm -f /tmp/gcp-sa.json
+
+      # ============================================================
+      # POST-CLAUDE: Complete merge, create branch, push, create PR
+      # These steps are HARDCODED to ensure correct git operations
+      # ============================================================
+
+      - name: Verify no conflict markers remain
+        id: verify-resolution
+        run: |
+          echo "::group::Verifying conflict resolution"
+
+          # Check for conflict markers in all files
+          if grep -r "^<<<<<<< \|^=======\$\|^>>>>>>>" --include="*.py" --include="*.yaml" --include="*.yml" --include="*.md" . 2>/dev/null | grep -v ".git"; then
+            echo "❌ ERROR: Conflict markers still present!"
+            echo "Claude did not fully resolve all conflicts."
+            echo "resolved=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+          echo "✅ No conflict markers found"
+          echo "resolved=true" >> $GITHUB_OUTPUT
+          echo "::endgroup::"
+
+      - name: Complete merge commit (HARDCODED - creates merge with both parents)
+        id: complete-merge
+        run: |
+          echo "::group::Completing merge commit (WORKFLOW CONTROLLED)"
+
+          PR_NUMBER="${{ needs.check-eligibility.outputs.pr-number }}"
+
+          # Stage all resolved files
+          git add -A
+
+          # Complete the merge - this creates a MERGE COMMIT with BOTH parents:
+          # - Parent 1: main (upstream)
+          # - Parent 2: carto/main (CARTO customizations)
+          git commit -m "fix: resolve upstream sync conflicts for PR #${PR_NUMBER}
+
+          Conflicts resolved by Claude Code following CARTO priority rules.
+
+          Resolution strategy:
+          - Preserved CARTO customizations (workflows, docs, infrastructure)
+          - Accepted upstream improvements (core litellm, tests, dependencies)
+          - Manually merged mixed files (Dockerfile, Makefile)
+
+          This is a MERGE COMMIT with both main and carto/main as parents,
+          preserving full git history from upstream.
+
+          Resolves: #${PR_NUMBER}"
+
+          # Verify we created a merge commit (should have 2 parents)
+          PARENT_COUNT=$(git cat-file -p HEAD | grep "^parent" | wc -l)
+          if [ "$PARENT_COUNT" -lt 2 ]; then
+            echo "⚠️ WARNING: Commit has only ${PARENT_COUNT} parent(s), expected 2 for merge commit"
+          else
+            echo "✅ Merge commit created with ${PARENT_COUNT} parents"
+          fi
+
+          echo "merge-commit=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+          echo "::endgroup::"
+
+      - name: Push resolution to sync branch (HARDCODED - updates existing PR)
+        id: push-resolution
+        run: |
+          echo "::group::Pushing resolution to sync branch (WORKFLOW CONTROLLED)"
+
+          HEAD_REF="${{ steps.pr-info.outputs.head-ref }}"
+          PR_NUMBER="${{ needs.check-eligibility.outputs.pr-number }}"
+
+          # Push directly to the sync branch - this updates the existing PR!
+          # No need to create a new branch or PR
+          echo "[Resolver] Pushing merge commit to ${HEAD_REF}..."
+          git push origin HEAD:${HEAD_REF}
+
+          echo "✅ Pushed resolution to: ${HEAD_REF}"
+          echo "✅ PR #${PR_NUMBER} will automatically update with the resolved changes"
+          echo "branch-name=${HEAD_REF}" >> $GITHUB_OUTPUT
+          echo "::endgroup::"
+
+      - name: Summary
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          echo "::group::Workflow Execution Summary"
+          echo "[Resolver] Conflict resolution workflow completed"
+          echo "[Resolver] Claude edited files, workflow pushed to existing PR"
+          echo "::endgroup::"
+
+          # Get PR URL for the summary
+          PR_NUMBER="${{ needs.check-eligibility.outputs.pr-number }}"
+          PR_URL=$(gh pr view ${PR_NUMBER} --repo ${{ github.repository }} --json url --jq '.url')
+
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          ## 🤖 Conflict Resolution Summary
+
+          **PR Updated:** ${PR_URL}
+          **Sync Branch:** ${{ steps.push-resolution.outputs.branch-name || 'N/A' }}
+
+          ### Workflow Architecture (Single-PR, Deterministic)
+
+          | Step | Handled By | Status |
+          |------|------------|--------|
+          | Start merge | Workflow (hardcoded) | ✅ |
+          | Edit conflicted files | Claude Code | ${{ steps.claude-run.outcome == 'success' && '✅' || '❌' }} |
+          | Verify no markers | Workflow (hardcoded) | ${{ steps.verify-resolution.outcome == 'success' && '✅' || '❌' }} |
+          | Create merge commit | Workflow (hardcoded) | ${{ steps.complete-merge.outcome == 'success' && '✅' || '❌' }} |
+          | Push to sync branch | Workflow (hardcoded) | ${{ steps.push-resolution.outcome == 'success' && '✅' || '❌' }} |
+
+          ### Key Improvements
+
+          1. **Single-PR workflow** - No separate resolution PR, changes pushed directly to sync branch
+          2. **Deterministic** - Git operations are hardcoded in workflow, not in Claude's prompt
+          3. **Merge commit preserved** - Both parents (upstream + carto/main) for proper history
+
+          **Merge commit:** \`${{ steps.complete-merge.outputs.merge-commit || 'N/A' }}\`
+          EOF
+
+      - name: Comment on PR - Completion
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          PR_NUMBER="${{ needs.check-eligibility.outputs.pr-number }}"
+          PUSH_SUCCESS="${{ steps.push-resolution.outcome }}"
+
+          if [ "${PUSH_SUCCESS}" == "success" ]; then
+            # Success - resolution pushed to sync branch
+            gh pr comment ${PR_NUMBER} \
+              --repo ${{ github.repository }} \
+              --body "$(cat <<EOF
+          ## ✅ Conflict Resolution Complete
+
+          All conflicts resolved and pushed to this PR.
+
+          | Step | Status |
+          |------|--------|
+          | 🔍 Analyze conflicts | ✅ Complete |
+          | ✏️ Resolve files | ✅ Complete |
+          | 🧪 Verify resolution | ✅ Complete |
+          | 📌 Push to PR | ✅ Complete |
+
+          > [!IMPORTANT]
+          > **Ready to merge!** Use **"Create a merge commit"** — do NOT squash or rebase.
+
+          ### Next Steps
+
+          1. Review the resolved changes
+          2. Merge using **"Create a merge commit"**
+          3. 🎉 Upstream sync complete!
+
+          <details>
+          <summary>🔧 Resolution Details (click to expand)</summary>
+
+          **Workflow steps completed:**
+          1. ✅ Started merge process
+          2. ✅ Claude edited files to resolve conflicts
+          3. ✅ Verified no conflict markers remain
+          4. ✅ Created merge commit with both parents
+          5. ✅ Pushed resolution to sync branch
+
+          **Workflow Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          </details>
+          EOF
+          )"
+          else
+            # Failure - determine which step failed
+            gh pr comment ${PR_NUMBER} \
+              --repo ${{ github.repository }} \
+              --body "$(cat <<EOF
+          ## ❌ Conflict Resolution Failed
+
+          The automated resolution encountered an error.
+
+          | Step | Status |
+          |------|--------|
+          | ✏️ Claude file edits | ${{ steps.claude-run.outcome }} |
+          | 🔍 Verify no markers | ${{ steps.verify-resolution.outcome }} |
+          | 📝 Create merge commit | ${{ steps.complete-merge.outcome }} |
+          | 📌 Push to sync branch | ${{ steps.push-resolution.outcome }} |
+
+          > [!WARNING]
+          > Manual intervention may be required. Check the workflow logs below.
+
+          <details>
+          <summary>🔧 Troubleshooting (click to expand)</summary>
+
+          **Common issues:**
+          - Complex merge conflicts requiring human judgment
+          - Leftover conflict markers in files
+          - Test failures after resolution
+
+          **Manual resolution:**
+          \`\`\`bash
+          git fetch origin
+          git checkout <sync-branch>
+          git merge origin/carto/main
+          # Resolve conflicts manually
+          make lint && make test-unit
+          git push origin <sync-branch>
+          \`\`\`
+
+          </details>
+
+          [View workflow logs →](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          EOF
+          )"
+          fi
+
+      - name: Add merge warning comment
+        if: steps.push-resolution.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          PR_NUMBER="${{ needs.check-eligibility.outputs.pr-number }}"
+
+          echo "[Resolver] Adding merge warning comment to PR #${PR_NUMBER}"
+          gh pr comment ${PR_NUMBER} --repo ${{ github.repository }} --body "> [!CAUTION]
+          > ## ⚠️ Merge Method Reminder
+          >
+          > **Use \"Create a merge commit\"** — Click the dropdown arrow next to merge button.
+          >
+          > ❌ Do NOT use \"Squash and merge\" or \"Rebase and merge\"
+          >
+          > _Squashing destroys upstream history and breaks future syncs (see PR #26)._"
+          echo "[Resolver] ✅ Merge warning comment added"

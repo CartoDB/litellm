@@ -37,7 +37,6 @@ from litellm.utils import (
     trim_messages,
     validate_environment,
 )
-from litellm.llms.openai_like.json_loader import JSONProviderRegistry
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
@@ -362,7 +361,7 @@ def test_aget_valid_models():
     os.environ = old_environ
 
 
-@pytest.mark.parametrize("custom_llm_provider", ["anthropic", "xai"])
+@pytest.mark.parametrize("custom_llm_provider", ["gemini", "anthropic", "xai"])
 def test_get_valid_models_with_custom_llm_provider(custom_llm_provider):
     from litellm.utils import ProviderConfigManager
     from litellm.types.utils import LlmProviders
@@ -973,11 +972,11 @@ def test_logging_trace_id(langfuse_trace_id, langfuse_existing_trace_id):
             litellm_logging_obj._get_trace_id(service_name="langfuse")
             == langfuse_trace_id
         )
-    ## if no trace_id or existing_trace_id is provided, use litellm_trace_id
+    ## if existing_trace_id exists
     else:
         assert (
             litellm_logging_obj._get_trace_id(service_name="langfuse")
-            == litellm_logging_obj.litellm_trace_id
+            == litellm_call_id
         )
 
 
@@ -1044,11 +1043,6 @@ def test_convert_model_response_object():
             "I am thinking here",
             "The sky is a canvas of blue",
         ),
-        (
-            "<budget:thinking>I am thinking here</budget:thinking>The sky is a canvas of blue",
-            "I am thinking here",
-            "The sky is a canvas of blue",
-        ),
         ("I am a regular response", None, "I am a regular response"),
     ],
 )
@@ -1066,7 +1060,7 @@ def test_parse_content_for_reasoning(content, expected_reasoning, expected_conte
         ("gemini/gemini-1.5-pro", True),
         ("predibase/llama3-8b-instruct", True),
         ("gpt-3.5-turbo", False),
-        ("groq/llama-3.3-70b-versatile", False),
+        ("groq/llama-3.3-70b-versatile", True),
     ],
 )
 def test_supports_response_schema(model, expected_bool):
@@ -1384,7 +1378,7 @@ def test_models_by_provider():
             providers.add(v["litellm_provider"])
 
     for provider in providers:
-        assert provider in models_by_provider.keys() or JSONProviderRegistry.exists(provider)
+        assert provider in models_by_provider.keys()
 
 
 @pytest.mark.parametrize(
@@ -1483,7 +1477,7 @@ def test_is_prompt_caching_enabled_error_handling():
             messages=[{"role": "user", "content": "test"}],
             tools=None,
             custom_llm_provider="anthropic",
-            model="anthropic/claude-sonnet-4-5-20250929",
+            model="anthropic/claude-3-5-sonnet-20240620",
         )
 
         assert result is False  # Should return False when an error occurs
@@ -2427,80 +2421,4 @@ def test_completion_with_no_model():
     # test on empty
     with pytest.raises(TypeError):
         response = litellm.completion(messages=[{"role": "user", "content": "Hello, how are you?"}])
-
-
-def test_get_base_model_from_metadata():
-    """
-    Test _get_base_model_from_metadata function with both metadata and litellm_metadata.
-    This ensures cost tracking works for both Chat Completions API and Responses API.
-
-    Related issue: https://github.com/BerriAI/litellm/issues/16772
-    """
-    from litellm.utils import _get_base_model_from_metadata
-
-    # Test 1: base_model in metadata (Chat Completions API pattern)
-    model_call_details_with_metadata = {
-        "litellm_params": {
-            "metadata": {
-                "model_info": {
-                    "base_model": "azure/gpt-4"
-                }
-            }
-        }
-    }
-    result = _get_base_model_from_metadata(model_call_details_with_metadata)
-    assert result == "azure/gpt-4", f"Expected 'azure/gpt-4', got {result}"
-
-    # Test 2: base_model in litellm_metadata (Responses API and generic API calls pattern)
-    model_call_details_with_litellm_metadata = {
-        "litellm_params": {
-            "litellm_metadata": {
-                "model_info": {
-                    "base_model": "azure/gpt-5-mini"
-                }
-            }
-        }
-    }
-    result = _get_base_model_from_metadata(model_call_details_with_litellm_metadata)
-    assert result == "azure/gpt-5-mini", f"Expected 'azure/gpt-5-mini', got {result}"
-
-    # Test 3: base_model in litellm_params (direct base_model)
-    model_call_details_with_direct_base_model = {
-        "litellm_params": {
-            "base_model": "azure/gpt-3.5-turbo"
-        }
-    }
-    result = _get_base_model_from_metadata(model_call_details_with_direct_base_model)
-    assert result == "azure/gpt-3.5-turbo", f"Expected 'azure/gpt-3.5-turbo', got {result}"
-
-    # Test 4: metadata takes precedence over litellm_metadata
-    model_call_details_with_both = {
-        "litellm_params": {
-            "metadata": {
-                "model_info": {
-                    "base_model": "azure/gpt-4-from-metadata"
-                }
-            },
-            "litellm_metadata": {
-                "model_info": {
-                    "base_model": "azure/gpt-4-from-litellm-metadata"
-                }
-            }
-        }
-    }
-    result = _get_base_model_from_metadata(model_call_details_with_both)
-    assert result == "azure/gpt-4-from-metadata", f"Expected metadata to take precedence, got {result}"
-
-    # Test 5: No base_model present
-    model_call_details_without_base_model = {
-        "litellm_params": {
-            "metadata": {}
-        }
-    }
-    result = _get_base_model_from_metadata(model_call_details_without_base_model)
-    assert result is None, f"Expected None when no base_model present, got {result}"
-
-    # Test 6: None input
-    result = _get_base_model_from_metadata(None)
-    assert result is None, f"Expected None for None input, got {result}"
-
+        

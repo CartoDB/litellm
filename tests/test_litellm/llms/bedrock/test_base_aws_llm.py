@@ -582,8 +582,7 @@ def test_eks_irsa_ambient_credentials_used():
         )
         
         # Should create STS client without explicit credentials (using ambient credentials)
-        # Note: verify parameter is passed for SSL verification
-        mock_boto3_client.assert_called_once_with("sts", verify=True)
+        mock_boto3_client.assert_called_once_with("sts")
         
         # Should call assume_role
         mock_sts_client.assume_role.assert_called_once_with(
@@ -638,13 +637,11 @@ def test_explicit_credentials_used_when_provided():
         )
         
         # Should create STS client with explicit credentials
-        # Note: verify parameter is passed for SSL verification
         mock_boto3_client.assert_called_once_with(
             "sts",
             aws_access_key_id="explicit-access-key",
             aws_secret_access_key="explicit-secret-key",
             aws_session_token="assumed-session-token",
-            verify=True,
         )
         
         # Should call assume_role
@@ -704,7 +701,6 @@ def test_partial_credentials_still_use_ambient():
             aws_access_key_id="AKIAEXAMPLE",
             aws_secret_access_key=None,
             aws_session_token=None,
-            verify=True,
         )
         
         # Should still call assume_role
@@ -752,7 +748,7 @@ def test_cross_account_role_assumption():
         )
         
         # Should use ambient credentials
-        mock_boto3_client.assert_called_once_with("sts", verify=True)
+        mock_boto3_client.assert_called_once_with("sts")
         
         # Should call assume_role with cross-account role
         mock_sts_client.assume_role.assert_called_once_with(

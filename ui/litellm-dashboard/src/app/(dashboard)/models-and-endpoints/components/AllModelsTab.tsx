@@ -1,18 +1,13 @@
-import { useModelCostMap } from "@/app/(dashboard)/hooks/models/useModelCostMap";
-import { useTeams } from "@/app/(dashboard)/hooks/teams/useTeams";
-import useAuthorized from "@/app/(dashboard)/hooks/useAuthorized";
-import { Team } from "@/components/key_team_helpers/key_list";
-import { AllModelsDataTable } from "@/components/model_dashboard/all_models_table";
+import { Grid, Select, SelectItem, TabPanel, Text } from "@tremor/react";
+import { InfoCircleOutlined } from "@ant-design/icons";
+import { ModelDataTable } from "@/components/model_dashboard/table";
 import { columns } from "@/components/molecules/models/columns";
 import { getDisplayModelName } from "@/components/view_model/model_name_display";
-import { InfoCircleOutlined } from "@ant-design/icons";
-import { PaginationState, SortingState } from "@tanstack/react-table";
-import { Grid, Select, SelectItem, TabPanel, Text } from "@tremor/react";
-import { Skeleton, Spin } from "antd";
-import debounce from "lodash/debounce";
-import { useEffect, useMemo, useState } from "react";
-import { useModelsInfo } from "../../hooks/models/useModels";
-import { transformModelData } from "../utils/modelDataTransformer";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import useTeams from "@/app/(dashboard)/hooks/useTeams";
+import useAuthorized from "@/app/(dashboard)/hooks/useAuthorized";
+import { Table as TableInstance, PaginationState } from "@tanstack/react-table";
+
 type ModelViewMode = "all" | "current_team";
 
 interface AllModelsTabProps {
@@ -22,6 +17,8 @@ interface AllModelsTabProps {
   availableModelAccessGroups: string[];
   setSelectedModelId: (id: string) => void;
   setSelectedTeamId: (id: string) => void;
+  setEditModel: (edit: boolean) => void;
+  modelData: any;
 }
 
 const AllModelsTab = ({
@@ -31,117 +28,33 @@ const AllModelsTab = ({
   availableModelAccessGroups,
   setSelectedModelId,
   setSelectedTeamId,
+  setEditModel,
+  modelData,
 }: AllModelsTabProps) => {
-  const { data: modelCostMapData, isLoading: isLoadingModelCostMap } = useModelCostMap();
   const { userId, userRole, premiumUser } = useAuthorized();
-  const { data: teams, isLoading: isLoadingTeams } = useTeams();
+  const { teams } = useTeams();
 
   const [modelNameSearch, setModelNameSearch] = useState<string>("");
-  const [debouncedSearch, setDebouncedSearch] = useState<string>("");
   const [modelViewMode, setModelViewMode] = useState<ModelViewMode>("current_team");
-  const [currentTeam, setCurrentTeam] = useState<Team | "personal">("personal");
+  const [currentTeam, setCurrentTeam] = useState<string>("personal"); // 'personal' or team_id
   const [showFilters, setShowFilters] = useState<boolean>(false);
   const [selectedModelAccessGroupFilter, setSelectedModelAccessGroupFilter] = useState<string | null>(null);
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
-  const [currentPage, setCurrentPage] = useState<number>(1);
-  const [pageSize] = useState<number>(50);
   const [pagination, setPagination] = useState<PaginationState>({
     pageIndex: 0,
     pageSize: 50,
   });
-  const [sorting, setSorting] = useState<SortingState>([]);
-
-  // Debounce search input
-  const debouncedUpdateSearch = useMemo(
-    () =>
-      debounce((value: string) => {
-        setDebouncedSearch(value);
-        // Reset to page 1 when search changes
-        setCurrentPage(1);
-        setPagination((prev: PaginationState) => ({ ...prev, pageIndex: 0 }));
-      }, 200),
-    []
-  );
-
-  useEffect(() => {
-    debouncedUpdateSearch(modelNameSearch);
-    return () => {
-      debouncedUpdateSearch.cancel();
-    };
-  }, [modelNameSearch, debouncedUpdateSearch]);
-
-  // Determine teamId to pass to the query - only pass if not "personal"
-  const teamIdForQuery = currentTeam === "personal" ? undefined : currentTeam.team_id;
-
-  // Convert sorting state to sortBy and sortOrder for API
-  const sortBy = useMemo(() => {
-    if (sorting.length === 0) return undefined;
-    const sort = sorting[0];
-    const columnIdToServerField: Record<string, string> = {
-      input_cost: "costs", // Map input_cost column to "costs" for server-side sorting
-      model_info_db_model: "status", // Map model_info.db_model column to "status" for server-side sorting
-      model_info_created_by: "created_at", // Map model_info.created_by column to "created_at" for server-side sorting
-      model_info_updated_at: "updated_at", // Map model_info.updated_at column to "updated_at" for server-side sorting
-    };
-    return columnIdToServerField[sort.id] || sort.id;
-  }, [sorting]);
-
-  const sortOrder = useMemo(() => {
-    if (sorting.length === 0) return undefined;
-    const sort = sorting[0];
-    return sort.desc ? "desc" : "asc";
-  }, [sorting]);
-
-  const { data: rawModelData, isLoading: isLoadingModelsInfo } = useModelsInfo(
-    currentPage,
-    pageSize,
-    debouncedSearch || undefined,
-    undefined,
-    teamIdForQuery,
-    sortBy,
-    sortOrder
-  );
-  const isLoading = isLoadingModelsInfo || isLoadingModelCostMap;
-
-  const getProviderFromModel = (model: string) => {
-    if (modelCostMapData !== null && modelCostMapData !== undefined) {
-      if (typeof modelCostMapData == "object" && model in modelCostMapData) {
-        return modelCostMapData[model]["litellm_provider"];
-      }
-    }
-    return "openai";
-  };
-
-  const modelData = useMemo(() => {
-    if (!rawModelData) return { data: [] };
-    return transformModelData(rawModelData, getProviderFromModel);
-  }, [rawModelData, modelCostMapData]);
-
-  // Get pagination metadata from the response
-  const paginationMeta = useMemo(() => {
-    if (!rawModelData) {
-      return {
-        total_count: 0,
-        current_page: 1,
-        total_pages: 1,
-        size: pageSize,
-      };
-    }
-    return {
-      total_count: rawModelData.total_count ?? 0,
-      current_page: rawModelData.current_page ?? 1,
-      total_pages: rawModelData.total_pages ?? 1,
-      size: rawModelData.size ?? pageSize,
-    };
-  }, [rawModelData, pageSize]);
+  const tableRef = useRef<TableInstance<any>>(null);
 
   const filteredData = useMemo(() => {
     if (!modelData || !modelData.data || modelData.data.length === 0) {
       return [];
     }
 
-    // Server-side search is now handled by the API, so we only filter by other criteria
     return modelData.data.filter((model: any) => {
+      const searchMatch =
+        modelNameSearch === "" || model.model_name.toLowerCase().includes(modelNameSearch.toLowerCase());
+
       const modelNameMatch =
         selectedModelGroup === "all" ||
         model.model_name === selectedModelGroup ||
@@ -153,28 +66,28 @@ const AllModelsTab = ({
         model.model_info["access_groups"]?.includes(selectedModelAccessGroupFilter) ||
         !selectedModelAccessGroupFilter;
 
-      // Team filtering is now handled server-side via teamId query parameter
-      // Only apply client-side filtering for model groups and access groups
-      return modelNameMatch && accessGroupMatch;
+      let teamAccessMatch = true;
+      if (modelViewMode === "current_team") {
+        if (currentTeam === "personal") {
+          teamAccessMatch = model.model_info?.direct_access === true;
+        } else {
+          teamAccessMatch = model.model_info?.access_via_team_ids?.includes(currentTeam) === true;
+        }
+      }
+
+      return searchMatch && modelNameMatch && accessGroupMatch && teamAccessMatch;
     });
-  }, [modelData, selectedModelGroup, selectedModelAccessGroupFilter]);
+  }, [modelData, modelNameSearch, selectedModelGroup, selectedModelAccessGroupFilter, currentTeam, modelViewMode]);
+
+  const paginatedData = useMemo(() => {
+    const startIndex = pagination.pageIndex * pagination.pageSize;
+    const endIndex = startIndex + pagination.pageSize;
+    return filteredData.slice(startIndex, endIndex);
+  }, [filteredData, pagination.pageIndex, pagination.pageSize]);
 
   useEffect(() => {
     setPagination((prev: PaginationState) => ({ ...prev, pageIndex: 0 }));
-    setCurrentPage(1);
-  }, [selectedModelGroup, selectedModelAccessGroupFilter]);
-
-  // Reset pagination when team changes
-  useEffect(() => {
-    setCurrentPage(1);
-    setPagination((prev: PaginationState) => ({ ...prev, pageIndex: 0 }));
-  }, [teamIdForQuery]);
-
-  // Reset pagination when sorting changes
-  useEffect(() => {
-    setCurrentPage(1);
-    setPagination((prev: PaginationState) => ({ ...prev, pageIndex: 0 }));
-  }, [sorting]);
+  }, [modelNameSearch, selectedModelGroup, selectedModelAccessGroupFilter, currentTeam, modelViewMode]);
 
   const resetFilters = () => {
     setModelNameSearch("");
@@ -182,9 +95,7 @@ const AllModelsTab = ({
     setSelectedModelAccessGroupFilter(null);
     setCurrentTeam("personal");
     setModelViewMode("current_team");
-    setCurrentPage(1);
     setPagination({ pageIndex: 0, pageSize: 50 });
-    setSorting([]);
   };
 
   return (
@@ -197,88 +108,56 @@ const AllModelsTab = ({
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-4">
                   <Text className="text-lg font-semibold text-gray-900">Current Team:</Text>
-                  {isLoading ? (
-                    <Skeleton.Input active style={{ width: 320, height: 36 }} />
-                  ) : (
-                    <Select
-                      className="w-80"
-                      defaultValue="personal"
-                      value={currentTeam === "personal" ? "personal" : currentTeam.team_id}
-                      onValueChange={(value) => {
-                        if (value === "personal") {
-                          setCurrentTeam("personal");
-                          // Reset to page 1 when team changes
-                          setCurrentPage(1);
-                          setPagination((prev: PaginationState) => ({ ...prev, pageIndex: 0 }));
-                        } else {
-                          const team = teams?.find((t) => t.team_id === value);
-                          if (team) {
-                            setCurrentTeam(team);
-                            // Reset to page 1 when team changes
-                            setCurrentPage(1);
-                            setPagination((prev: PaginationState) => ({ ...prev, pageIndex: 0 }));
-                          }
-                        }
-                      }}
-                    >
-                      <SelectItem value="personal">
-                        <div className="flex items-center gap-2">
-                          <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
-                          <span className="font-medium">Personal</span>
-                        </div>
-                      </SelectItem>
-                      {isLoadingTeams ? (
-                        <SelectItem value="loading">
+                  <Select
+                    className="w-80"
+                    defaultValue="personal"
+                    value={currentTeam}
+                    onValueChange={(value) => setCurrentTeam(value)}
+                  >
+                    <SelectItem value="personal">
+                      <div className="flex items-center gap-2">
+                        <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
+                        <span className="font-medium">Personal</span>
+                      </div>
+                    </SelectItem>
+                    {teams
+                      ?.filter((team) => team.team_id)
+                      .map((team) => (
+                        <SelectItem key={team.team_id} value={team.team_id}>
                           <div className="flex items-center gap-2">
-                            <Spin size="small" />
-                            <span className="font-medium text-gray-500">Loading teams...</span>
+                            <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+                            <span className="font-medium">
+                              {team.team_alias
+                                ? `${team.team_alias.slice(0, 30)}...`
+                                : `Team ${team.team_id.slice(0, 30)}...`}
+                            </span>
                           </div>
                         </SelectItem>
-                      ) : (
-                        teams
-                          ?.filter((team) => team.team_id)
-                          .map((team) => (
-                            <SelectItem key={team.team_id} value={team.team_id}>
-                              <div className="flex items-center gap-2">
-                                <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-                                <span className="font-medium">
-                                  {team.team_alias
-                                    ? `${team.team_alias.slice(0, 30)}...`
-                                    : `Team ${team.team_id.slice(0, 30)}...`}
-                                </span>
-                              </div>
-                            </SelectItem>
-                          ))
-                      )}
-                    </Select>
-                  )}
+                      ))}
+                  </Select>
                 </div>
 
                 <div className="flex items-center gap-4">
                   <Text className="text-lg font-semibold text-gray-900">View:</Text>
-                  {isLoading ? (
-                    <Skeleton.Input active style={{ width: 256, height: 36 }} />
-                  ) : (
-                    <Select
-                      className="w-64"
-                      defaultValue="current_team"
-                      value={modelViewMode}
-                      onValueChange={(value) => setModelViewMode(value as "current_team" | "all")}
-                    >
-                      <SelectItem value="current_team">
-                        <div className="flex items-center gap-2">
-                          <div className="w-2 h-2 bg-purple-500 rounded-full"></div>
-                          <span className="font-medium">Current Team Models</span>
-                        </div>
-                      </SelectItem>
-                      <SelectItem value="all">
-                        <div className="flex items-center gap-2">
-                          <div className="w-2 h-2 bg-gray-500 rounded-full"></div>
-                          <span className="font-medium">All Available Models</span>
-                        </div>
-                      </SelectItem>
-                    </Select>
-                  )}
+                  <Select
+                    className="w-64"
+                    defaultValue="current_team"
+                    value={modelViewMode}
+                    onValueChange={(value) => setModelViewMode(value as "current_team" | "all")}
+                  >
+                    <SelectItem value="current_team">
+                      <div className="flex items-center gap-2">
+                        <div className="w-2 h-2 bg-purple-500 rounded-full"></div>
+                        <span className="font-medium">Current Team Models</span>
+                      </div>
+                    </SelectItem>
+                    <SelectItem value="all">
+                      <div className="flex items-center gap-2">
+                        <div className="w-2 h-2 bg-gray-500 rounded-full"></div>
+                        <span className="font-medium">All Available Models</span>
+                      </div>
+                    </SelectItem>
+                  </Select>
                 </div>
               </div>
 
@@ -299,8 +178,7 @@ const AllModelsTab = ({
                     ) : (
                       <span>
                         To access these models: Create a Virtual Key and select Team as &quot;
-                        {typeof currentTeam !== "string" ? currentTeam.team_alias || currentTeam.team_id : ""}&quot; on
-                        the{" "}
+                        {currentTeam}&quot; on the{" "}
                         <a
                           href="/public?login=success&page=api-keys"
                           className="text-gray-600 hover:text-gray-800 underline"
@@ -416,60 +294,52 @@ const AllModelsTab = ({
 
                 {/* Results Count and Pagination Controls */}
                 <div className="flex justify-between items-center">
-                  {isLoading ? (
-                    <Skeleton.Input active style={{ width: 184, height: 20 }} />
-                  ) : (
-                    <span className="text-sm text-gray-700">
-                      {paginationMeta.total_count > 0
-                        ? `Showing ${((currentPage - 1) * pageSize) + 1} - ${Math.min(currentPage * pageSize, paginationMeta.total_count)} of ${paginationMeta.total_count} results`
-                        : "Showing 0 results"}
-                    </span>
-                  )}
+                  <span className="text-sm text-gray-700">
+                    {filteredData.length > 0
+                      ? `Showing ${pagination.pageIndex * pagination.pageSize + 1} - ${Math.min(
+                          (pagination.pageIndex + 1) * pagination.pageSize,
+                          filteredData.length,
+                        )} of ${filteredData.length} results`
+                      : "Showing 0 results"}
+                  </span>
 
-                  <div className="flex items-center space-x-2">
-                    {isLoading ? (
-                      <Skeleton.Button active style={{ width: 84, height: 30 }} />
-                    ) : (
+                  {/* Pagination Controls */}
+                  {filteredData.length > pagination.pageSize && (
+                    <div className="flex items-center space-x-2">
                       <button
-                        onClick={() => {
-                          const newPage = currentPage - 1;
-                          setCurrentPage(newPage);
-                          setPagination((prev: PaginationState) => ({ ...prev, pageIndex: 0 }));
-                        }}
-                        disabled={currentPage === 1}
-                        className={`px-3 py-1 text-sm border rounded-md ${currentPage === 1
-                          ? "bg-gray-100 text-gray-400 cursor-not-allowed"
-                          : "hover:bg-gray-50"
-                          }`}
+                        onClick={() =>
+                          setPagination((prev: PaginationState) => ({ ...prev, pageIndex: prev.pageIndex - 1 }))
+                        }
+                        disabled={pagination.pageIndex === 0}
+                        className={`px-3 py-1 text-sm border rounded-md ${
+                          pagination.pageIndex === 0
+                            ? "bg-gray-100 text-gray-400 cursor-not-allowed"
+                            : "hover:bg-gray-50"
+                        }`}
                       >
                         Previous
                       </button>
-                    )}
 
-                    {isLoading ? (
-                      <Skeleton.Button active style={{ width: 56, height: 30 }} />
-                    ) : (
                       <button
-                        onClick={() => {
-                          const newPage = currentPage + 1;
-                          setCurrentPage(newPage);
-                          setPagination((prev: PaginationState) => ({ ...prev, pageIndex: 0 }));
-                        }}
-                        disabled={currentPage >= paginationMeta.total_pages}
-                        className={`px-3 py-1 text-sm border rounded-md ${currentPage >= paginationMeta.total_pages
-                          ? "bg-gray-100 text-gray-400 cursor-not-allowed"
-                          : "hover:bg-gray-50"
-                          }`}
+                        onClick={() =>
+                          setPagination((prev: PaginationState) => ({ ...prev, pageIndex: prev.pageIndex + 1 }))
+                        }
+                        disabled={pagination.pageIndex >= Math.ceil(filteredData.length / pagination.pageSize) - 1}
+                        className={`px-3 py-1 text-sm border rounded-md ${
+                          pagination.pageIndex >= Math.ceil(filteredData.length / pagination.pageSize) - 1
+                            ? "bg-gray-100 text-gray-400 cursor-not-allowed"
+                            : "hover:bg-gray-50"
+                        }`}
                       >
                         Next
                       </button>
-                    )}
-                  </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
 
-            <AllModelsDataTable
+            <ModelDataTable
               columns={columns(
                 userRole,
                 userId,
@@ -477,18 +347,15 @@ const AllModelsTab = ({
                 setSelectedModelId,
                 setSelectedTeamId,
                 getDisplayModelName,
-                () => { },
-                () => { },
+                () => {},
+                () => {},
+                setEditModel,
                 expandedRows,
                 setExpandedRows,
               )}
-              data={filteredData}
-              isLoading={isLoadingModelsInfo}
-              sorting={sorting}
-              onSortingChange={setSorting}
-              pagination={pagination}
-              onPaginationChange={setPagination}
-              enablePagination={true}
+              data={paginatedData}
+              isLoading={false}
+              table={tableRef}
             />
           </div>
         </div>

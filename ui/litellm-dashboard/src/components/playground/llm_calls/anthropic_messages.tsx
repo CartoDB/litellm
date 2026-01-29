@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { MessageType } from "../chat_ui/types";
-import { TokenUsage } from "../chat_ui/ResponseMetrics";
+import { MessageType } from "../types";
+import { TokenUsage } from "../ResponseMetrics";
 import { getProxyBaseUrl } from "@/components/networking";
 import NotificationManager from "@/components/molecules/notifications_manager";
 
@@ -17,12 +17,10 @@ export async function makeAnthropicMessagesRequest(
   traceId?: string,
   vector_store_ids?: string[],
   guardrails?: string[],
-  policies?: string[],
   selectedMCPTools?: string[],
-  customBaseUrl?: string,
 ) {
   if (!accessToken) {
-    throw new Error("Virtual Key is required");
+    throw new Error("API key is required");
   }
 
   const isLocal = process.env.NODE_ENV === "development";
@@ -30,7 +28,7 @@ export async function makeAnthropicMessagesRequest(
     console.log = function () {};
   }
 
-  const proxyBaseUrl = customBaseUrl || getProxyBaseUrl();
+  const proxyBaseUrl = getProxyBaseUrl();
 
   // Prepare headers with tags and trace ID
   const headers: Record<string, string> = {};
@@ -49,6 +47,23 @@ export async function makeAnthropicMessagesRequest(
     const startTime = Date.now();
     let firstTokenReceived = false;
 
+    // Format MCP tools if selected
+    const tools =
+      selectedMCPTools && selectedMCPTools.length > 0
+        ? [
+            {
+              type: "mcp",
+              server_label: "litellm",
+              server_url: `${proxyBaseUrl}/mcp`,
+              require_approval: "never",
+              allowed_tools: selectedMCPTools,
+              headers: {
+                "x-litellm-api-key": `Bearer ${accessToken}`,
+              },
+            },
+          ]
+        : undefined;
+
     const requestBody: any = {
       model: selectedModel,
       messages: messages.map((m) => ({ role: m.role, content: m.content })),
@@ -60,7 +75,11 @@ export async function makeAnthropicMessagesRequest(
 
     if (vector_store_ids) requestBody.vector_store_ids = vector_store_ids;
     if (guardrails) requestBody.guardrails = guardrails;
-    if (policies) requestBody.policies = policies;
+    if (tools) {
+      requestBody.tools = tools;
+      requestBody.tool_choice = "auto";
+    }
+
     // Use the streaming helper method for cleaner async iteration
     // @ts-ignore - The SDK types might not include all litellm-specific parameters
     const stream = client.messages.stream(requestBody, { signal });

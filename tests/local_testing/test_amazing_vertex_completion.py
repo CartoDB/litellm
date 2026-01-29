@@ -387,33 +387,58 @@ def test_avertex_ai_stream():
 
 @pytest.mark.flaky(retries=3, delay=1)
 @pytest.mark.asyncio
-async def test_async_vertexai_response_basic():
+async def test_async_vertexai_response():
+    import random
 
     load_vertex_ai_credentials()
-    try:
-        user_message = "Hello, how are you?"
-        messages = [{"content": user_message, "role": "user"}]
-        response = await acompletion(
-            model="gemini-2.5-flash",
-            messages=messages, 
-            temperature=0.7, 
-            timeout=5
+    test_models = (
+        litellm.vertex_chat_models
+        | litellm.vertex_code_chat_models
+        | litellm.vertex_text_models
+        | litellm.vertex_code_text_models
+    )
+
+    test_models = random.sample(list(test_models), 1)
+    test_models += list(litellm.vertex_language_models)  # always test gemini-pro
+    for model in test_models:
+        print(
+            f"model being tested in async call: {model}, litellm.vertex_language_models: {litellm.vertex_language_models}"
         )
-        print(f"response: {response}")
-    except litellm.NotFoundError as e:
-        pass
-    except litellm.RateLimitError as e:
-        pass
-    except litellm.Timeout as e:
-        pass
-    except litellm.APIError as e:
-        pass
-    except litellm.InternalServerError as e:
-        pass
-    except Exception as e:
-        pytest.fail(f"An exception occurred: {e}")
+        if model in VERTEX_MODELS_TO_NOT_TEST or (
+            "gecko" in model
+            or "32k" in model
+            or "ultra" in model
+            or "002" in model
+            or "gemini-2.0-flash-thinking-exp" in model
+            or "gemini-2.0-pro-exp-02-05" in model
+            or "gemini-pro" in model
+            or "gemini-1.0-pro" in model
+            or "image-generation" in model
+        ):
+            # our account does not have access to this model
+            continue
+        try:
+            user_message = "Hello, how are you?"
+            messages = [{"content": user_message, "role": "user"}]
+            response = await acompletion(
+                model=model, messages=messages, temperature=0.7, timeout=5
+            )
+            print(f"response: {response}")
+        except litellm.NotFoundError as e:
+            pass
+        except litellm.RateLimitError as e:
+            pass
+        except litellm.Timeout as e:
+            pass
+        except litellm.APIError as e:
+            pass
+        except litellm.InternalServerError as e:
+            pass
+        except Exception as e:
+            pytest.fail(f"An exception occurred: {e}")
 
 
+# asyncio.run(test_async_vertexai_response())
 
 
 @pytest.mark.flaky(retries=3, delay=1)
@@ -742,7 +767,7 @@ def test_gemini_pro_grounding(value_in_dict):
 @pytest.mark.parametrize("model", ["vertex_ai_beta/gemini-2.5-flash-lite"])  # "vertex_ai",
 @pytest.mark.parametrize("sync_mode", [True])  # "vertex_ai",
 @pytest.mark.asyncio
-@pytest.mark.flaky(retries=6, delay=2)
+@pytest.mark.flaky(retries=3, delay=1)
 async def test_gemini_pro_function_calling_httpx(model, sync_mode):
     try:
         load_vertex_ai_credentials()
@@ -785,7 +810,6 @@ async def test_gemini_pro_function_calling_httpx(model, sync_mode):
             "messages": messages,
             "tools": tools,
             "tool_choice": "required",
-            "timeout": 60,  # Add explicit timeout
         }
         print(f"Model for call - {model}")
         if sync_mode:
@@ -800,18 +824,12 @@ async def test_gemini_pro_function_calling_httpx(model, sync_mode):
             response.choices[0].message.tool_calls[0].function.arguments, str
         )
     except litellm.RateLimitError as e:
-        pytest.skip(f"Rate limit exceeded: {str(e)}")
-    except litellm.ServiceUnavailableError as e:
-        pytest.skip(f"Service unavailable: {str(e)}")
-    except litellm.Timeout as e:
-        pytest.skip(f"Request timeout: {str(e)}")
+        pass
     except Exception as e:
-        error_msg = str(e)
-        # Skip test for known transient API issues
-        if any(x in error_msg for x in ["429 Quota exceeded", "503", "Service unavailable", "timeout", "Timeout", "UNAVAILABLE"]):
-            pytest.skip(f"Transient API error: {error_msg}")
+        if "429 Quota exceeded" in str(e):
+            pass
         else:
-            pytest.fail(f"An unexpected exception occurred - {error_msg}")
+            pytest.fail("An unexpected exception occurred - {}".format(str(e)))
 
 
 from test_completion import response_format_tests
@@ -820,7 +838,7 @@ from test_completion import response_format_tests
 @pytest.mark.parametrize(
     "model,region",
     [
-        ("vertex_ai/mistral-small-2503", "us-central1"),
+        ("vertex_ai/mistral-large-2411", "us-central1"),
         ("vertex_ai/qwen/qwen3-coder-480b-a35b-instruct-maas", "us-south1"),
         ("vertex_ai/openai/gpt-oss-20b-maas", "us-central1"),
     ],
@@ -893,7 +911,7 @@ async def test_partner_models_httpx(model, region, sync_mode):
         ("vertex_ai/meta/llama-4-scout-17b-16e-instruct-maas", "us-east5"),
         ("vertex_ai/qwen/qwen3-coder-480b-a35b-instruct-maas", "us-south1"),
         (
-            "vertex_ai/mistral-small-2503",
+            "vertex_ai/mistral-large-2411",
             "us-central1",
         ),  # critical - we had this issue: https://github.com/BerriAI/litellm/issues/13888
         ("vertex_ai/openai/gpt-oss-20b-maas", "us-central1"),
@@ -1393,15 +1411,14 @@ async def test_gemini_pro_json_schema_args_sent_httpx(
             print(mock_call.call_args.kwargs["json"]["generationConfig"])
 
             if supports_response_schema:
-                # Gemini 2.x+ uses response_json_schema, Gemini 1.x uses response_schema
-                gen_config = mock_call.call_args.kwargs["json"]["generationConfig"]
                 assert (
-                    "response_schema" in gen_config or "response_json_schema" in gen_config
-                ), f"Expected response_schema or response_json_schema in {gen_config}"
+                    "response_schema"
+                    in mock_call.call_args.kwargs["json"]["generationConfig"]
+                )
             else:
-                gen_config = mock_call.call_args.kwargs["json"]["generationConfig"]
                 assert (
-                    "response_schema" not in gen_config and "response_json_schema" not in gen_config
+                    "response_schema"
+                    not in mock_call.call_args.kwargs["json"]["generationConfig"]
                 )
                 assert (
                     "Use this JSON schema:"
@@ -1574,11 +1591,10 @@ async def test_gemini_pro_json_schema_args_sent_httpx_openai_schema(
             print(mock_call.call_args.kwargs["json"]["generationConfig"])
 
             if supports_response_schema:
-                # Gemini 2.x+ uses response_json_schema, Gemini 1.x uses response_schema
-                gen_config = mock_call.call_args.kwargs["json"]["generationConfig"]
                 assert (
-                    "response_schema" in gen_config or "response_json_schema" in gen_config
-                ), f"Expected response_schema or response_json_schema in {gen_config}"
+                    "response_schema"
+                    in mock_call.call_args.kwargs["json"]["generationConfig"]
+                )
                 assert (
                     "response_mime_type"
                     in mock_call.call_args.kwargs["json"]["generationConfig"]
@@ -1590,9 +1606,9 @@ async def test_gemini_pro_json_schema_args_sent_httpx_openai_schema(
                     == "application/json"
                 )
             else:
-                gen_config = mock_call.call_args.kwargs["json"]["generationConfig"]
                 assert (
-                    "response_schema" not in gen_config and "response_json_schema" not in gen_config
+                    "response_schema"
+                    not in mock_call.call_args.kwargs["json"]["generationConfig"]
                 )
                 assert (
                     "Use this JSON schema:"
@@ -2359,7 +2375,8 @@ async def test_completion_fine_tuned_model():
     expected_payload = {
         "contents": [
             {"role": "user", "parts": [{"text": "Write a short poem about the sky"}]}
-        ]
+        ],
+        "generationConfig": {},
     }
 
     with patch(
@@ -2839,6 +2856,7 @@ def test_gemini_function_call_parameter_in_messages():
                 }
             ],
             "toolConfig": {"functionCallingConfig": {"mode": "AUTO"}},
+            "generationConfig": {},
         } == mock_client.call_args.kwargs["json"]
 
 

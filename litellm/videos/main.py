@@ -1,26 +1,24 @@
 import asyncio
 import contextvars
-import json
 from functools import partial
-from typing import Any, Coroutine, Dict, List, Literal, Optional, Union, overload
+from typing import Any, Coroutine, Literal, Optional, Union, overload, Dict, List
 
+import json
 import litellm
-from litellm.constants import DEFAULT_VIDEO_ENDPOINT_MODEL
-from litellm.constants import request_timeout as DEFAULT_REQUEST_TIMEOUT
 from litellm.litellm_core_utils.get_llm_provider_logic import get_llm_provider
-from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
-from litellm.llms.base_llm.videos.transformation import BaseVideoConfig
-from litellm.llms.custom_httpx.llm_http_handler import BaseLLMHTTPHandler
-from litellm.main import base_llm_http_handler
-from litellm.types.router import GenericLiteLLMParams
-from litellm.types.utils import CallTypes, FileTypes
 from litellm.types.videos.main import (
     VideoCreateOptionalRequestParams,
     VideoObject,
 )
-from litellm.types.videos.utils import decode_video_id_with_provider
-from litellm.utils import ProviderConfigManager, client
 from litellm.videos.utils import VideoGenerationRequestUtils
+from litellm.constants import DEFAULT_VIDEO_ENDPOINT_MODEL, request_timeout as DEFAULT_REQUEST_TIMEOUT
+from litellm.main import base_llm_http_handler
+from litellm.utils import client, ProviderConfigManager
+from litellm.types.utils import FileTypes, CallTypes
+from litellm.types.router import GenericLiteLLMParams
+from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
+from litellm.llms.base_llm.videos.transformation import BaseVideoConfig
+from litellm.llms.custom_httpx.llm_http_handler import BaseLLMHTTPHandler
 
 #################### Initialize provider clients ####################
 llm_http_handler: BaseLLMHTTPHandler = BaseLLMHTTPHandler()
@@ -210,7 +208,7 @@ def video_generation(  # noqa: PLR0915
         )
 
         if video_generation_provider_config is None:
-            raise ValueError(f"video generation is not supported for {custom_llm_provider}")
+            raise ValueError(f"image edit is not supported for {custom_llm_provider}")
 
         local_vars.update(kwargs)
         # Get VideoGenerationOptionalRequestParams with only valid parameters
@@ -218,7 +216,7 @@ def video_generation(  # noqa: PLR0915
             VideoGenerationRequestUtils.get_requested_video_generation_optional_param(local_vars)
         )
 
-        # Get optional parameters for the video generation API
+        # Get optional parameters for the responses API
         video_generation_request_params: Dict = (
             VideoGenerationRequestUtils.get_optional_params_video_generation(
                 model=model,
@@ -260,7 +258,7 @@ def video_generation(  # noqa: PLR0915
 
     except Exception as e:
         raise litellm.exception_type(
-            model=model or DEFAULT_VIDEO_ENDPOINT_MODEL,
+            model=model,
             custom_llm_provider=custom_llm_provider,
             original_exception=e,
             completion_kwargs=local_vars,
@@ -271,6 +269,8 @@ def video_generation(  # noqa: PLR0915
 @client
 def video_content(
     video_id: str,
+    model: Optional[str] = None,
+    api_base: Optional[str] = None,
     timeout: Optional[float] = None,
     custom_llm_provider: Optional[str] = None,
     # Use the following arguments if you need to pass additional parameters to the API that aren't available via kwargs.
@@ -288,6 +288,7 @@ def video_content(
 
     Args:
         video_id (str): The identifier of the video whose content to download.
+        model (Optional[str]): The model to use. If not provided, will be auto-detected.
         api_key (Optional[str]): The API key to use for authentication.
         api_base (Optional[str]): The base URL for the API.
         timeout (Optional[float]): The timeout for the request in seconds.
@@ -304,10 +305,13 @@ def video_content(
         ```python
         import litellm
 
+        # Download video content
         video_bytes = litellm.video_content(
-            video_id="video_123"
+            video_id="video_123",
+            custom_llm_provider="openai"
         )
 
+        # Save to file
         with open("video.mp4", "wb") as f:
             f.write(video_bytes)
         ```
@@ -318,18 +322,17 @@ def video_content(
         litellm_call_id: Optional[str] = kwargs.get("litellm_call_id", None)
         _is_async = kwargs.pop("async_call", False) is True
 
-        # Try to decode provider from video_id if not explicitly provided
-        if custom_llm_provider is None:
-            decoded = decode_video_id_with_provider(video_id)
-            custom_llm_provider = decoded.get("custom_llm_provider") or "openai"
-
         # get llm provider logic
         litellm_params = GenericLiteLLMParams(**kwargs)
+        model, custom_llm_provider, _, _ = get_llm_provider(
+            model=model or "sora-2",  # Default model for video content
+            custom_llm_provider=custom_llm_provider,
+        )
 
         # get provider config
         video_provider_config: Optional[BaseVideoConfig] = (
             ProviderConfigManager.get_provider_video_config(
-                model=None,
+                model=model,
                 provider=litellm.LlmProviders(custom_llm_provider),
             )
         )
@@ -346,7 +349,7 @@ def video_content(
 
         # Pre Call logging
         litellm_logging_obj.update_environment_variables(
-            model="",
+            model=model,
             user=kwargs.get("user"),
             optional_params=dict(video_content_request_params),
             litellm_params={
@@ -359,6 +362,7 @@ def video_content(
         # Call the handler with _is_async flag instead of directly calling the async handler
         return base_llm_http_handler.video_content_handler(
             video_id=video_id,
+            model=model,
             video_content_provider_config=video_provider_config,
             custom_llm_provider=custom_llm_provider,
             litellm_params=litellm_params,
@@ -371,7 +375,7 @@ def video_content(
 
     except Exception as e:
         raise litellm.exception_type(
-            model="",
+            model=model,
             custom_llm_provider=custom_llm_provider,
             original_exception=e,
             completion_kwargs=local_vars,
@@ -383,6 +387,9 @@ def video_content(
 @client
 async def avideo_content(
     video_id: str,
+    model: Optional[str] = None,
+    api_key: Optional[str] = None,
+    api_base: Optional[str] = None,
     timeout: Optional[float] = None,
     custom_llm_provider: Optional[str] = None,
     # Use the following arguments if you need to pass additional parameters to the API that aren't available via kwargs.
@@ -397,6 +404,9 @@ async def avideo_content(
 
     Parameters:
     - `video_id` (str): The identifier of the video whose content to download
+    - `model` (Optional[str]): The model to use. If not provided, will be auto-detected
+    - `api_key` (Optional[str]): The API key to use for authentication
+    - `api_base` (Optional[str]): The base URL for the API
     - `timeout` (Optional[float]): The timeout for the request in seconds
     - `custom_llm_provider` (Optional[str]): The LLM provider to use
     - `extra_headers` (Optional[Dict[str, Any]]): Additional headers
@@ -412,14 +422,18 @@ async def avideo_content(
         loop = asyncio.get_event_loop()
         kwargs["async_call"] = True
 
-        # Try to decode provider from video_id if not explicitly provided
+        # get custom llm provider so we can use this for mapping exceptions
         if custom_llm_provider is None:
-            decoded = decode_video_id_with_provider(video_id)
-            custom_llm_provider = decoded.get("custom_llm_provider") or "openai"
+            _, custom_llm_provider, _, _ = litellm.get_llm_provider(
+                model=model or DEFAULT_VIDEO_ENDPOINT_MODEL, api_base=api_base
+            )
 
         func = partial(
             video_content,
             video_id=video_id,
+            model=model,
+            api_key=api_key,
+            api_base=api_base,
             timeout=timeout,
             custom_llm_provider=custom_llm_provider,
             extra_headers=extra_headers,
@@ -440,7 +454,7 @@ async def avideo_content(
         return response
     except Exception as e:
         raise litellm.exception_type(
-            model="",
+            model=model,
             custom_llm_provider=custom_llm_provider,
             original_exception=e,
             completion_kwargs=local_vars,
@@ -452,6 +466,7 @@ async def avideo_content(
 async def avideo_remix(
     video_id: str,
     prompt: str,
+    model: Optional[str] = None,
     timeout=600,  # default to 10 minutes
     custom_llm_provider=None,
     # Use the following arguments if you need to pass additional parameters to the API that aren't available via kwargs.
@@ -467,6 +482,7 @@ async def avideo_remix(
     Parameters:
     - `video_id` (str): The identifier of the completed video to remix
     - `prompt` (str): Updated text prompt that directs the remix generation
+    - `model` (Optional[str]): The video generation model to use
     - `timeout` (int): Request timeout in seconds
     - `custom_llm_provider` (Optional[str]): The LLM provider to use
     - `extra_headers` (Optional[Dict[str, Any]]): Additional headers
@@ -482,10 +498,17 @@ async def avideo_remix(
         loop = asyncio.get_event_loop()
         kwargs["async_call"] = True
 
+        # get custom llm provider so we can use this for mapping exceptions
+        if custom_llm_provider is None:
+            _, custom_llm_provider, _, _ = litellm.get_llm_provider(
+                model=model or DEFAULT_VIDEO_ENDPOINT_MODEL, api_base=local_vars.get("api_base", None)
+            )
+
         func = partial(
             video_remix,
             video_id=video_id,
             prompt=prompt,
+            model=model,
             timeout=timeout,
             custom_llm_provider=custom_llm_provider,
             extra_headers=extra_headers,
@@ -506,7 +529,7 @@ async def avideo_remix(
         return response
     except Exception as e:
         raise litellm.exception_type(
-            model="",
+            model=model,
             custom_llm_provider=custom_llm_provider,
             original_exception=e,
             completion_kwargs=local_vars,
@@ -521,6 +544,7 @@ async def avideo_remix(
 def video_remix(
     video_id: str,
     prompt: str,
+    model: Optional[str] = None,
     timeout=600,  # default to 10 minutes
     api_key: Optional[str] = None,
     api_base: Optional[str] = None,
@@ -537,6 +561,7 @@ def video_remix(
 def video_remix(
     video_id: str,
     prompt: str,
+    model: Optional[str] = None,
     timeout=600,  # default to 10 minutes
     api_key: Optional[str] = None,
     api_base: Optional[str] = None,
@@ -555,6 +580,7 @@ def video_remix(
 def video_remix(  # noqa: PLR0915
     video_id: str,
     prompt: str,
+    model: Optional[str] = None,
     timeout=600,  # default to 10 minutes
     custom_llm_provider=None,
     # Use the following arguments if you need to pass additional parameters to the API that aren't available via kwargs.
@@ -587,18 +613,17 @@ def video_remix(  # noqa: PLR0915
             response = VideoObject(**mock_response)
             return response
 
-        # Try to decode provider from video_id if not explicitly provided
-        if custom_llm_provider is None:
-            decoded = decode_video_id_with_provider(video_id)
-            custom_llm_provider = decoded.get("custom_llm_provider") or "openai"
-
         # get llm provider logic
         litellm_params = GenericLiteLLMParams(**kwargs)
+        model, custom_llm_provider, _, _ = get_llm_provider(
+            model=model or DEFAULT_VIDEO_ENDPOINT_MODEL,
+            custom_llm_provider=custom_llm_provider,
+        )
 
         # get provider config
         video_remix_provider_config: Optional[BaseVideoConfig] = (
             ProviderConfigManager.get_provider_video_config(
-                model=None,
+                model=model,
                 provider=litellm.LlmProviders(custom_llm_provider),
             )
         )
@@ -615,7 +640,7 @@ def video_remix(  # noqa: PLR0915
 
         # Pre Call logging
         litellm_logging_obj.update_environment_variables(
-            model="",
+            model=model,
             user=kwargs.get("user"),
             optional_params=dict(video_remix_request_params),
             litellm_params={
@@ -632,6 +657,7 @@ def video_remix(  # noqa: PLR0915
         return base_llm_http_handler.video_remix_handler(
             video_id=video_id,
             prompt=prompt,
+            model=model,
             video_remix_provider_config=video_remix_provider_config,
             custom_llm_provider=custom_llm_provider,
             litellm_params=litellm_params,
@@ -645,7 +671,7 @@ def video_remix(  # noqa: PLR0915
 
     except Exception as e:
         raise litellm.exception_type(
-            model="",
+            model=model,
             custom_llm_provider=custom_llm_provider,
             original_exception=e,
             completion_kwargs=local_vars,
@@ -659,7 +685,7 @@ async def avideo_list(
     after: Optional[str] = None,
     limit: Optional[int] = None,
     order: Optional[str] = None,
-    api_key: Optional[str] = None,
+    model: Optional[str] = None,
     timeout=600,  # default to 10 minutes
     custom_llm_provider=None,
     # Use the following arguments if you need to pass additional parameters to the API that aren't available via kwargs.
@@ -676,7 +702,7 @@ async def avideo_list(
     - `after` (Optional[str]): Identifier for the last item from the previous pagination request
     - `limit` (Optional[int]): Number of items to retrieve
     - `order` (Optional[str]): Sort order of results by timestamp. Use asc for ascending order or desc for descending order
-    - `api_key` (Optional[str]): The API key to use for authentication
+    - `model` (Optional[str]): The video generation model to use
     - `timeout` (int): Request timeout in seconds
     - `custom_llm_provider` (Optional[str]): The LLM provider to use
     - `extra_headers` (Optional[Dict[str, Any]]): Additional headers
@@ -695,7 +721,7 @@ async def avideo_list(
         # get custom llm provider so we can use this for mapping exceptions
         if custom_llm_provider is None:
             _, custom_llm_provider, _, _ = litellm.get_llm_provider(
-                model="", api_base=local_vars.get("api_base", None)
+                model=model or DEFAULT_VIDEO_ENDPOINT_MODEL, api_base=local_vars.get("api_base", None)
             )
 
         func = partial(
@@ -703,7 +729,7 @@ async def avideo_list(
             after=after,
             limit=limit,
             order=order,
-            api_key=api_key,
+            model=model,
             timeout=timeout,
             custom_llm_provider=custom_llm_provider,
             extra_headers=extra_headers,
@@ -724,7 +750,7 @@ async def avideo_list(
         return response
     except Exception as e:
         raise litellm.exception_type(
-            model="",
+            model=model,
             custom_llm_provider=custom_llm_provider,
             original_exception=e,
             completion_kwargs=local_vars,
@@ -740,6 +766,7 @@ def video_list(
     after: Optional[str] = None,
     limit: Optional[int] = None,
     order: Optional[str] = None,
+    model: Optional[str] = None,
     timeout=600,  # default to 10 minutes
     api_key: Optional[str] = None,
     api_base: Optional[str] = None,
@@ -757,6 +784,7 @@ def video_list(
     after: Optional[str] = None,
     limit: Optional[int] = None,
     order: Optional[str] = None,
+    model: Optional[str] = None,
     timeout=600,  # default to 10 minutes
     api_key: Optional[str] = None,
     api_base: Optional[str] = None,
@@ -776,6 +804,7 @@ def video_list(  # noqa: PLR0915
     after: Optional[str] = None,
     limit: Optional[int] = None,
     order: Optional[str] = None,
+    model: Optional[str] = None,
     timeout=600,  # default to 10 minutes
     custom_llm_provider=None,
     # Use the following arguments if you need to pass additional parameters to the API that aren't available via kwargs.
@@ -806,17 +835,17 @@ def video_list(  # noqa: PLR0915
                 mock_response = json.loads(mock_response)
             return [VideoObject(**item) for item in mock_response]
 
-        # Ensure custom_llm_provider is not None - default to openai if not provided
-        if custom_llm_provider is None:
-            custom_llm_provider = "openai"
-
         # get llm provider logic
         litellm_params = GenericLiteLLMParams(**kwargs)
+        model, custom_llm_provider, _, _ = get_llm_provider(
+            model=model or DEFAULT_VIDEO_ENDPOINT_MODEL,
+            custom_llm_provider=custom_llm_provider,
+        )
 
         # get provider config
         video_list_provider_config: Optional[BaseVideoConfig] = (
             ProviderConfigManager.get_provider_video_config(
-                model=None,
+                model=model,
                 provider=litellm.LlmProviders(custom_llm_provider),
             )
         )
@@ -834,7 +863,7 @@ def video_list(  # noqa: PLR0915
 
         # Pre Call logging
         litellm_logging_obj.update_environment_variables(
-            model="",
+            model=model,
             user=kwargs.get("user"),
             optional_params=dict(video_list_request_params),
             litellm_params={
@@ -852,6 +881,7 @@ def video_list(  # noqa: PLR0915
             after=after,
             limit=limit,
             order=order,
+            model=model,
             video_list_provider_config=video_list_provider_config,
             custom_llm_provider=custom_llm_provider,
             litellm_params=litellm_params,
@@ -865,7 +895,7 @@ def video_list(  # noqa: PLR0915
 
     except Exception as e:
         raise litellm.exception_type(
-            model="",
+            model=model,
             custom_llm_provider=custom_llm_provider,
             original_exception=e,
             completion_kwargs=local_vars,
@@ -877,6 +907,7 @@ def video_list(  # noqa: PLR0915
 @client
 async def avideo_status(
     video_id: str,
+    model: Optional[str] = None,
     timeout=600,  # default to 10 minutes
     custom_llm_provider=None,
     # Use the following arguments if you need to pass additional parameters to the API that aren't available via kwargs.
@@ -901,16 +932,22 @@ async def avideo_status(
 
     Returns:
     - `response` (VideoObject): The response returned by the `video_status` function.
-    """
+"""
     local_vars = locals()
     try:
         loop = asyncio.get_event_loop()
         kwargs["async_call"] = True
 
+        # get custom llm provider so we can use this for mapping exceptions
+        if custom_llm_provider is None:
+            _, custom_llm_provider, _, _ = litellm.get_llm_provider(
+                model=model or DEFAULT_VIDEO_ENDPOINT_MODEL, api_base=local_vars.get("api_base", None)
+            )
 
         func = partial(
             video_status,
             video_id=video_id,
+            model=model,
             timeout=timeout,
             custom_llm_provider=custom_llm_provider,
             extra_headers=extra_headers,
@@ -931,7 +968,7 @@ async def avideo_status(
         return response
     except Exception as e:
         raise litellm.exception_type(
-            model="",
+            model=model,
             custom_llm_provider=custom_llm_provider,
             original_exception=e,
             completion_kwargs=local_vars,
@@ -945,6 +982,7 @@ async def avideo_status(
 @overload
 def video_status(
     video_id: str,
+    model: Optional[str] = None,
     timeout=600,  # default to 10 minutes
     api_key: Optional[str] = None,
     api_base: Optional[str] = None,
@@ -960,6 +998,7 @@ def video_status(
 @overload
 def video_status(
     video_id: str,
+    model: Optional[str] = None,
     timeout=600,  # default to 10 minutes
     api_key: Optional[str] = None,
     api_base: Optional[str] = None,
@@ -977,6 +1016,7 @@ def video_status(
 @client
 def video_status(  # noqa: PLR0915
     video_id: str,
+    model: Optional[str] = None,
     timeout=600,  # default to 10 minutes
     custom_llm_provider=None,
     # Use the following arguments if you need to pass additional parameters to the API that aren't available via kwargs.
@@ -994,6 +1034,7 @@ def video_status(  # noqa: PLR0915
 
     Args:
         video_id (str): The identifier of the video whose status to retrieve.
+        model (Optional[str]): The model to use. If not provided, will be auto-detected.
         timeout (int): The timeout for the request in seconds.
         custom_llm_provider (Optional[str]): The LLM provider to use. If not provided, will be auto-detected.
         extra_headers (Optional[Dict[str, Any]]): Additional headers to include in the request.
@@ -1009,7 +1050,8 @@ def video_status(  # noqa: PLR0915
 
         # Get video status
         video_status = litellm.video_status(
-            video_id="video_123"
+            video_id="video_123",
+            custom_llm_provider="openai"
         )
 
         print(f"Video status: {video_status.status}")
@@ -1031,18 +1073,17 @@ def video_status(  # noqa: PLR0915
             response = VideoObject(**mock_response)
             return response
 
-        # Try to decode provider from video_id if not explicitly provided
-        if custom_llm_provider is None:
-            decoded = decode_video_id_with_provider(video_id)
-            custom_llm_provider = decoded.get("custom_llm_provider") or "openai"
-
         # get llm provider logic
         litellm_params = GenericLiteLLMParams(**kwargs)
+        model, custom_llm_provider, _, _ = get_llm_provider(
+            model=model or DEFAULT_VIDEO_ENDPOINT_MODEL,
+            custom_llm_provider=custom_llm_provider,
+        )
 
         # get provider config
         video_status_provider_config: Optional[BaseVideoConfig] = (
             ProviderConfigManager.get_provider_video_config(
-                model=None,
+                model=model,
                 provider=litellm.LlmProviders(custom_llm_provider),
             )
         )
@@ -1058,7 +1099,7 @@ def video_status(  # noqa: PLR0915
 
         # Pre Call logging
         litellm_logging_obj.update_environment_variables(
-            model="",
+            model=model,
             user=kwargs.get("user"),
             optional_params=dict(video_status_request_params),
             litellm_params={
@@ -1074,6 +1115,7 @@ def video_status(  # noqa: PLR0915
         # Call the handler with _is_async flag instead of directly calling the async handler
         return base_llm_http_handler.video_status_handler(
             video_id=video_id,
+            model=model,
             video_status_provider_config=video_status_provider_config,
             custom_llm_provider=custom_llm_provider,
             litellm_params=litellm_params,
@@ -1087,7 +1129,7 @@ def video_status(  # noqa: PLR0915
 
     except Exception as e:
         raise litellm.exception_type(
-            model="",
+            model=model,
             custom_llm_provider=custom_llm_provider,
             original_exception=e,
             completion_kwargs=local_vars,

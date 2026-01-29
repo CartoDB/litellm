@@ -1,29 +1,34 @@
-import { TextInput } from "@tremor/react";
-import { Select as AntdSelect, Button, Form, Modal, Tooltip, Typography } from "antd";
+import React, { useEffect, useState } from "react";
+import { Form, Button, Tooltip, Typography, Select as AntdSelect, Modal } from "antd";
 import type { UploadProps } from "antd/es/upload";
-import { useEffect, useState } from "react";
-import ProviderSpecificFields from "../add_model/provider_specific_fields";
-import { CredentialItem } from "../networking";
 import { Providers, providerLogoMap } from "../provider_info_helpers";
-const { Link } = Typography;
+import ProviderSpecificFields from "../add_model/provider_specific_fields";
+import { TextInput } from "@tremor/react";
+import { CredentialItem } from "../networking";
+const { Title, Link } = Typography;
 
-interface EditCredentialsModalProps {
-  open: boolean;
+interface AddCredentialsModalProps {
+  isVisible: boolean;
   onCancel: () => void;
+  onAddCredential: (values: any) => void;
   onUpdateCredential: (values: any) => void;
   uploadProps: UploadProps;
+  addOrEdit: "add" | "edit";
   existingCredential: CredentialItem | null;
 }
 
-export default function EditCredentialsModal({
-  open,
+const AddCredentialsModal: React.FC<AddCredentialsModalProps> = ({
+  isVisible,
   onCancel,
+  onAddCredential,
   onUpdateCredential,
   uploadProps,
+  addOrEdit,
   existingCredential,
-}: EditCredentialsModalProps) {
+}) => {
   const [form] = Form.useForm();
-  const [selectedProvider, setSelectedProvider] = useState<Providers>(Providers.Anthropic);
+  const [selectedProvider, setSelectedProvider] = useState<Providers>(Providers.OpenAI);
+  const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
 
   const handleSubmit = (values: any) => {
     const filteredValues = Object.entries(values).reduce((acc, [key, value]) => {
@@ -32,25 +37,23 @@ export default function EditCredentialsModal({
       }
       return acc;
     }, {} as any);
-    onUpdateCredential(filteredValues);
+    if (addOrEdit === "add") {
+      onAddCredential(filteredValues);
+    } else {
+      onUpdateCredential(filteredValues);
+    }
     form.resetFields();
   };
 
   useEffect(() => {
     if (existingCredential) {
-      // Spread all credential_values dynamically, converting undefined/null to null for form compatibility
-      const credentialValues = Object.entries(existingCredential.credential_values || {}).reduce(
-        (acc, [key, value]) => {
-          acc[key] = value ?? null;
-          return acc;
-        },
-        {} as Record<string, any>,
-      );
-
       form.setFieldsValue({
         credential_name: existingCredential.credential_name,
         custom_llm_provider: existingCredential.credential_info.custom_llm_provider,
-        ...credentialValues,
+        api_base: existingCredential.credential_values.api_base,
+        api_version: existingCredential.credential_values.api_version,
+        base_model: existingCredential.credential_values.base_model,
+        api_key: existingCredential.credential_values.api_key,
       });
       setSelectedProvider(existingCredential.credential_info.custom_llm_provider as Providers);
     }
@@ -58,15 +61,14 @@ export default function EditCredentialsModal({
 
   return (
     <Modal
-      title="Edit Credential"
-      open={open}
+      title={addOrEdit === "add" ? "Add New Credential" : "Edit Credential"}
+      visible={isVisible}
       onCancel={() => {
         onCancel();
         form.resetFields();
       }}
       footer={null}
       width={600}
-      destroyOnHidden={true}
     >
       <Form form={form} onFinish={handleSubmit} layout="vertical">
         {/* Credential Name */}
@@ -140,10 +142,12 @@ export default function EditCredentialsModal({
             >
               Cancel
             </Button>
-            <Button htmlType="submit">{"Update Credential"}</Button>
+            <Button htmlType="submit">{addOrEdit === "add" ? "Add Credential" : "Update Credential"}</Button>
           </div>
         </div>
       </Form>
     </Modal>
   );
-}
+};
+
+export default AddCredentialsModal;

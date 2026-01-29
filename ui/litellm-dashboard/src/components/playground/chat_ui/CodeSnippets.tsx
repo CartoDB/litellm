@@ -1,12 +1,10 @@
 import { MessageType } from "./types";
 import { EndpointType } from "./mode_endpoint_mapping";
-import { MCPServer } from "../../mcp_tools/types";
 
 interface CodeGenMetadata {
   tags?: string[];
   vector_stores?: string[];
   guardrails?: string[];
-  policies?: string[];
 }
 
 interface GenerateCodeParams {
@@ -18,18 +16,10 @@ interface GenerateCodeParams {
   selectedTags: string[];
   selectedVectorStores: string[];
   selectedGuardrails: string[];
-  selectedPolicies: string[];
-  selectedMCPServers: string[];
-  mcpServers?: MCPServer[];
-  mcpServerToolRestrictions?: Record<string, string[]>;
-  selectedVoice?: string;
+  selectedMCPTools: string[];
   endpointType: string;
   selectedModel: string | undefined;
   selectedSdk: "openai" | "azure";
-  proxySettings?: {
-    PROXY_BASE_URL?: string;
-    LITELLM_UI_API_DOC_BASE_URL?: string | null;
-  };
 }
 
 export const generateCodeSnippet = (params: GenerateCodeParams): string => {
@@ -42,26 +32,13 @@ export const generateCodeSnippet = (params: GenerateCodeParams): string => {
     selectedTags,
     selectedVectorStores,
     selectedGuardrails,
-    selectedPolicies,
-    selectedMCPServers,
-    mcpServers,
-    mcpServerToolRestrictions,
-    selectedVoice,
+    selectedMCPTools,
     endpointType,
     selectedModel,
     selectedSdk,
-    proxySettings,
   } = params;
   const effectiveApiKey = apiKeySource === "session" ? accessToken : apiKey;
-
-  // Determine base URL with priority: LITELLM_UI_API_DOC_BASE_URL > PROXY_BASE_URL > window.location.origin
-  let apiBase = window.location.origin;
-  const customDocBaseUrl = proxySettings?.LITELLM_UI_API_DOC_BASE_URL;
-  if (customDocBaseUrl && customDocBaseUrl.trim()) {
-    apiBase = customDocBaseUrl;
-  } else if (proxySettings?.PROXY_BASE_URL) {
-    apiBase = proxySettings.PROXY_BASE_URL;
-  }
+  const apiBase = window.location.origin;
 
   // Always get the input message early on, regardless of what happens later
   const userPrompt = inputMessage || "Your prompt here"; // Fallback if inputMessage is empty
@@ -75,7 +52,6 @@ export const generateCodeSnippet = (params: GenerateCodeParams): string => {
   if (selectedTags.length > 0) metadata.tags = selectedTags;
   if (selectedVectorStores.length > 0) metadata.vector_stores = selectedVectorStores;
   if (selectedGuardrails.length > 0) metadata.guardrails = selectedGuardrails;
-  if (selectedPolicies.length > 0) metadata.policies = selectedPolicies;
 
   const modelNameForCode = selectedModel || "your-model-name";
 
@@ -526,45 +502,6 @@ response = client.embeddings.create(
 )
 
 print(response.data[0].embedding)
-`;
-      break;
-    case EndpointType.TRANSCRIPTION:
-      endpointSpecificCode = `
-# Open the audio file
-audio_file = open("path/to/your/audio/file.mp3", "rb")
-
-# Make the transcription request
-response = client.audio.transcriptions.create(
-	model="${modelNameForCode}",
-	file=audio_file${inputMessage ? `,\n	prompt="${inputMessage.replace(/"/g, '\\"')}"` : ""}
-)
-
-print(response.text)
-`;
-      break;
-    case EndpointType.SPEECH:
-      endpointSpecificCode = `
-# Make the text-to-speech request
-response = client.audio.speech.create(
-	model="${modelNameForCode}",
-	input="${inputMessage || "Your text to convert to speech here"}",
-	voice="${selectedVoice}"  # Options: alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer
-)
-
-# Save the audio to a file
-output_filename = "output_speech.mp3"
-response.stream_to_file(output_filename)
-print(f"Audio saved to {output_filename}")
-
-# Optional: Customize response format and speed
-# response = client.audio.speech.create(
-#     model="${modelNameForCode}",
-#     input="${inputMessage || "Your text to convert to speech here"}",
-#     voice="alloy",
-#     response_format="mp3",  # Options: mp3, opus, aac, flac, wav, pcm
-#     speed=1.0  # Range: 0.25 to 4.0
-# )
-# response.stream_to_file("output_speech.mp3")
 `;
       break;
     default:

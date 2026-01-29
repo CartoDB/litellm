@@ -6,7 +6,6 @@ import { useQuery } from "@tanstack/react-query";
 import { fetchAllKeyAliases, fetchAllOrganizations, fetchAllTeams } from "./filter_helpers";
 import { debounce } from "lodash";
 import { defaultPageSize } from "../constants";
-import useAuthorized from "@/app/(dashboard)/hooks/useAuthorized";
 
 export interface FilterState {
   "Team ID": string;
@@ -22,10 +21,12 @@ export function useFilterLogic({
   keys,
   teams,
   organizations,
+  accessToken,
 }: {
   keys: KeyResponse[];
   teams: Team[] | null;
   organizations: Organization[] | null;
+  accessToken: string | null;
 }) {
   const defaultFilters: FilterState = {
     "Team ID": "",
@@ -35,7 +36,6 @@ export function useFilterLogic({
     "Sort By": "created_at",
     "Sort Order": "desc",
   };
-  const { accessToken } = useAuthorized();
   const [filters, setFilters] = useState<FilterState>(defaultFilters);
   const [allTeams, setAllTeams] = useState<Team[]>(teams || []);
   const [allOrganizations, setAllOrganizations] = useState<Organization[]>(organizations || []);
@@ -151,7 +151,7 @@ export function useFilterLogic({
     }
   }, [organizations]);
 
-  const handleFilterChange = (newFilters: Record<string, string>, skipDebounce: boolean = false) => {
+  const handleFilterChange = (newFilters: Record<string, string>) => {
     // Update filters state
     setFilters({
       "Team ID": newFilters["Team ID"] || "",
@@ -162,16 +162,12 @@ export function useFilterLogic({
       "Sort Order": newFilters["Sort Order"] || "desc",
     });
 
-    // Only trigger debouncedSearch if skipDebounce is false
-    // This allows sorting to be handled by the parent component's useKeys hook
-    if (!skipDebounce) {
-      // Fetch keys based on new filters
-      const updatedFilters = {
-        ...filters,
-        ...newFilters,
-      };
-      debouncedSearch(updatedFilters);
-    }
+    // Fetch keys based on new filters
+    const updatedFilters = {
+      ...filters,
+      ...newFilters,
+    };
+    debouncedSearch(updatedFilters);
   };
 
   const handleFilterReset = () => {

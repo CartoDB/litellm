@@ -6,7 +6,6 @@ import { getPromptsList, PromptSpec, ListPromptsResponse, deletePromptCall } fro
 import PromptTable from "./prompts/prompt_table";
 import PromptInfoView from "./prompts/prompt_info";
 import AddPromptForm from "./prompts/add_prompt_form";
-import PromptEditorView from "./prompts/prompt_editor_view";
 import NotificationsManager from "./molecules/notifications_manager";
 import { isAdminRole } from "@/utils/roles";
 
@@ -20,8 +19,6 @@ const PromptsPanel: React.FC<PromptsProps> = ({ accessToken, userRole }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [selectedPromptId, setSelectedPromptId] = useState<string | null>(null);
   const [isAddModalVisible, setIsAddModalVisible] = useState(false);
-  const [showEditorView, setShowEditorView] = useState(false);
-  const [editPromptData, setEditPromptData] = useState<any>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [promptToDelete, setPromptToDelete] = useState<{ id: string; name: string } | null>(null);
 
@@ -56,19 +53,6 @@ const PromptsPanel: React.FC<PromptsProps> = ({ accessToken, userRole }) => {
     if (selectedPromptId) {
       setSelectedPromptId(null);
     }
-    setEditPromptData(null);
-    setShowEditorView(true);
-  };
-
-  const handleEditPrompt = (promptData: any) => {
-    setEditPromptData(promptData);
-    setShowEditorView(true);
-  };
-
-  const handleAddPromptFromFile = () => {
-    if (selectedPromptId) {
-      setSelectedPromptId(null);
-    }
     setIsAddModalVisible(true);
   };
 
@@ -76,16 +60,8 @@ const PromptsPanel: React.FC<PromptsProps> = ({ accessToken, userRole }) => {
     setIsAddModalVisible(false);
   };
 
-  const handleCloseEditor = () => {
-    setShowEditorView(false);
-    setEditPromptData(null);
-  };
-
   const handleSuccess = () => {
     fetchPrompts();
-    setShowEditorView(false);
-    setEditPromptData(null);
-    setSelectedPromptId(null);
   };
 
   const handleDeleteClick = (promptId: string, promptName: string) => {
@@ -115,33 +91,20 @@ const PromptsPanel: React.FC<PromptsProps> = ({ accessToken, userRole }) => {
 
   return (
     <div className="w-full mx-auto flex-auto overflow-y-auto m-8 p-2">
-      {showEditorView ? (
-        <PromptEditorView
-          onClose={handleCloseEditor}
-          onSuccess={handleSuccess}
-          accessToken={accessToken}
-          initialPromptData={editPromptData}
-        />
-      ) : selectedPromptId ? (
+      {selectedPromptId ? (
         <PromptInfoView
           promptId={selectedPromptId}
           onClose={() => setSelectedPromptId(null)}
           accessToken={accessToken}
           isAdmin={isAdmin}
           onDelete={fetchPrompts}
-          onEdit={handleEditPrompt}
         />
       ) : (
         <>
           <div className="flex justify-between items-center mb-4">
-            <div className="flex gap-2">
             <Button onClick={handleAddPrompt} disabled={!accessToken}>
               + Add New Prompt
             </Button>
-              <Button onClick={handleAddPromptFromFile} disabled={!accessToken} variant="secondary">
-                Upload .prompt File
-              </Button>
-            </div>
           </div>
 
           <PromptTable

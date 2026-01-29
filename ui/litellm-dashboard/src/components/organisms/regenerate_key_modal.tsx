@@ -1,22 +1,31 @@
-import useAuthorized from "@/app/(dashboard)/hooks/useAuthorized";
-import { Button, Col, Grid, Text, TextInput, Title } from "@tremor/react";
-import { Form, InputNumber, Modal } from "antd";
+import React, { useEffect, useState } from "react";
+import { Button, Text, TextInput, Title, Grid, Col } from "@tremor/react";
+import { Modal, Form, InputNumber } from "antd";
 import { add } from "date-fns";
-import { useEffect, useState } from "react";
-import { CopyToClipboard } from "react-copy-to-clipboard";
-import { KeyResponse } from "../key_team_helpers/key_list";
-import NotificationManager from "../molecules/notifications_manager";
 import { regenerateKeyCall } from "../networking";
+import { KeyResponse } from "../key_team_helpers/key_list";
+import { CopyToClipboard } from "react-copy-to-clipboard";
+import NotificationManager from "../molecules/notifications_manager";
 
 interface RegenerateKeyModalProps {
   selectedToken: KeyResponse | null;
   visible: boolean;
   onClose: () => void;
+  accessToken: string | null;
+  premiumUser: boolean;
+  setAccessToken?: (token: string) => void;
   onKeyUpdate?: (updatedKeyData: Partial<KeyResponse>) => void;
 }
 
-export function RegenerateKeyModal({ selectedToken, visible, onClose, onKeyUpdate }: RegenerateKeyModalProps) {
-  const { accessToken } = useAuthorized();
+export function RegenerateKeyModal({
+  selectedToken,
+  visible,
+  onClose,
+  accessToken,
+  premiumUser,
+  setAccessToken,
+  onKeyUpdate,
+}: RegenerateKeyModalProps) {
   const [form] = Form.useForm();
   const [regeneratedKey, setRegeneratedKey] = useState<string | null>(null);
   const [regenerateFormData, setRegenerateFormData] = useState<any>(null);
@@ -104,7 +113,7 @@ export function RegenerateKeyModal({ selectedToken, visible, onClose, onKeyUpdat
         formValues,
       );
       setRegeneratedKey(response.key);
-      NotificationManager.success("Virtual Key regenerated successfully");
+      NotificationManager.success("API Key regenerated successfully");
 
       console.log("Full regenerate response:", response); // Debug log to see what's returned
 
@@ -122,6 +131,14 @@ export function RegenerateKeyModal({ selectedToken, visible, onClose, onKeyUpdat
       };
 
       console.log("Updated key data with new token:", updatedKeyData); // Debug log
+
+      // If user regenerated their own auth key, update both local and global access tokens
+      if (isOwnKey) {
+        setCurrentAccessToken(response.key); // Update local token immediately
+        if (setAccessToken) {
+          setAccessToken(response.key); // Update global token
+        }
+      }
 
       // Update the parent component with new key data
       if (onKeyUpdate) {
@@ -147,7 +164,7 @@ export function RegenerateKeyModal({ selectedToken, visible, onClose, onKeyUpdat
 
   return (
     <Modal
-      title="Regenerate Virtual Key"
+      title="Regenerate API Key"
       open={visible}
       onCancel={handleClose}
       footer={
@@ -182,15 +199,15 @@ export function RegenerateKeyModal({ selectedToken, visible, onClose, onKeyUpdat
             <div className="bg-gray-100 p-2 rounded mb-2">
               <pre className="break-words whitespace-normal">{selectedToken?.key_alias || "No alias set"}</pre>
             </div>
-            <Text className="mt-3">New Virtual Key:</Text>
+            <Text className="mt-3">New API Key:</Text>
             <div className="bg-gray-100 p-2 rounded mb-2">
               <pre className="break-words whitespace-normal">{regeneratedKey}</pre>
             </div>
             <CopyToClipboard
               text={regeneratedKey}
-              onCopy={() => NotificationManager.success("Virtual Key copied to clipboard")}
+              onCopy={() => NotificationManager.success("API Key copied to clipboard")}
             >
-              <Button className="mt-3">Copy Virtual Key</Button>
+              <Button className="mt-3">Copy API Key</Button>
             </CopyToClipboard>
           </Col>
         </Grid>

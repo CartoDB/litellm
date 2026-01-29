@@ -94,13 +94,12 @@ def test_transform_choices_without_signature():
     assert thinking_block["type"] == "thinking"
     assert thinking_block["thinking"] == "i'm thinking without signature."
 
-
 def test_convert_anthropic_tool_to_databricks_tool_with_description():
     config = DatabricksConfig()
     anthropic_tool = {
         "name": "test_tool",
         "description": "test description",
-        "input_schema": {"type": "object", "properties": {"test": {"type": "string"}}},
+        "input_schema": {"type": "object", "properties": {"test": {"type": "string"}}}
     }
 
     databricks_tool = config.convert_anthropic_tool_to_databricks_tool(anthropic_tool)
@@ -114,7 +113,7 @@ def test_convert_anthropic_tool_to_databricks_tool_without_description():
     config = DatabricksConfig()
     anthropic_tool = {
         "name": "test_tool",
-        "input_schema": {"type": "object", "properties": {"test": {"type": "string"}}},
+        "input_schema": {"type": "object", "properties": {"test": {"type": "string"}}}
     }
 
     databricks_tool = config.convert_anthropic_tool_to_databricks_tool(anthropic_tool)
@@ -122,7 +121,6 @@ def test_convert_anthropic_tool_to_databricks_tool_without_description():
     assert databricks_tool is not None
     assert databricks_tool["type"] == "function"
     assert databricks_tool["function"].get("description") is None
-
 
 def test_transform_choices_with_citations():
     config = DatabricksConfig()

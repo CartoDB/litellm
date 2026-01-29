@@ -1,4 +1,3 @@
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict
@@ -7,13 +6,6 @@ from litellm.proxy._types import MCPAuthType, MCPTransportType
 
 # MCPInfo now allows arbitrary additional fields for custom metadata
 MCPInfo = Dict[str, Any]
-
-
-class MCPOAuthMetadata(BaseModel):
-    scopes: Optional[List[str]] = None
-    authorization_url: Optional[str] = None
-    token_url: Optional[str] = None
-    registration_url: Optional[str] = None
 
 
 class MCPServer(BaseModel):
@@ -35,9 +27,6 @@ class MCPServer(BaseModel):
     allowed_params: Optional[
         Dict[str, List[str]]
     ] = None  # map of tool names to allowed parameter lists
-    static_headers: Optional[
-        Dict[str, str]
-    ] = None  # static headers to forward to the MCP server
     # OAuth-specific fields
     client_id: Optional[str] = None
     client_secret: Optional[str] = None
@@ -50,6 +39,7 @@ class MCPServer(BaseModel):
     args: Optional[List[str]] = None
     env: Optional[Dict[str, str]] = None
     access_groups: Optional[List[str]] = None
-    allow_all_keys: bool = False
-    updated_at: Optional[datetime] = None
+    static_headers: Optional[
+        Dict[str, str]
+    ] = None  # static headers to forward to the MCP server
     model_config = ConfigDict(arbitrary_types_allowed=True)

@@ -1,8 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderWithProviders, screen, fireEvent } from "./test-utils";
-import TopKeyView from "../src/components/UsagePage/components/EntityUsage/TopKeyView";
-import { TagUsage } from "../src/components/UsagePage/types";
-import useAuthorized from "../src/app/(dashboard)/hooks/useAuthorized";
+import TopKeyView from "../src/components/top_key_view";
+import { TagUsage } from "../src/components/usage/types";
 
 // Mock the networking module
 vi.mock("../src/components/networking", () => ({
@@ -14,12 +13,7 @@ vi.mock("../src/components/key_team_helpers/transform_key_info", () => ({
   transformKeyInfo: vi.fn((data) => data),
 }));
 
-vi.mock("../src/app/(dashboard)/hooks/useAuthorized", () => ({
-  default: vi.fn(),
-}));
-
 describe("TopKeyView", () => {
-  const mockUseAuthorized = vi.mocked(useAuthorized);
   const mockProps = {
     topKeys: [],
     accessToken: "test-token",
@@ -64,16 +58,6 @@ describe("TopKeyView", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockUseAuthorized.mockReturnValue({
-      token: "mock-token",
-      accessToken: mockProps.accessToken,
-      userId: mockProps.userID,
-      userEmail: "test@example.com",
-      userRole: mockProps.userRole,
-      premiumUser: mockProps.premiumUser,
-      disabledPersonalKeyCreation: false,
-      showSSOBanner: false,
-    });
   });
 
   describe("Tags Column Visibility", () => {
