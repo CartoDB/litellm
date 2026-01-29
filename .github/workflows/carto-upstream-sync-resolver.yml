@@ -407,32 +407,50 @@ jobs:
           echo "" > /tmp/carto_modified.txt
           echo "" > /tmp/upstream_only.txt
 
-          # Check each conflicted file for CARTO commits
+          # OPTIMIZED: Batch all commit lookups using parallel API calls
+          # Instead of N sequential API calls per file, collect unique SHAs and query in parallel
+
+          # Step 1: Collect unique commit SHAs across all conflicted files (no API calls)
+          > /tmp/unique_shas.txt
+          for FILE in $CONFLICTS; do
+            git log --format='%H' origin/carto/main -- "$FILE" 2>/dev/null | head -5 >> /tmp/unique_shas.txt
+          done
+          sort -u /tmp/unique_shas.txt -o /tmp/unique_shas.txt
+
+          TOTAL_SHAS=$(wc -l < /tmp/unique_shas.txt | tr -d ' ')
+          echo "[Resolver] Found $TOTAL_SHAS unique commits to check across all conflicted files"
+
+          # Step 2: Parallel API calls to get commit authors (10 at a time - much faster!)
+          # This is the key optimization: instead of 500 sequential calls, we do ~50 in parallel batches
+          export GH_TOKEN="${GH_TOKEN}"
+          export REPO="${{ github.repository }}"
+          > /tmp/sha_authors.txt
+
+          cat /tmp/unique_shas.txt | xargs -P 10 -I {} sh -c '
+            AUTHOR=$(gh api "repos/${REPO}/commits/{}" --jq ".author.login // empty" 2>/dev/null)
+            if [ -n "$AUTHOR" ]; then
+              echo "{}:$AUTHOR"
+            fi
+          ' >> /tmp/sha_authors.txt
+
+          echo "[Resolver] Retrieved authors for $(wc -l < /tmp/sha_authors.txt | tr -d ' ') commits"
+
+          # Step 3: For each file, check if any commit author is an org member
           for FILE in $CONFLICTS; do
             echo "[Resolver] Checking: $FILE"
+            FILE_SHAS=$(git log --format='%H' origin/carto/main -- "$FILE" 2>/dev/null | head -5)
+            IS_CARTO=false
 
-            # Get commits for this file on carto/main using GitHub API
-            # Filter by org membership using the same logic as calculate_carto_version.sh
-            CARTO_COMMITS=0
-
-            # Use git log to get commit SHAs, then check each via GitHub API for author
-            COMMIT_SHAS=$(git log --format='%H' origin/carto/main -- "$FILE" 2>/dev/null | head -50)
-
-            for SHA in $COMMIT_SHAS; do
-              # Get commit author's GitHub login via API
-              AUTHOR=$(gh api "repos/${{ github.repository }}/commits/${SHA}" --jq '.author.login // empty' 2>/dev/null || echo "")
-
-              if [ -n "$AUTHOR" ]; then
-                # Check if author is a CartoDB org member
-                if echo "$AUTHOR" | grep -qE "^(${ORG_MEMBERS})$"; then
-                  CARTO_COMMITS=$((CARTO_COMMITS + 1))
-                  echo "  ✓ Commit ${SHA:0:7} by ${AUTHOR} (CartoDB member)"
-                  break  # Found at least one CARTO commit, that's enough
-                fi
+            for SHA in $FILE_SHAS; do
+              AUTHOR=$(grep "^${SHA}:" /tmp/sha_authors.txt 2>/dev/null | cut -d: -f2)
+              if [ -n "$AUTHOR" ] && echo "$AUTHOR" | grep -qE "^(${ORG_MEMBERS})$"; then
+                IS_CARTO=true
+                echo "  ✓ Commit ${SHA:0:7} by ${AUTHOR} (CartoDB member)"
+                break
               fi
             done
 
-            if [ "$CARTO_COMMITS" -gt 0 ]; then
+            if [ "$IS_CARTO" = true ]; then
               echo "  → CARTO-MODIFIED: $FILE"
               echo "$FILE" >> /tmp/carto_modified.txt
             else
