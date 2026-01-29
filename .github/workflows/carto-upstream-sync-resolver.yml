@@ -460,6 +460,95 @@ jobs:
 
           echo "::endgroup::"
 
+      - name: Build CARTO customization context for conflicted files
+        id: carto-context
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          echo "::group::Building CARTO customization context"
+
+          # Get conflicted files from previous step
+          CONFLICTS="${{ steps.start-merge.outputs.conflicts }}"
+          CARTO_FILES="${{ steps.carto-files.outputs.carto-files }}"
+
+          echo "[Resolver] Building context for CARTO-modified conflicted files..."
+
+          # Fetch ALL merged PRs to carto/main with complete details
+          echo "[Resolver] Fetching all merged PRs to carto/main..."
+          gh pr list \
+            --repo ${{ github.repository }} \
+            --base carto/main \
+            --state merged \
+            --limit 1000 \
+            --json number,title,author,body,mergedAt,additions,deletions,files \
+            > /tmp/all_prs.json 2>/dev/null || echo "[]" > /tmp/all_prs.json
+
+          TOTAL_PRS=$(jq 'length' /tmp/all_prs.json)
+          echo "[Resolver] Found ${TOTAL_PRS} total merged PRs"
+
+          # Build detailed context for each CARTO-modified conflicted file
+          CONTEXT_OUTPUT=""
+
+          for FILE in $CARTO_FILES; do
+            echo "[Resolver] Analyzing: $FILE"
+
+            # Find PRs that touched this specific file
+            FILE_PRS=$(jq -r --arg file "$FILE" '
+              [.[] | select(.files | map(.path) | any(. == $file or (. | startswith($file | split("*")[0] // $file))))] |
+              map({
+                pr: .number,
+                title: .title,
+                author: .author.login,
+                additions: .additions,
+                deletions: .deletions,
+                merged: .mergedAt,
+                body: (.body | split("\n")[0:5] | join(" ") | .[0:200])
+              })
+            ' /tmp/all_prs.json)
+
+            PR_COUNT=$(echo "$FILE_PRS" | jq 'length')
+
+            if [ "$PR_COUNT" -gt 0 ]; then
+              # Format as readable context
+              FILE_CONTEXT=$(echo "$FILE_PRS" | jq -r '
+                .[] | "  - PR #\(.pr): \(.title)\n    Author: @\(.author) | +\(.additions)/-\(.deletions) lines | Merged: \(.merged | split("T")[0])\n    Summary: \(.body | gsub("\n"; " ") | .[0:150])..."
+              ')
+
+              CONTEXT_OUTPUT="${CONTEXT_OUTPUT}
+
+          ### \`${FILE}\`
+          **${PR_COUNT} CARTO PR(s) modified this file:**
+          ${FILE_CONTEXT}"
+            fi
+          done
+
+          # Also create a summary table of ALL CARTO PRs for reference
+          echo "[Resolver] Creating PR summary table..."
+          PR_SUMMARY=$(jq -r '
+            sort_by(.mergedAt) | reverse |
+            .[] |
+            "| #\(.number) | \(.title | .[0:45])... | @\(.author.login) | +\(.additions)/-\(.deletions) | \(.files | length) files |"
+          ' /tmp/all_prs.json | head -100)
+
+          PR_TABLE="| PR | Title | Author | Lines | Files |
+          |-----|-------|--------|-------|-------|
+          ${PR_SUMMARY}"
+
+          # Output the detailed context
+          echo "context<<EOF" >> $GITHUB_OUTPUT
+          echo "$CONTEXT_OUTPUT" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          # Output the summary table
+          echo "pr-table<<EOF" >> $GITHUB_OUTPUT
+          echo "$PR_TABLE" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          # Output total count
+          echo "total-prs=${TOTAL_PRS}" >> $GITHUB_OUTPUT
+
+          echo "::endgroup::"
+
       - name: Run Claude Code for conflict resolution (FILE EDITS ONLY)
         id: claude-run
         uses: anthropics/claude-code-action@v1
@@ -538,19 +627,23 @@ jobs:
             | 5 | `pyproject.toml` | Merge carefully | Upstream version + CARTO deps |
             | 6 | `Dockerfile`, `Makefile` | Merge carefully | Keep `# CARTO:` sections |
 
-            ## Known CARTO Customizations (NEVER LOSE THESE)
+            ## CARTO Customizations for Conflicted Files
 
-            These are critical CARTO fixes that MUST be preserved:
+            The workflow has analyzed ${{ steps.carto-context.outputs.total-prs }} merged PRs to carto/main.
+            Below is the context for each CARTO-modified file that has conflicts:
 
-            | File Path | CARTO Fix | Description |
-            |-----------|-----------|-------------|
-            | `litellm/llms/azure/*` | URL sanitization | Azure endpoint URL fixes |
-            | `litellm/llms/databricks/*` | GPT-5 streaming | Databricks streaming support |
-            | `litellm/llms/oci/*` | Tool calling | OCI tool calling support |
-            | `litellm/llms/snowflake_api/*` | PAT auth, Claude streaming | Snowflake auth and streaming fixes |
-            | `litellm/responses/*` | SessionHandler fix | Response handling improvements |
-            | `litellm/llms/vertex_ai/*` | Labels field filtering | Vertex AI label support |
-            | `litellm/litellm_core_utils/streaming*` | JSON repair | Streaming JSON parsing fixes |
+            ${{ steps.carto-context.outputs.context }}
+
+            ---
+
+            ## All CARTO PRs Reference (most recent first)
+
+            ${{ steps.carto-context.outputs.pr-table }}
+
+            **To get full details about a specific PR (description, discussion, files):**
+            ```bash
+            gh pr view <PR_NUMBER> --repo ${{ github.repository }}
+            ```
 
             ## Step 3: Resolve Each File (CARTO-FIRST)
 

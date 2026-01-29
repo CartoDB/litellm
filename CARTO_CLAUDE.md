@@ -402,17 +402,27 @@ When conflicts are detected, the `carto-upstream-sync-resolver.yml` workflow:
 
 \* CARTO commits = commits by CartoDB GitHub org members (verified via `gh api orgs/CartoDB/members`)
 
-**Known CARTO Customizations (MUST be preserved):**
+**CARTO Customizations (dynamically fetched from merged PRs):**
 
-| File Path | CARTO Fix | Description |
-|-----------|-----------|-------------|
-| `litellm/llms/azure/*` | URL sanitization | Azure endpoint URL fixes |
-| `litellm/llms/databricks/*` | GPT-5 streaming | Databricks streaming support |
-| `litellm/llms/oci/*` | Tool calling | OCI tool calling support |
-| `litellm/llms/snowflake_api/*` | PAT auth, Claude streaming | Snowflake auth and streaming fixes |
-| `litellm/responses/*` | SessionHandler fix | Response handling improvements |
-| `litellm/llms/vertex_ai/*` | Labels field filtering | Vertex AI label support |
-| `litellm/litellm_core_utils/streaming*` | JSON repair | Streaming JSON parsing fixes |
+The resolver workflow automatically builds rich context about CARTO customizations:
+
+1. **Fetches ALL merged PRs** to `carto/main` (up to 1000)
+2. **For each conflicted file**, identifies which PRs modified it
+3. **Provides context** including PR title, author, lines changed, and summary
+
+Example output provided to Claude:
+```
+### `litellm/llms/azure/chat/gpt_transformation.py`
+**2 CARTO PR(s) modified this file:**
+  - PR #70: fix(azure): Strip operation suffixes from deployment URLs
+    Author: @josemaria-vilaplana | +189/-1 lines
+    Summary: Fix Azure Responses API URL construction when api_base contains deployment paths...
+  - PR #61: fix: Azure Responses API URL construction with deployment paths
+    Author: @josemaria-vilaplana | +77/-3 lines
+    Summary: Fix Azure endpoint URL handling for responses API...
+```
+
+This ensures Claude always has up-to-date context about WHY each file was modified.
 
 #### Why Single-PR Workflow?
 
