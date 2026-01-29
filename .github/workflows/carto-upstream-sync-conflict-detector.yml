@@ -1,0 +1,147 @@
+name: CARTO - Upstream Sync Conflict Detector
+
+# Monitors for conflicts when carto/main changes while an upstream-sync PR is open.
+# If a sync-ready PR becomes CONFLICTING, removes the label so the resolver can fix it.
+
+on:
+  push:
+    branches:
+      - 'carto/main'
+
+permissions:
+  contents: read
+  pull-requests: write  # Need write to remove labels
+
+jobs:
+  check-sync-prs:
+    name: Check upstream-sync PRs for conflicts
+    runs-on: ubuntu-latest
+    outputs:
+      conflicting-prs: ${{ steps.check.outputs.conflicting-prs }}
+
+    steps:
+      - name: Check for conflicting upstream-sync PRs
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+
+          echo "::group::Checking for upstream-sync PRs affected by carto/main push"
+
+          # Find all open upstream-sync PRs targeting carto/main
+          PRS_JSON=$(gh pr list \
+            --repo ${{ github.repository }} \
+            --base "carto/main" \
+            --label "upstream-sync" \
+            --state open \
+            --json number,title,headRefName,labels,mergeable \
+            --jq '.')
+
+          PR_COUNT=$(echo "${PRS_JSON}" | jq 'length')
+
+          if [[ "${PR_COUNT}" -eq 0 ]]; then
+            echo "[Conflict Detector] No open upstream-sync PRs found"
+            echo "conflicting-prs=" >> $GITHUB_OUTPUT
+            echo "::endgroup::"
+            exit 0
+          fi
+
+          echo "[Conflict Detector] Found ${PR_COUNT} open upstream-sync PR(s)"
+
+          # Track PRs that need resolver
+          CONFLICTING_PRS=""
+
+          # Check each PR for conflicts
+          for PR in $(echo "${PRS_JSON}" | jq -c '.[]'); do
+            PR_NUMBER=$(echo "${PR}" | jq -r '.number')
+            PR_TITLE=$(echo "${PR}" | jq -r '.title')
+            BRANCH=$(echo "${PR}" | jq -r '.headRefName')
+            MERGEABLE=$(echo "${PR}" | jq -r '.mergeable')
+            HAS_SYNC_READY=$(echo "${PR}" | jq -r '.labels[].name' | grep -c "sync-ready" || echo "0")
+
+            echo ""
+            echo "[Conflict Detector] PR #${PR_NUMBER}: ${PR_TITLE}"
+            echo "[Conflict Detector]   Branch: ${BRANCH}"
+            echo "[Conflict Detector]   Mergeable: ${MERGEABLE}"
+            echo "[Conflict Detector]   Has sync-ready: ${HAS_SYNC_READY}"
+
+            # If PR has sync-ready label but is now CONFLICTING, remove the label
+            if [[ "${MERGEABLE}" == "CONFLICTING" && "${HAS_SYNC_READY}" -gt 0 ]]; then
+              echo "[Conflict Detector] ⚠️ PR #${PR_NUMBER} has conflicts but still has sync-ready label"
+              echo "[Conflict Detector] Removing sync-ready label..."
+
+              gh pr edit ${PR_NUMBER} \
+                --repo ${{ github.repository }} \
+                --remove-label "sync-ready"
+
+              echo "[Conflict Detector] ✅ Removed sync-ready label from PR #${PR_NUMBER}"
+
+              # Add a comment explaining what happened
+              gh pr comment ${PR_NUMBER} \
+                --repo ${{ github.repository }} \
+                --body "## ⚠️ Conflicts Detected
+
+          A push to \`carto/main\` introduced conflicts with this PR.
+
+          **What happened:**
+          - The \`sync-ready\` label was removed
+          - The conflict resolver will automatically attempt to fix the conflicts
+          - Once resolved, the \`sync-ready\` label will be re-added
+
+          **If you pushed a hotfix:**
+          This is expected behavior. The sync will resume automatically after conflicts are resolved.
+
+          ---
+          *Detected by [conflict-detector workflow](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})*"
+
+              echo "::warning title=Conflicts Detected::PR #${PR_NUMBER} now has conflicts - sync-ready label removed"
+
+              # Add to list of PRs needing resolution
+              CONFLICTING_PRS="${CONFLICTING_PRS}${PR_NUMBER} "
+
+            elif [[ "${MERGEABLE}" == "CONFLICTING" ]]; then
+              echo "[Conflict Detector] PR #${PR_NUMBER} has conflicts but no sync-ready label (resolver may already be handling)"
+              CONFLICTING_PRS="${CONFLICTING_PRS}${PR_NUMBER} "
+
+            elif [[ "${MERGEABLE}" == "UNKNOWN" ]]; then
+              echo "[Conflict Detector] PR #${PR_NUMBER} mergeable status is UNKNOWN - GitHub is still computing"
+
+            else
+              echo "[Conflict Detector] PR #${PR_NUMBER} is clean (status: ${MERGEABLE})"
+            fi
+          done
+
+          echo ""
+          echo "conflicting-prs=${CONFLICTING_PRS}" >> $GITHUB_OUTPUT
+          echo "::endgroup::"
+
+  trigger-resolver:
+    name: Trigger resolver for conflicting PRs
+    runs-on: ubuntu-latest
+    needs: check-sync-prs
+    if: needs.check-sync-prs.outputs.conflicting-prs != ''
+
+    steps:
+      - name: Trigger resolver workflow
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          set -eu
+
+          echo "::group::Triggering resolver for conflicting PRs"
+
+          CONFLICTING_PRS="${{ needs.check-sync-prs.outputs.conflicting-prs }}"
+          echo "[Conflict Detector] PRs needing resolution: ${CONFLICTING_PRS}"
+
+          for PR_NUMBER in ${CONFLICTING_PRS}; do
+            echo "[Conflict Detector] Triggering resolver for PR #${PR_NUMBER}..."
+
+            gh workflow run carto-upstream-sync-resolver.yml \
+              --repo ${{ github.repository }} \
+              -f pr-number=${PR_NUMBER}
+
+            echo "[Conflict Detector] ✅ Resolver triggered for PR #${PR_NUMBER}"
+          done
+
+          echo "::endgroup::"

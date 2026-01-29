@@ -1,0 +1,120 @@
+name: CARTO - Upstream Sync Ready Checker
+
+# Watches CI workflow completions and adds "sync-ready" label when PR is fully ready
+# This label then triggers the n8n notifier workflow
+
+on:
+  workflow_run:
+    workflows:
+      - "LiteLLM Mock Tests (folder - tests/test_litellm)"
+      - "CARTO - Deploy Docker Image (CI)"
+      - "LiteLLM Linting"
+    types:
+      - completed
+    branches:
+      - 'upstream-sync/**'
+
+permissions:
+  contents: read
+  pull-requests: write  # Need write to add labels
+
+jobs:
+  check-and-label:
+    name: Check if PR is ready
+    runs-on: ubuntu-latest
+    # Only run on successful CI completions
+    if: github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      - name: Check PR readiness and add label
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+
+          BRANCH="${{ github.event.workflow_run.head_branch }}"
+          echo "::group::Checking if PR from ${BRANCH} is ready for sync-ready label"
+
+          # Find PR for this branch
+          PR_JSON=$(gh pr list \
+            --repo ${{ github.repository }} \
+            --head "${BRANCH}" \
+            --base "carto/main" \
+            --json number,mergeable,labels,url,title \
+            --jq '.[0]')
+
+          if [[ -z "${PR_JSON}" || "${PR_JSON}" == "null" ]]; then
+            echo "[Ready Checker] No PR found for branch ${BRANCH}"
+            echo "::endgroup::"
+            exit 0
+          fi
+
+          PR_NUMBER=$(echo "${PR_JSON}" | jq -r '.number')
+          MERGEABLE=$(echo "${PR_JSON}" | jq -r '.mergeable')
+          PR_URL=$(echo "${PR_JSON}" | jq -r '.url')
+          PR_TITLE=$(echo "${PR_JSON}" | jq -r '.title')
+          LABELS=$(echo "${PR_JSON}" | jq -r '.labels[].name' | tr '\n' ',' | sed 's/,$//')
+
+          echo "[Ready Checker] PR #${PR_NUMBER}: ${PR_TITLE}"
+          echo "[Ready Checker] Mergeable: ${MERGEABLE}"
+          echo "[Ready Checker] Labels: ${LABELS}"
+
+          # Check 1: Must have upstream-sync label
+          if [[ ! "${LABELS}" =~ "upstream-sync" ]]; then
+            echo "[Ready Checker] ❌ Missing upstream-sync label - not an upstream sync PR"
+            echo "::endgroup::"
+            exit 0
+          fi
+
+          # Check 2: Must NOT already have sync-ready label (avoid duplicate work)
+          if [[ "${LABELS}" =~ "sync-ready" ]]; then
+            echo "[Ready Checker] ✅ Already has sync-ready label - nothing to do"
+            echo "::endgroup::"
+            exit 0
+          fi
+
+          # Check 3: Must be mergeable (no conflicts)
+          if [[ "${MERGEABLE}" != "MERGEABLE" ]]; then
+            echo "[Ready Checker] ❌ PR not mergeable (status: ${MERGEABLE}) - waiting for conflict resolution"
+            echo "::endgroup::"
+            exit 0
+          fi
+
+          # Check 4: All required checks must pass (no FAILURE or PENDING)
+          echo "[Ready Checker] Checking all CI status..."
+
+          CHECKS_JSON=$(gh pr checks ${PR_NUMBER} \
+            --repo ${{ github.repository }} \
+            --json name,state)
+
+          FAILED_COUNT=$(echo "${CHECKS_JSON}" | jq '[.[] | select(.state == "FAILURE")] | length')
+          PENDING_COUNT=$(echo "${CHECKS_JSON}" | jq '[.[] | select(.state == "PENDING")] | length')
+          SUCCESS_COUNT=$(echo "${CHECKS_JSON}" | jq '[.[] | select(.state == "SUCCESS")] | length')
+
+          echo "[Ready Checker] Checks: ${SUCCESS_COUNT} success, ${PENDING_COUNT} pending, ${FAILED_COUNT} failed"
+
+          if [[ "${FAILED_COUNT}" -gt 0 ]]; then
+            echo "[Ready Checker] ❌ ${FAILED_COUNT} checks failed - waiting for CI fixer"
+            echo "${CHECKS_JSON}" | jq -r '.[] | select(.state == "FAILURE") | "  - \(.name): FAILED"'
+            echo "::endgroup::"
+            exit 0
+          fi
+
+          if [[ "${PENDING_COUNT}" -gt 0 ]]; then
+            echo "[Ready Checker] ⏳ ${PENDING_COUNT} checks still pending - waiting..."
+            echo "${CHECKS_JSON}" | jq -r '.[] | select(.state == "PENDING") | "  - \(.name): PENDING"'
+            echo "::endgroup::"
+            exit 0
+          fi
+
+          # All conditions met! Add the sync-ready label
+          echo "[Ready Checker] ✅ All conditions met! Adding sync-ready label..."
+
+          gh pr edit ${PR_NUMBER} \
+            --repo ${{ github.repository }} \
+            --add-label "sync-ready"
+
+          echo "[Ready Checker] 🎉 Added sync-ready label to PR #${PR_NUMBER}"
+          echo "::notice title=PR Ready::${PR_URL} is now ready for merge and n8n notification"
+
+          echo "::endgroup::"
