@@ -419,15 +419,40 @@ jobs:
               echo "✅ Valid JSON"
               echo "data_exists=true" >> $GITHUB_OUTPUT
 
-              # Extract fields for Block Kit
-              echo "summary=$(jq -r '.summary // "Update merged"' slack_data.json)" >> $GITHUB_OUTPUT
+              # Extract fields for Block Kit (use heredoc for potentially multiline fields)
               echo "type=$(jq -r '.type // "Update"' slack_data.json)" >> $GITHUB_OUTPUT
-              echo "impact=$(jq -r '.impact // "General"' slack_data.json)" >> $GITHUB_OUTPUT
               echo "risk=$(jq -r '.risk // "Low"' slack_data.json)" >> $GITHUB_OUTPUT
-              echo "risk_reason=$(jq -r '.risk_reason // ""' slack_data.json)" >> $GITHUB_OUTPUT
-              echo "insight=$(jq -r '.insight // ""' slack_data.json)" >> $GITHUB_OUTPUT
 
-              # Thread detail needs special handling for multiline
+              # Use heredoc format for fields that might contain newlines or special chars
+              {
+                echo "summary<<EOFSUM"
+                jq -r '.summary // "Update merged"' slack_data.json | tr '\n' ' '
+                echo ""
+                echo "EOFSUM"
+              } >> $GITHUB_OUTPUT
+
+              {
+                echo "impact<<EOFIMP"
+                jq -r '.impact // "General"' slack_data.json | tr '\n' ' '
+                echo ""
+                echo "EOFIMP"
+              } >> $GITHUB_OUTPUT
+
+              {
+                echo "risk_reason<<EOFRR"
+                jq -r '.risk_reason // ""' slack_data.json | tr '\n' ' '
+                echo ""
+                echo "EOFRR"
+              } >> $GITHUB_OUTPUT
+
+              {
+                echo "insight<<EOFINS"
+                jq -r '.insight // ""' slack_data.json | tr '\n' ' '
+                echo ""
+                echo "EOFINS"
+              } >> $GITHUB_OUTPUT
+
+              # Thread detail to file for later use
               jq -r '.thread_detail // ""' slack_data.json > /tmp/thread_detail.txt
 
               echo "--- JSON content ---"
