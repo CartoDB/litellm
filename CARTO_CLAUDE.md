@@ -387,14 +387,42 @@ When conflicts are detected, the `carto-upstream-sync-resolver.yml` workflow:
 4. **Workflow** creates merge commit with both parents (preserves history)
 5. **Pushes** directly to the sync branch (PR auto-updates!)
 
-**Resolution priorities:**
-| File Pattern | Keep | Reason |
-|--------------|------|--------|
-| `carto_*.yaml`, `carto-*.yml` | CARTO version | CARTO workflows |
-| `CARTO_*.md` | CARTO version | CARTO docs |
-| `litellm/**` (core) | Upstream | Upstream improvements |
-| `tests/**` | Upstream | Upstream tests |
-| `Dockerfile`, `Makefile` | Merge carefully | Keep `# CARTO:` sections |
+**Resolution priorities (CARTO-FIRST):**
+
+> ⚠️ **Key Principle:** CARTO customizations made by CartoDB organization members are **INTENTIONAL and MUST be preserved**. Upstream changes should be merged **AROUND** CARTO code, not replacing it.
+
+| Priority | File Pattern | Resolution | Reason |
+|----------|--------------|------------|--------|
+| 1 | Files with CARTO commits* | **KEEP carto/main** | CartoDB org members made intentional changes |
+| 2 | `carto_*.yaml`, `carto-*.yml` | **KEEP carto/main** | CARTO workflows |
+| 3 | `CARTO_*.md` | **KEEP carto/main** | CARTO docs |
+| 4 | Files with ONLY upstream commits | Accept upstream | No CARTO changes to preserve |
+| 5 | `pyproject.toml` | Merge carefully | Upstream version + CARTO deps |
+| 6 | `Dockerfile`, `Makefile` | Merge carefully | Keep `# CARTO:` sections |
+
+\* CARTO commits = commits by CartoDB GitHub org members (verified via `gh api orgs/CartoDB/members`)
+
+**CARTO Customizations (dynamically fetched from merged PRs):**
+
+The resolver workflow automatically builds rich context about CARTO customizations:
+
+1. **Fetches ALL merged PRs** to `carto/main` (up to 1000)
+2. **For each conflicted file**, identifies which PRs modified it
+3. **Provides context** including PR title, author, lines changed, and summary
+
+Example output provided to Claude:
+```
+### `litellm/llms/azure/chat/gpt_transformation.py`
+**2 CARTO PR(s) modified this file:**
+  - PR #70: fix(azure): Strip operation suffixes from deployment URLs
+    Author: @josemaria-vilaplana | +189/-1 lines
+    Summary: Fix Azure Responses API URL construction when api_base contains deployment paths...
+  - PR #61: fix: Azure Responses API URL construction with deployment paths
+    Author: @josemaria-vilaplana | +77/-3 lines
+    Summary: Fix Azure endpoint URL handling for responses API...
+```
+
+This ensures Claude always has up-to-date context about WHY each file was modified.
 
 #### Why Single-PR Workflow?
 
@@ -1095,6 +1123,6 @@ For questions about this fork:
 
 ---
 
-**Last Updated:** 2025-12-03
+**Last Updated:** 2026-01-29
 **Maintained By:** CARTO Engineering Team
 **For:** AI Assistants & Developers working on CARTO's LiteLLM fork
