@@ -1461,28 +1461,28 @@ def test_normalize_server_name():
     assert normalize_server_name("   ") == "___"
 
 
-def test_add_server_prefix_to_tool_name():
+def test_add_server_prefix_to_name():
     """
-    Test that add_server_prefix_to_tool_name correctly formats tool names.
+    Test that add_server_prefix_to_name correctly formats tool names.
     """
     from litellm.proxy._experimental.mcp_server.utils import (
-        add_server_prefix_to_tool_name,
+        add_server_prefix_to_name,
     )
 
     # Test basic prefixing
-    result = add_server_prefix_to_tool_name("send_email", "My Server")
+    result = add_server_prefix_to_name("send_email", "My Server")
     assert result == "My_Server-send_email"
 
     # Test with server name that already has underscores
-    result = add_server_prefix_to_tool_name("create_event", "my_server")
+    result = add_server_prefix_to_name("create_event", "my_server")
     assert result == "my_server-create_event"
 
     # Test with empty tool name
-    result = add_server_prefix_to_tool_name("", "My Server")
+    result = add_server_prefix_to_name("", "My Server")
     assert result == "My_Server-"
 
     # Test with empty server name
-    result = add_server_prefix_to_tool_name("send_email", "")
+    result = add_server_prefix_to_name("send_email", "")
     assert result == "-send_email"
 
 

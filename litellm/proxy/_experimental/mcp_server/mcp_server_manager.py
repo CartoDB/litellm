@@ -24,9 +24,11 @@ from litellm.proxy._experimental.mcp_server.auth.user_api_key_auth_mcp import (
     MCPRequestHandler,
 )
 from litellm.proxy._experimental.mcp_server.utils import (
+    MCP_TOOL_PREFIX_SEPARATOR,
     add_server_prefix_to_name,
     get_server_prefix,
     is_tool_name_prefixed,
+    merge_mcp_headers,
     normalize_server_name,
     split_server_prefix_from_name,
     validate_mcp_server_name,
