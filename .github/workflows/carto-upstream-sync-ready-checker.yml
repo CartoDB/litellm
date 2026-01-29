@@ -141,71 +141,113 @@ jobs:
       - name: Notify Slack - Tests Passed
         if: steps.check-and-label.outputs.pr-ready == 'true'
         env:
+          GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.check-and-label.outputs.pr-number }}
           PR_URL: ${{ steps.check-and-label.outputs.pr-url }}
           VERSION: ${{ steps.check-and-label.outputs.version }}
         run: |
           set -eu
 
+          echo "::group::Finding thread_ts from PR comments"
+
+          # Look for thread_ts stored by initial notification
+          THREAD_TS=$(gh pr view ${PR_NUMBER} \
+            --repo ${{ github.repository }} \
+            --json comments \
+            --jq '.comments[].body | select(contains("SLACK_THREAD_TS:")) | capture("SLACK_THREAD_TS:(?<ts>[0-9.]+)") | .ts' \
+            | head -1 || echo "")
+
+          if [[ -n "${THREAD_TS}" ]]; then
+            echo "[Slack] Found thread_ts: ${THREAD_TS} - will reply in thread"
+            THREAD_PARAM="\"thread_ts\": \"${THREAD_TS}\","
+          else
+            echo "[Slack] No thread_ts found - will post new message"
+            THREAD_PARAM=""
+          fi
+
+          echo "::endgroup::"
+
           echo "::group::Posting Step 4 notification to Slack"
 
           WORKFLOW_URL="${{ github.event.workflow_run.html_url }}"
 
-          # Build Block Kit payload for tests passed
+          # Clean version for display
+          VERSION_CLEAN=$(echo "${VERSION}" | sed -E 's/^v//; s/-stable$//')
+
+          # Progress bar (step 4 of 4 complete)
+          PROGRESS="◼️◼️◼️◼️"
+
+          # Build improved Block Kit payload
           cat > /tmp/slack_payload.json << EOF
           {
             "channel": "${SLACK_CHANNEL_LITELLM}",
+            ${THREAD_PARAM}
             "text": "✅ LiteLLM Upstream Sync: Tests Passed",
-            "attachments": [
+            "unfurl_links": false,
+            "unfurl_media": false,
+            "blocks": [
               {
-                "color": "#36a64f",
-                "blocks": [
+                "type": "header",
+                "text": {
+                  "type": "plain_text",
+                  "text": "✅ LiteLLM Upstream Sync",
+                  "emoji": true
+                }
+              },
+              {
+                "type": "context",
+                "elements": [
                   {
-                    "type": "header",
-                    "text": {
-                      "type": "plain_text",
-                      "text": "✅ LiteLLM Upstream Sync",
-                      "emoji": true
-                    }
+                    "type": "mrkdwn",
+                    "text": "${PROGRESS}  *Step 4 of 4: Tests Passed*"
+                  }
+                ]
+              },
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": "All CI checks completed successfully. PR is ready for review and merge."
+                }
+              },
+              {
+                "type": "divider"
+              },
+              {
+                "type": "section",
+                "fields": [
+                  {
+                    "type": "mrkdwn",
+                    "text": "*Version*\n\`v${VERSION_CLEAN}\`"
                   },
                   {
-                    "type": "section",
-                    "text": {
-                      "type": "mrkdwn",
-                      "text": "*Step 4 of 4: Tests Passed* :white_check_mark:\n\n• All CI checks completed successfully\n• Version: \`${VERSION}\`\n• PR ready for review and merge"
-                    }
+                    "type": "mrkdwn",
+                    "text": "*Status*\n:white_check_mark: Ready to merge"
+                  }
+                ]
+              },
+              {
+                "type": "context",
+                "elements": [
+                  {
+                    "type": "mrkdwn",
+                    "text": ":arrow_right: Review changes and merge to deploy the update."
+                  }
+                ]
+              },
+              {
+                "type": "actions",
+                "elements": [
+                  {
+                    "type": "button",
+                    "text": { "type": "plain_text", "text": "Review PR", "emoji": true },
+                    "style": "primary",
+                    "url": "${PR_URL}"
                   },
                   {
-                    "type": "section",
-                    "text": {
-                      "type": "mrkdwn",
-                      "text": "*Action Required*\n• Review the PR changes\n• Merge to deploy the update"
-                    }
-                  },
-                  {
-                    "type": "context",
-                    "elements": [
-                      {
-                        "type": "mrkdwn",
-                        "text": ":book: <${DOCS_URL}|LiteLLM Fork CI Docs>"
-                      }
-                    ]
-                  },
-                  {
-                    "type": "actions",
-                    "elements": [
-                      {
-                        "type": "button",
-                        "text": { "type": "plain_text", "text": "Review PR", "emoji": true },
-                        "style": "primary",
-                        "url": "${PR_URL}"
-                      },
-                      {
-                        "type": "button",
-                        "text": { "type": "plain_text", "text": "View Logs", "emoji": true },
-                        "url": "${WORKFLOW_URL}"
-                      }
-                    ]
+                    "type": "button",
+                    "text": { "type": "plain_text", "text": "View Logs", "emoji": true },
+                    "url": "${WORKFLOW_URL}"
                   }
                 ]
               }
@@ -227,7 +269,11 @@ jobs:
             -d @/tmp/slack_payload.json)
 
           if echo "$RESPONSE" | jq -e '.ok == true' > /dev/null 2>&1; then
-            echo "✅ [Slack] Tests passed notification sent"
+            if [[ -n "${THREAD_TS}" ]]; then
+              echo "✅ [Slack] Tests passed notification sent (replied in thread)"
+            else
+              echo "✅ [Slack] Tests passed notification sent (new message)"
+            fi
           else
             ERROR=$(echo "$RESPONSE" | jq -r '.error // "unknown"')
             echo "⚠️ [Slack] Failed to send notification: ${ERROR}"
@@ -285,66 +331,106 @@ jobs:
 
           # Extract version from branch
           VERSION=$(echo "${BRANCH}" | sed 's|upstream-sync/||')
+          VERSION_CLEAN=$(echo "${VERSION}" | sed -E 's/^v//; s/-stable$//')
 
           echo "[Failure Notifier] PR #${PR_NUMBER}: ${WORKFLOW_NAME} failed"
           echo "::endgroup::"
 
+          echo "::group::Finding thread_ts from PR comments"
+
+          # Look for thread_ts stored by initial notification
+          THREAD_TS=$(gh pr view ${PR_NUMBER} \
+            --repo ${{ github.repository }} \
+            --json comments \
+            --jq '.comments[].body | select(contains("SLACK_THREAD_TS:")) | capture("SLACK_THREAD_TS:(?<ts>[0-9.]+)") | .ts' \
+            | head -1 || echo "")
+
+          if [[ -n "${THREAD_TS}" ]]; then
+            echo "[Slack] Found thread_ts: ${THREAD_TS} - will reply in thread"
+            THREAD_PARAM="\"thread_ts\": \"${THREAD_TS}\","
+          else
+            echo "[Slack] No thread_ts found - will post new message"
+            THREAD_PARAM=""
+          fi
+
+          echo "::endgroup::"
+
           echo "::group::Posting failure notification to Slack"
 
-          # Build Block Kit payload for tests failed
+          # Progress bar (step 3 stuck - tests failed)
+          PROGRESS="◼️◼️◼️◻️"
+
+          # Build improved Block Kit payload
           cat > /tmp/slack_payload.json << EOF
           {
             "channel": "${SLACK_CHANNEL_LITELLM}",
+            ${THREAD_PARAM}
             "text": "⚠️ LiteLLM Upstream Sync: Tests Failed",
-            "attachments": [
+            "unfurl_links": false,
+            "unfurl_media": false,
+            "blocks": [
               {
-                "color": "#FFA500",
-                "blocks": [
+                "type": "header",
+                "text": {
+                  "type": "plain_text",
+                  "text": "⚠️ LiteLLM Upstream Sync",
+                  "emoji": true
+                }
+              },
+              {
+                "type": "context",
+                "elements": [
                   {
-                    "type": "header",
-                    "text": {
-                      "type": "plain_text",
-                      "text": "⚠️ LiteLLM Upstream Sync",
-                      "emoji": true
-                    }
+                    "type": "mrkdwn",
+                    "text": "${PROGRESS}  *Step 3: Tests Failed*"
+                  }
+                ]
+              },
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": ":x: *${WORKFLOW_NAME}* failed. PR is blocked until tests pass."
+                }
+              },
+              {
+                "type": "divider"
+              },
+              {
+                "type": "section",
+                "fields": [
+                  {
+                    "type": "mrkdwn",
+                    "text": "*Version*\n\`v${VERSION_CLEAN}\`"
                   },
                   {
-                    "type": "section",
-                    "text": {
-                      "type": "mrkdwn",
-                      "text": "*Step 4 of 4: Tests Failed*\n\n• :x: ${WORKFLOW_NAME} failed\n• Version: \`${VERSION}\`\n• PR blocked until fixed"
-                    }
+                    "type": "mrkdwn",
+                    "text": "*Status*\n:x: Tests failing"
+                  }
+                ]
+              },
+              {
+                "type": "context",
+                "elements": [
+                  {
+                    "type": "mrkdwn",
+                    "text": ":arrow_right: Check logs, fix issues, and re-run the pipeline."
+                  }
+                ]
+              },
+              {
+                "type": "actions",
+                "elements": [
+                  {
+                    "type": "button",
+                    "text": { "type": "plain_text", "text": "View Logs", "emoji": true },
+                    "style": "danger",
+                    "url": "${WORKFLOW_URL}"
                   },
                   {
-                    "type": "section",
-                    "text": {
-                      "type": "mrkdwn",
-                      "text": "*Action Required*\n• Check the workflow logs\n• Fix failing tests\n• Re-run the pipeline"
-                    }
-                  },
-                  {
-                    "type": "context",
-                    "elements": [
-                      {
-                        "type": "mrkdwn",
-                        "text": ":book: <${DOCS_URL}|LiteLLM Fork CI Docs>"
-                      }
-                    ]
-                  },
-                  {
-                    "type": "actions",
-                    "elements": [
-                      {
-                        "type": "button",
-                        "text": { "type": "plain_text", "text": "View PR", "emoji": true },
-                        "url": "${PR_URL}"
-                      },
-                      {
-                        "type": "button",
-                        "text": { "type": "plain_text", "text": "View Logs", "emoji": true },
-                        "url": "${WORKFLOW_URL}"
-                      }
-                    ]
+                    "type": "button",
+                    "text": { "type": "plain_text", "text": "View PR", "emoji": true },
+                    "url": "${PR_URL}"
                   }
                 ]
               }
@@ -366,7 +452,11 @@ jobs:
             -d @/tmp/slack_payload.json)
 
           if echo "$RESPONSE" | jq -e '.ok == true' > /dev/null 2>&1; then
-            echo "✅ [Slack] Tests failed notification sent"
+            if [[ -n "${THREAD_TS}" ]]; then
+              echo "✅ [Slack] Tests failed notification sent (replied in thread)"
+            else
+              echo "✅ [Slack] Tests failed notification sent (new message)"
+            fi
           else
             ERROR=$(echo "$RESPONSE" | jq -r '.error // "unknown"')
             echo "⚠️ [Slack] Failed to send notification: ${ERROR}"
