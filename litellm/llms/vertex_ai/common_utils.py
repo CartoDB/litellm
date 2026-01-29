@@ -30,8 +30,12 @@ class VertexAIModelRoute(str, Enum):
     PARTNER_MODELS = "partner_models"
     GEMINI = "gemini"
     GEMMA = "gemma"
+    BGE = "bge"
     MODEL_GARDEN = "model_garden"
     NON_GEMINI = "non_gemini"
+
+
+VERTEX_AI_MODEL_ROUTES = [f"{route.value}/" for route in VertexAIModelRoute]
 
 
 def get_vertex_ai_model_route(model: str, litellm_params: Optional[dict] = None) -> VertexAIModelRoute:
@@ -131,6 +135,55 @@ from typing import Literal, Optional
 all_gemini_url_modes = Literal[
     "chat", "embedding", "batch_embedding", "image_generation", "count_tokens"
 ]
+
+
+def get_vertex_base_url(
+    vertex_location: Optional[str],
+) -> str:
+    """
+    Get the base URL for Vertex AI API calls.
+    """
+    if vertex_location == "global":
+        return "https://aiplatform.googleapis.com"
+    else:
+        return f"https://{vertex_location}-aiplatform.googleapis.com"
+
+
+def get_vertex_base_model_name(model: str) -> str:
+    """
+    Strip routing prefixes from model name for PSC/endpoint URL construction.
+
+    Patterns like "bge/", "gemma/", "openai/" are used for internal routing but
+    should not appear in the actual endpoint URL. Routing prefixes are derived
+    from VertexAIModelRoute enum values.
+
+    Args:
+        model: The model name with potential prefix (e.g., "bge/123456", "gemma/gemma-3-12b-it")
+
+    Returns:
+        str: The model name without routing prefix (e.g., "123456", "gemma-3-12b-it")
+
+    Examples:
+        >>> get_vertex_base_model_name("bge/378943383978115072")
+        "378943383978115072"
+
+        >>> get_vertex_base_model_name("gemma/gemma-3-12b-it")
+        "gemma-3-12b-it"
+
+        >>> get_vertex_base_model_name("openai/gpt-oss-120b")
+        "gpt-oss-120b"
+
+        >>> get_vertex_base_model_name("1234567890")
+        "1234567890"
+    """
+    # Derive routing prefixes from VertexAIModelRoute enum
+    # Map specific routes to their prefixes (some routes like PARTNER_MODELS, GEMINI don't have prefixes)
+
+    for route in VERTEX_AI_MODEL_ROUTES:
+        if model.startswith(route):
+            return model.replace(route, "", 1)
+
+    return model
 
 
 def _get_vertex_url(
@@ -566,6 +619,41 @@ def _convert_schema_types(schema, depth=0):
             elif key == "anyOf" and isinstance(value, list):
                 for anyof_schema in value:
                     _convert_schema_types(anyof_schema, depth + 1)
+
+def get_vertex_base_url(vertex_location: str) -> str:
+    """
+    Get the base URL for Vertex AI based on the location.
+
+    Args:
+        vertex_location: The Vertex AI location (e.g., "us-central1", "global")
+
+    Returns:
+        The base URL for Vertex AI API calls
+    """
+    if vertex_location == "global":
+        return "https://aiplatform.googleapis.com"
+    return f"https://{vertex_location}-aiplatform.googleapis.com"
+
+
+def get_vertex_base_model_name(model: str) -> str:
+    """
+    Returns the base model name to use in requests to Vertex AI Model Garden.
+
+    Handles model strings like:
+    - "vertex_ai/openai/5464397967697903616" -> "5464397967697903616"
+    - "vertex_ai/openai/my-endpoint" -> "my-endpoint"
+    - "openai/5464397967697903616" -> "5464397967697903616"
+
+    Args:
+        model: The model name string that may contain prefixes
+
+    Returns:
+        The base model name/ID to use in the API request
+    """
+    # Split on "/" and return the last part (the actual model ID)
+    parts = model.split("/")
+    return parts[-1] if parts else model
+
 
 def get_vertex_project_id_from_url(url: str) -> Optional[str]:
     """
