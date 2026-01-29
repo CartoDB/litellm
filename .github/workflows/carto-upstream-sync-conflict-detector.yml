@@ -52,13 +52,47 @@ jobs:
           # Track PRs that need resolver
           CONFLICTING_PRS=""
 
+          # Helper function to get mergeable status with retry for UNKNOWN
+          get_mergeable_status() {
+            local pr_num=$1
+            local max_attempts=3
+            local attempt=1
+
+            while [[ $attempt -le $max_attempts ]]; do
+              local status=$(gh pr view ${pr_num} \
+                --repo ${{ github.repository }} \
+                --json mergeable \
+                --jq '.mergeable')
+
+              if [[ "${status}" != "UNKNOWN" ]]; then
+                echo "${status}"
+                return 0
+              fi
+
+              if [[ $attempt -lt $max_attempts ]]; then
+                echo "[Conflict Detector] PR #${pr_num} mergeable is UNKNOWN, waiting 10s (attempt ${attempt}/${max_attempts})..." >&2
+                sleep 10
+              fi
+              ((attempt++))
+            done
+
+            echo "UNKNOWN"
+          }
+
           # Check each PR for conflicts
           for PR in $(echo "${PRS_JSON}" | jq -c '.[]'); do
             PR_NUMBER=$(echo "${PR}" | jq -r '.number')
             PR_TITLE=$(echo "${PR}" | jq -r '.title')
             BRANCH=$(echo "${PR}" | jq -r '.headRefName')
-            MERGEABLE=$(echo "${PR}" | jq -r '.mergeable')
+            INITIAL_MERGEABLE=$(echo "${PR}" | jq -r '.mergeable')
             HAS_SYNC_READY=$(echo "${PR}" | jq -r '.labels[].name' | grep -c "sync-ready" || echo "0")
+
+            # If status is UNKNOWN, retry with delays
+            if [[ "${INITIAL_MERGEABLE}" == "UNKNOWN" ]]; then
+              MERGEABLE=$(get_mergeable_status ${PR_NUMBER})
+            else
+              MERGEABLE="${INITIAL_MERGEABLE}"
+            fi
 
             echo ""
             echo "[Conflict Detector] PR #${PR_NUMBER}: ${PR_TITLE}"
@@ -105,7 +139,7 @@ jobs:
               CONFLICTING_PRS="${CONFLICTING_PRS}${PR_NUMBER} "
 
             elif [[ "${MERGEABLE}" == "UNKNOWN" ]]; then
-              echo "[Conflict Detector] PR #${PR_NUMBER} mergeable status is UNKNOWN - GitHub is still computing"
+              echo "[Conflict Detector] PR #${PR_NUMBER} mergeable status still UNKNOWN after retries - will check on next push"
 
             else
               echo "[Conflict Detector] PR #${PR_NUMBER} is clean (status: ${MERGEABLE})"

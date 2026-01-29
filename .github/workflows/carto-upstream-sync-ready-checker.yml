@@ -32,6 +32,7 @@ jobs:
 
     steps:
       - name: Check PR readiness and add label
+        id: check-and-label
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
