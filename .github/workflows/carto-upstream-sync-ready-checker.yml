@@ -177,7 +177,7 @@ jobs:
           # Progress bar (step 4 of 4 complete)
           PROGRESS="◼️◼️◼️◼️"
 
-          # Build improved Block Kit payload
+          # Build Block Kit payload with green color bar (success)
           cat > /tmp/slack_payload.json << EOF
           {
             "channel": "${SLACK_CHANNEL_LITELLM}",
@@ -185,69 +185,83 @@ jobs:
             "text": "✅ LiteLLM Upstream Sync: Tests Passed",
             "unfurl_links": false,
             "unfurl_media": false,
-            "blocks": [
+            "attachments": [
               {
-                "type": "header",
-                "text": {
-                  "type": "plain_text",
-                  "text": "✅ LiteLLM Upstream Sync",
-                  "emoji": true
-                }
-              },
-              {
-                "type": "context",
-                "elements": [
+                "color": "#4CAF50",
+                "blocks": [
                   {
-                    "type": "mrkdwn",
-                    "text": "${PROGRESS}  *Step 4 of 4: Tests Passed*"
-                  }
-                ]
-              },
-              {
-                "type": "section",
-                "text": {
-                  "type": "mrkdwn",
-                  "text": "All CI checks completed successfully. PR is ready for review and merge."
-                }
-              },
-              {
-                "type": "divider"
-              },
-              {
-                "type": "section",
-                "fields": [
-                  {
-                    "type": "mrkdwn",
-                    "text": "*Version*\n\`v${VERSION_CLEAN}\`"
+                    "type": "header",
+                    "text": {
+                      "type": "plain_text",
+                      "text": "✅ LiteLLM Upstream Sync",
+                      "emoji": true
+                    }
                   },
                   {
-                    "type": "mrkdwn",
-                    "text": "*Status*\n:white_check_mark: Ready to merge"
-                  }
-                ]
-              },
-              {
-                "type": "context",
-                "elements": [
-                  {
-                    "type": "mrkdwn",
-                    "text": ":arrow_right: Review changes and merge to deploy the update."
-                  }
-                ]
-              },
-              {
-                "type": "actions",
-                "elements": [
-                  {
-                    "type": "button",
-                    "text": { "type": "plain_text", "text": "Review PR", "emoji": true },
-                    "style": "primary",
-                    "url": "${PR_URL}"
+                    "type": "context",
+                    "elements": [
+                      {
+                        "type": "mrkdwn",
+                        "text": "${PROGRESS}  *Step 4 of 4: Tests Passed*"
+                      }
+                    ]
                   },
                   {
-                    "type": "button",
-                    "text": { "type": "plain_text", "text": "View Logs", "emoji": true },
-                    "url": "${WORKFLOW_URL}"
+                    "type": "section",
+                    "text": {
+                      "type": "mrkdwn",
+                      "text": "All CI checks completed successfully. PR is ready for review and merge."
+                    }
+                  },
+                  {
+                    "type": "divider"
+                  },
+                  {
+                    "type": "section",
+                    "fields": [
+                      {
+                        "type": "mrkdwn",
+                        "text": "*Version*\n\`v${VERSION_CLEAN}\`"
+                      },
+                      {
+                        "type": "mrkdwn",
+                        "text": "*Status*\n:white_check_mark: Ready to merge"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "context",
+                    "elements": [
+                      {
+                        "type": "mrkdwn",
+                        "text": ":arrow_right: Review changes and merge to deploy the update."
+                      }
+                    ]
+                  },
+                  {
+                    "type": "context",
+                    "elements": [
+                      {
+                        "type": "mrkdwn",
+                        "text": ":book: <${DOCS_URL}|LiteLLM Fork CI Docs>"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "actions",
+                    "elements": [
+                      {
+                        "type": "button",
+                        "text": { "type": "plain_text", "text": "Review PR", "emoji": true },
+                        "style": "primary",
+                        "url": "${PR_URL}"
+                      },
+                      {
+                        "type": "button",
+                        "text": { "type": "plain_text", "text": "View Logs", "emoji": true },
+                        "url": "${WORKFLOW_URL}"
+                      }
+                    ]
                   }
                 ]
               }
@@ -360,7 +374,7 @@ jobs:
           # Progress bar (step 3 stuck - tests failed)
           PROGRESS="◼️◼️◼️◻️"
 
-          # Build improved Block Kit payload
+          # Build Block Kit payload with red color bar (failure)
           cat > /tmp/slack_payload.json << EOF
           {
             "channel": "${SLACK_CHANNEL_LITELLM}",
@@ -368,69 +382,83 @@ jobs:
             "text": "⚠️ LiteLLM Upstream Sync: Tests Failed",
             "unfurl_links": false,
             "unfurl_media": false,
-            "blocks": [
+            "attachments": [
               {
-                "type": "header",
-                "text": {
-                  "type": "plain_text",
-                  "text": "⚠️ LiteLLM Upstream Sync",
-                  "emoji": true
-                }
-              },
-              {
-                "type": "context",
-                "elements": [
+                "color": "#F44336",
+                "blocks": [
                   {
-                    "type": "mrkdwn",
-                    "text": "${PROGRESS}  *Step 3: Tests Failed*"
-                  }
-                ]
-              },
-              {
-                "type": "section",
-                "text": {
-                  "type": "mrkdwn",
-                  "text": ":x: *${WORKFLOW_NAME}* failed. PR is blocked until tests pass."
-                }
-              },
-              {
-                "type": "divider"
-              },
-              {
-                "type": "section",
-                "fields": [
-                  {
-                    "type": "mrkdwn",
-                    "text": "*Version*\n\`v${VERSION_CLEAN}\`"
+                    "type": "header",
+                    "text": {
+                      "type": "plain_text",
+                      "text": "⚠️ LiteLLM Upstream Sync",
+                      "emoji": true
+                    }
                   },
                   {
-                    "type": "mrkdwn",
-                    "text": "*Status*\n:x: Tests failing"
-                  }
-                ]
-              },
-              {
-                "type": "context",
-                "elements": [
-                  {
-                    "type": "mrkdwn",
-                    "text": ":arrow_right: Check logs, fix issues, and re-run the pipeline."
-                  }
-                ]
-              },
-              {
-                "type": "actions",
-                "elements": [
-                  {
-                    "type": "button",
-                    "text": { "type": "plain_text", "text": "View Logs", "emoji": true },
-                    "style": "danger",
-                    "url": "${WORKFLOW_URL}"
+                    "type": "context",
+                    "elements": [
+                      {
+                        "type": "mrkdwn",
+                        "text": "${PROGRESS}  *Step 3: Tests Failed*"
+                      }
+                    ]
                   },
                   {
-                    "type": "button",
-                    "text": { "type": "plain_text", "text": "View PR", "emoji": true },
-                    "url": "${PR_URL}"
+                    "type": "section",
+                    "text": {
+                      "type": "mrkdwn",
+                      "text": ":x: *${WORKFLOW_NAME}* failed. PR is blocked until tests pass."
+                    }
+                  },
+                  {
+                    "type": "divider"
+                  },
+                  {
+                    "type": "section",
+                    "fields": [
+                      {
+                        "type": "mrkdwn",
+                        "text": "*Version*\n\`v${VERSION_CLEAN}\`"
+                      },
+                      {
+                        "type": "mrkdwn",
+                        "text": "*Status*\n:x: Tests failing"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "context",
+                    "elements": [
+                      {
+                        "type": "mrkdwn",
+                        "text": ":arrow_right: Check logs, fix issues, and re-run the pipeline."
+                      }
+                    ]
+                  },
+                  {
+                    "type": "context",
+                    "elements": [
+                      {
+                        "type": "mrkdwn",
+                        "text": ":book: <${DOCS_URL}|LiteLLM Fork CI Docs>"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "actions",
+                    "elements": [
+                      {
+                        "type": "button",
+                        "text": { "type": "plain_text", "text": "View Logs", "emoji": true },
+                        "style": "danger",
+                        "url": "${WORKFLOW_URL}"
+                      },
+                      {
+                        "type": "button",
+                        "text": { "type": "plain_text", "text": "View PR", "emoji": true },
+                        "url": "${PR_URL}"
+                      }
+                    ]
                   }
                 ]
               }

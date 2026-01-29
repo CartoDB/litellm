@@ -700,76 +700,90 @@ jobs:
             exit 0
           fi
 
-          # Build improved Block Kit payload with better visual hierarchy
+          # Build Block Kit payload with colored attachment bar
           cat > /tmp/slack_payload.json << EOF
           {
             "channel": "${SLACK_CHANNEL_LITELLM}",
             "text": "${TITLE}: ${STEP_TEXT}",
             "unfurl_links": false,
             "unfurl_media": false,
-            "blocks": [
+            "attachments": [
               {
-                "type": "header",
-                "text": {
-                  "type": "plain_text",
-                  "text": "${STEP_EMOJI} ${TITLE}",
-                  "emoji": true
-                }
-              },
-              {
-                "type": "context",
-                "elements": [
+                "color": "${COLOR}",
+                "blocks": [
                   {
-                    "type": "mrkdwn",
-                    "text": "${PROGRESS}  *${STEP_TEXT}*"
-                  }
-                ]
-              },
-              {
-                "type": "section",
-                "text": {
-                  "type": "mrkdwn",
-                  "text": "${SUMMARY}"
-                }
-              },
-              {
-                "type": "divider"
-              },
-              {
-                "type": "section",
-                "fields": [
-                  {
-                    "type": "mrkdwn",
-                    "text": "${VERSION_FIELD}"
+                    "type": "header",
+                    "text": {
+                      "type": "plain_text",
+                      "text": "${STEP_EMOJI} ${TITLE}",
+                      "emoji": true
+                    }
                   },
                   {
-                    "type": "mrkdwn",
-                    "text": "${STATUS_FIELD}"
-                  }
-                ]
-              }
-              ${NEXT_ACTION:+,{
-                "type": "context",
-                "elements": [
-                  {
-                    "type": "mrkdwn",
-                    "text": ":arrow_right: ${NEXT_ACTION}"
-                  }
-                ]
-              }}
-              ,{
-                "type": "actions",
-                "elements": [
-                  {
-                    "type": "button",
-                    "text": { "type": "plain_text", "text": "View PR", "emoji": true },
-                    "style": "primary",
-                    "url": "${PR_URL}"
+                    "type": "context",
+                    "elements": [
+                      {
+                        "type": "mrkdwn",
+                        "text": "${PROGRESS}  *${STEP_TEXT}*"
+                      }
+                    ]
                   },
                   {
-                    "type": "button",
-                    "text": { "type": "plain_text", "text": "Docs", "emoji": true },
-                    "url": "${DOCS_URL}"
+                    "type": "section",
+                    "text": {
+                      "type": "mrkdwn",
+                      "text": "${SUMMARY}"
+                    }
+                  },
+                  {
+                    "type": "divider"
+                  },
+                  {
+                    "type": "section",
+                    "fields": [
+                      {
+                        "type": "mrkdwn",
+                        "text": "${VERSION_FIELD}"
+                      },
+                      {
+                        "type": "mrkdwn",
+                        "text": "${STATUS_FIELD}"
+                      }
+                    ]
+                  }
+                  ${NEXT_ACTION:+,{
+                    "type": "context",
+                    "elements": [
+                      {
+                        "type": "mrkdwn",
+                        "text": ":arrow_right: ${NEXT_ACTION}"
+                      }
+                    ]
+                  }}
+                  ,{
+                    "type": "context",
+                    "elements": [
+                      {
+                        "type": "mrkdwn",
+                        "text": ":book: <${DOCS_URL}|LiteLLM Fork CI Docs>"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "actions",
+                    "elements": [
+                      {
+                        "type": "button",
+                        "text": { "type": "plain_text", "text": "View PR", "emoji": true },
+                        "style": "primary",
+                        "url": "${PR_URL}"
+                      },
+                      {
+                        "type": "button",
+                        "text": { "type": "plain_text", "text": "View Logs", "emoji": true },
+                        "url": "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                      }
+                    ]
                   }
                 ]
               }
