@@ -10,13 +10,13 @@ import litellm
 from litellm import BEDROCK_INVOKE_PROVIDERS_LITERAL
 from litellm._logging import verbose_logger
 from litellm.litellm_core_utils.litellm_logging import Logging as LitellmLogging
-from litellm.llms.bedrock.image.amazon_nova_canvas_transformation import (
+from litellm.llms.bedrock.image_generation.amazon_nova_canvas_transformation import (
     AmazonNovaCanvasConfig,
 )
-from litellm.llms.bedrock.image.amazon_stability3_transformation import (
+from litellm.llms.bedrock.image_generation.amazon_stability3_transformation import (
     AmazonStability3Config,
 )
-from litellm.llms.bedrock.image.amazon_titan_transformation import (
+from litellm.llms.bedrock.image_generation.amazon_titan_transformation import (
     AmazonTitanImageGenerationConfig,
 )
 from litellm.llms.custom_httpx.http_handler import (
