@@ -706,6 +706,29 @@ jobs:
             COMPARE_URL="https://github.com/BerriAI/litellm/compare/v${CURRENT_VERSION}-stable...${NEW_VERSION}"
           fi
 
+          # Pre-build optional JSON blocks (avoid bash expansion issues in heredoc)
+          NEXT_ACTION_BLOCK=""
+          if [[ -n "${NEXT_ACTION}" ]]; then
+            NEXT_ACTION_BLOCK=',{
+                    "type": "context",
+                    "elements": [
+                      {
+                        "type": "mrkdwn",
+                        "text": ":arrow_right: '"${NEXT_ACTION}"'"
+                      }
+                    ]
+                  }'
+          fi
+
+          COMPARE_BUTTON_BLOCK=""
+          if [[ -n "${COMPARE_URL}" ]]; then
+            COMPARE_BUTTON_BLOCK=',{
+                        "type": "button",
+                        "text": { "type": "plain_text", "text": "View Changes", "emoji": true },
+                        "url": "'"${COMPARE_URL}"'"
+                      }'
+          fi
+
           # Build improved Block Kit payload with colored sidebar and better visual hierarchy
           cat > /tmp/slack_payload.json << EOF
           {
@@ -757,15 +780,7 @@ jobs:
                       }
                     ]
                   }
-                  ${NEXT_ACTION:+,{
-                    "type": "context",
-                    "elements": [
-                      {
-                        "type": "mrkdwn",
-                        "text": ":arrow_right: ${NEXT_ACTION}"
-                      }
-                    ]
-                  }}
+                  ${NEXT_ACTION_BLOCK}
                   ,{
                     "type": "actions",
                     "elements": [
@@ -775,11 +790,7 @@ jobs:
                         "style": "primary",
                         "url": "${PR_URL}"
                       }
-                      ${COMPARE_URL:+,{
-                        "type": "button",
-                        "text": { "type": "plain_text", "text": "View Changes", "emoji": true },
-                        "url": "${COMPARE_URL}"
-                      }}
+                      ${COMPARE_BUTTON_BLOCK}
                       ,{
                         "type": "button",
                         "text": { "type": "plain_text", "text": "Docs", "emoji": true },
