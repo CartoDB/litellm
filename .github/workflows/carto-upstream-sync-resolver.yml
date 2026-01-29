@@ -381,6 +381,174 @@ jobs:
           echo '${{ secrets.CI_RESOURCES_SERVICE_ACCOUNT }}' > /tmp/gcp-sa.json
           echo "GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-sa.json" >> $GITHUB_ENV
 
+      - name: Analyze CARTO-modified files (pre-resolution)
+        id: carto-files
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          echo "::group::Identifying CARTO-modified files via GitHub org membership"
+
+          # Get list of conflicted files
+          CONFLICTS="${{ steps.start-merge.outputs.conflicts }}"
+
+          # Fetch CartoDB org members (same approach as calculate_carto_version.sh)
+          echo "[Resolver] Fetching CartoDB org members..."
+          ORG_MEMBERS=$(gh api "orgs/CartoDB/members" --paginate --jq '.[].login' 2>/dev/null | tr '\n' '|' | sed 's/|$//')
+
+          if [ -z "$ORG_MEMBERS" ]; then
+            echo "[Resolver] Warning: Could not fetch org members, falling back to known accounts"
+            # Fallback: include known automation accounts and common patterns
+            ORG_MEMBERS="Cartofante|github-actions|mateo-di"
+          fi
+
+          echo "[Resolver] Org members pattern: ${ORG_MEMBERS:0:100}..."
+
+          # Create file to store CARTO-modified files
+          echo "" > /tmp/carto_modified.txt
+          echo "" > /tmp/upstream_only.txt
+
+          # Check each conflicted file for CARTO commits
+          for FILE in $CONFLICTS; do
+            echo "[Resolver] Checking: $FILE"
+
+            # Get commits for this file on carto/main using GitHub API
+            # Filter by org membership using the same logic as calculate_carto_version.sh
+            CARTO_COMMITS=0
+
+            # Use git log to get commit SHAs, then check each via GitHub API for author
+            COMMIT_SHAS=$(git log --format='%H' origin/carto/main -- "$FILE" 2>/dev/null | head -50)
+
+            for SHA in $COMMIT_SHAS; do
+              # Get commit author's GitHub login via API
+              AUTHOR=$(gh api "repos/${{ github.repository }}/commits/${SHA}" --jq '.author.login // empty' 2>/dev/null || echo "")
+
+              if [ -n "$AUTHOR" ]; then
+                # Check if author is a CartoDB org member
+                if echo "$AUTHOR" | grep -qE "^(${ORG_MEMBERS})$"; then
+                  CARTO_COMMITS=$((CARTO_COMMITS + 1))
+                  echo "  ✓ Commit ${SHA:0:7} by ${AUTHOR} (CartoDB member)"
+                  break  # Found at least one CARTO commit, that's enough
+                fi
+              fi
+            done
+
+            if [ "$CARTO_COMMITS" -gt 0 ]; then
+              echo "  → CARTO-MODIFIED: $FILE"
+              echo "$FILE" >> /tmp/carto_modified.txt
+            else
+              echo "  → UPSTREAM-ONLY: $FILE"
+              echo "$FILE" >> /tmp/upstream_only.txt
+            fi
+          done
+
+          # Output results for Claude
+          CARTO_FILES=$(cat /tmp/carto_modified.txt | grep -v '^$' || echo "")
+          UPSTREAM_FILES=$(cat /tmp/upstream_only.txt | grep -v '^$' || echo "")
+
+          echo ""
+          echo "[Resolver] Summary:"
+          echo "  CARTO-modified files: $(echo "$CARTO_FILES" | grep -c . || echo 0)"
+          echo "  Upstream-only files: $(echo "$UPSTREAM_FILES" | grep -c . || echo 0)"
+
+          echo "carto-files<<EOF" >> $GITHUB_OUTPUT
+          echo "$CARTO_FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          echo "upstream-files<<EOF" >> $GITHUB_OUTPUT
+          echo "$UPSTREAM_FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          echo "::endgroup::"
+
+      - name: Build CARTO customization context for conflicted files
+        id: carto-context
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          echo "::group::Building CARTO customization context"
+
+          # Get conflicted files from previous step
+          CONFLICTS="${{ steps.start-merge.outputs.conflicts }}"
+          CARTO_FILES="${{ steps.carto-files.outputs.carto-files }}"
+
+          echo "[Resolver] Building context for CARTO-modified conflicted files..."
+
+          # Fetch ALL merged PRs to carto/main with complete details
+          echo "[Resolver] Fetching all merged PRs to carto/main..."
+          gh pr list \
+            --repo ${{ github.repository }} \
+            --base carto/main \
+            --state merged \
+            --limit 1000 \
+            --json number,title,author,body,mergedAt,additions,deletions,files \
+            > /tmp/all_prs.json 2>/dev/null || echo "[]" > /tmp/all_prs.json
+
+          TOTAL_PRS=$(jq 'length' /tmp/all_prs.json)
+          echo "[Resolver] Found ${TOTAL_PRS} total merged PRs"
+
+          # Build detailed context for each CARTO-modified conflicted file
+          CONTEXT_OUTPUT=""
+
+          for FILE in $CARTO_FILES; do
+            echo "[Resolver] Analyzing: $FILE"
+
+            # Find PRs that touched this specific file
+            FILE_PRS=$(jq -r --arg file "$FILE" '
+              [.[] | select(.files | map(.path) | any(. == $file or (. | startswith($file | split("*")[0] // $file))))] |
+              map({
+                pr: .number,
+                title: .title,
+                author: .author.login,
+                additions: .additions,
+                deletions: .deletions,
+                merged: .mergedAt,
+                body: (.body | split("\n")[0:5] | join(" ") | .[0:200])
+              })
+            ' /tmp/all_prs.json)
+
+            PR_COUNT=$(echo "$FILE_PRS" | jq 'length')
+
+            if [ "$PR_COUNT" -gt 0 ]; then
+              # Format as readable context
+              FILE_CONTEXT=$(echo "$FILE_PRS" | jq -r '
+                .[] | "  - PR #\(.pr): \(.title)\n    Author: @\(.author) | +\(.additions)/-\(.deletions) lines | Merged: \(.merged | split("T")[0])\n    Summary: \(.body | gsub("\n"; " ") | .[0:150])..."
+              ')
+
+              CONTEXT_OUTPUT="${CONTEXT_OUTPUT}
+
+          ### \`${FILE}\`
+          **${PR_COUNT} CARTO PR(s) modified this file:**
+          ${FILE_CONTEXT}"
+            fi
+          done
+
+          # Also create a summary table of ALL CARTO PRs for reference
+          echo "[Resolver] Creating PR summary table..."
+          PR_SUMMARY=$(jq -r '
+            sort_by(.mergedAt) | reverse |
+            .[] |
+            "| #\(.number) | \(.title | .[0:45])... | @\(.author.login) | +\(.additions)/-\(.deletions) | \(.files | length) files |"
+          ' /tmp/all_prs.json | head -100)
+
+          PR_TABLE="| PR | Title | Author | Lines | Files |
+          |-----|-------|--------|-------|-------|
+          ${PR_SUMMARY}"
+
+          # Output the detailed context
+          echo "context<<EOF" >> $GITHUB_OUTPUT
+          echo "$CONTEXT_OUTPUT" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          # Output the summary table
+          echo "pr-table<<EOF" >> $GITHUB_OUTPUT
+          echo "$PR_TABLE" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          # Output total count
+          echo "total-prs=${TOTAL_PRS}" >> $GITHUB_OUTPUT
+
+          echo "::endgroup::"
+
       - name: Run Claude Code for conflict resolution (FILE EDITS ONLY)
         id: claude-run
         uses: anthropics/claude-code-action@v1
@@ -390,9 +558,11 @@ jobs:
           show_full_output: true
           claude_args: "--model claude-opus-4-5@20251101 --max-turns 250 --allowedTools Read,Write,Edit,Bash,Grep,Glob ${{ github.event.inputs.debug == 'true' && '--debug' || '' }}"
           prompt: |
-            # Conflict Resolution Task - EDIT FILES ONLY
+            # Conflict Resolution Task - CARTO-FIRST STRATEGY
 
-            ## ⚠️ CRITICAL: YOUR ONLY JOB IS TO EDIT FILES
+            ## ⚠️ CRITICAL: CARTO CUSTOMIZATIONS ARE MANDATORY TO PRESERVE
+
+            **Key Principle:** CARTO customizations made by CartoDB organization members are **INTENTIONAL and MUST be preserved**. Upstream changes should be merged **AROUND** CARTO code, not replacing it.
 
             The git merge has ALREADY been started by the workflow.
             You are in a merge conflict state with ${{ steps.start-merge.outputs.conflict-count }} conflicted files.
@@ -405,11 +575,25 @@ jobs:
 
             **YOUR ONLY JOB:**
             1. Read conflicted files
-            2. Edit files to remove conflict markers
+            2. Edit files to remove conflict markers (PRESERVING CARTO CODE)
             3. Run tests and fix issues
             4. Say "RESOLUTION COMPLETE" when done
 
-            ## Conflicted Files (${{ steps.start-merge.outputs.conflict-count }} files)
+            ## Pre-Analysis: CARTO vs Upstream Files
+
+            The workflow has analyzed which files have CARTO commits:
+
+            **🔒 CARTO-MODIFIED FILES (MUST KEEP CARTO VERSION):**
+            ```
+            ${{ steps.carto-files.outputs.carto-files }}
+            ```
+
+            **📥 UPSTREAM-ONLY FILES (Accept upstream):**
+            ```
+            ${{ steps.carto-files.outputs.upstream-files }}
+            ```
+
+            ## All Conflicted Files (${{ steps.start-merge.outputs.conflict-count }} files)
 
             ```
             ${{ steps.start-merge.outputs.conflicts }}
@@ -421,7 +605,7 @@ jobs:
             cat CARTO_CLAUDE.md
             ```
 
-            ## Step 2: Resolution Rules
+            ## Step 2: Resolution Rules (CARTO-FIRST PRIORITY)
 
             **Conflict markers look like this:**
             ```
@@ -432,24 +616,72 @@ jobs:
             >>>>>>> carto/main
             ```
 
-            **Resolution priorities:**
+            **Resolution priorities (CARTO-FIRST):**
 
-            | File Pattern | Keep | Reason |
-            |--------------|------|--------|
-            | `carto_*.yaml`, `carto-*.yml` | carto/main (bottom) | CARTO workflows |
-            | `CARTO_*.md` | carto/main (bottom) | CARTO docs |
-            | `litellm/**` (core) | HEAD (top) | Upstream improvements |
-            | `tests/**` | HEAD (top) | Upstream tests |
-            | `Dockerfile`, `Makefile` | Merge carefully | Keep `# CARTO:` sections |
+            | Priority | File Pattern | Resolution | Reason |
+            |----------|--------------|------------|--------|
+            | 1 | Files in CARTO-MODIFIED list above | **KEEP carto/main** | CartoDB org members made intentional changes |
+            | 2 | `carto_*.yaml`, `carto-*.yml` | **KEEP carto/main** | CARTO workflows |
+            | 3 | `CARTO_*.md` | **KEEP carto/main** | CARTO docs |
+            | 4 | Files in UPSTREAM-ONLY list above | Accept HEAD (upstream) | No CARTO changes |
+            | 5 | `pyproject.toml` | Merge carefully | Upstream version + CARTO deps |
+            | 6 | `Dockerfile`, `Makefile` | Merge carefully | Keep `# CARTO:` sections |
 
-            ## Step 3: Resolve Each File
+            ## CARTO Customizations for Conflicted Files
+
+            The workflow has analyzed ${{ steps.carto-context.outputs.total-prs }} merged PRs to carto/main.
+            Below is the context for each CARTO-modified file that has conflicts:
+
+            ${{ steps.carto-context.outputs.context }}
+
+            ---
+
+            ## All CARTO PRs Reference (most recent first)
+
+            ${{ steps.carto-context.outputs.pr-table }}
+
+            **To get full details about a specific PR (description, discussion, files):**
+            ```bash
+            gh pr view <PR_NUMBER> --repo ${{ github.repository }}
+            ```
+
+            ## Step 3: Resolve Each File (CARTO-FIRST)
 
             For EACH conflicted file:
+
+            ### If file is in CARTO-MODIFIED list:
             1. **Read** the file
-            2. **Find** all `<<<<<<<`, `=======`, `>>>>>>>` markers
-            3. **Decide** which version to keep (using rules above)
-            4. **Edit** the file to remove markers and keep correct content
-            5. **Verify** no markers remain in the file
+            2. **KEEP the CARTO version** (after `=======`, before `>>>>>>> carto/main`)
+            3. **ALSO check if upstream added NEW code** that doesn't conflict with CARTO fix
+            4. **Merge BOTH** if possible: Keep CARTO fix + add non-conflicting upstream additions
+
+            ### If file is in UPSTREAM-ONLY list:
+            1. **Read** the file
+            2. **Accept upstream version** (after `<<<<<<< HEAD`, before `=======`)
+            3. Remove conflict markers
+
+            ### Correct Merge Example (keeping BOTH):
+            ```python
+            # CORRECT: Keep CARTO fix, add upstream feature
+            def process(self, data):
+                # CARTO fix: Handle null metadata (PRESERVED)
+                if data.get('metadata') is None:
+                    data['metadata'] = {}
+                # New upstream feature (ADDED)
+                if data.get('new_flag'):
+                    self.handle_new_flag(data)
+                return self.transform(data)
+            ```
+
+            ### WRONG Merge (losing CARTO code):
+            ```python
+            # WRONG: Lost CARTO fix, only kept upstream
+            def process(self, data):
+                # CARTO fix is GONE - this is WRONG!
+                if data.get('new_flag'):
+                    self.handle_new_flag(data)
+                return self.transform(data)
+            ```
 
             ## Step 4: Run Tests
 
@@ -480,7 +712,7 @@ jobs:
 
             ---
 
-            **Begin resolving conflicts now!**
+            **REMEMBER: CARTO code is INTENTIONAL. Preserve it. Begin resolving conflicts now!**
 
         env:
           ANTHROPIC_VERTEX_PROJECT_ID: carto-ci-resources
