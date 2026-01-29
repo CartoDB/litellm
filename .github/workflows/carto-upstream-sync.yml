@@ -572,7 +572,9 @@ jobs:
       DOCS_URL: "https://cartodb.getoutline.com/doc/ci-litellm-fork-pMyvwMTU3l"
     steps:
       - name: Send Slack notification
+        id: slack
         env:
+          GH_TOKEN: ${{ github.token }}
           HAS_NEW_RELEASE: ${{ needs.check-new-release.outputs.has-new-release }}
           NEW_VERSION: ${{ needs.check-new-release.outputs.new-version }}
           CURRENT_VERSION: ${{ needs.check-new-release.outputs.current-version }}
@@ -581,6 +583,7 @@ jobs:
           PR_EXISTS: ${{ needs.check-carto-main-sync.outputs.pr-exists }}
           EXISTING_PR_URL: ${{ needs.check-carto-main-sync.outputs.pr-url }}
           NEW_PR_URL: ${{ needs.create-sync-pr.outputs.pr-url }}
+          NEW_PR_NUMBER: ${{ needs.create-sync-pr.outputs.pr-number }}
           SYNC_STATUS: ${{ needs.sync-main-branch.result }}
         run: |
           set -eu
@@ -589,59 +592,99 @@ jobs:
 
           WORKFLOW_RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
-          # Extract clean version
+          # Extract clean version and PR info
           NEW_VERSION_CLEAN=$(echo "${NEW_VERSION}" | sed -E 's/^v//; s/-stable$//')
           PR_URL="${NEW_PR_URL:-${EXISTING_PR_URL}}"
+          PR_NUMBER="${NEW_PR_NUMBER}"
 
-          # Determine notification type and build Block Kit payload
+          # Progress bar helper (step 1-4, current step highlighted)
+          # ◻️ = pending, ◼️ = current/done
+          make_progress() {
+            local current=$1
+            local result=""
+            for i in 1 2 3 4; do
+              if [[ $i -le $current ]]; then
+                result="${result}◼️"
+              else
+                result="${result}◻️"
+              fi
+            done
+            echo "$result"
+          }
+
+          # Determine notification type and build content
           case "${NEEDS_SYNC}:${PR_EXISTS}" in
             true:false)
               # New PR created - Step 2: PR Created
               if [[ -n "${NEW_PR_URL}" ]]; then
-                COLOR="#FFA500"  # Orange - awaiting
-                HEADER=":arrows_counterclockwise: LiteLLM Upstream Sync"
+                COLOR="#1E88E5"  # Blue - neutral/informative
+                PROGRESS=$(make_progress 2)
+                TITLE="LiteLLM Upstream Sync"
+                STEP_TEXT="Step 2 of 4: PR Created"
+                STEP_EMOJI=":white_check_mark:"
 
                 if [[ "${HAS_NEW_RELEASE}" == "true" ]]; then
-                  STATUS_TEXT="*Step 2 of 4: PR Created* :white_check_mark:\n\n• New upstream release detected\n• Version: \`v${CURRENT_VERSION}\` → \`v${NEW_VERSION_CLEAN}\`\n• Draft PR created for review"
+                  SUMMARY="New upstream release \`v${NEW_VERSION_CLEAN}\` detected"
+                  VERSION_FIELD="*Version*\n\`v${CURRENT_VERSION}\` → \`v${NEW_VERSION_CLEAN}\`"
                 else
-                  STATUS_TEXT="*Step 2 of 4: PR Created* :white_check_mark:\n\n• Upstream changes detected\n• ${COMMITS_BEHIND} commits behind upstream\n• Draft PR created for review"
+                  SUMMARY="${COMMITS_BEHIND} commits behind upstream"
+                  VERSION_FIELD="*Commits*\n${COMMITS_BEHIND} behind"
                 fi
-                NEXT_STEPS="*Next Steps*\n• Automated tests will run\n• Review changes when tests pass"
+                STATUS_FIELD="*Status*\n:hourglass_flowing_sand: Tests running"
+                NEXT_ACTION="Automated tests will run. Review when ready."
               else
-                COLOR="#FFA500"  # Orange - warning
-                HEADER=":warning: LiteLLM Upstream Sync: Error"
-                STATUS_TEXT="*Workflow Error*\n\n• :x: PR URL missing\n• Sync may have partially failed"
-                NEXT_STEPS="*Action Required*\n• Check workflow logs\n• Manually verify sync status"
+                COLOR="#1E88E5"  # Blue - neutral/informative
+                PROGRESS=$(make_progress 2)
+                TITLE="LiteLLM Upstream Sync"
+                STEP_TEXT="Step 2: Error"
+                STEP_EMOJI=":warning:"
+                SUMMARY="PR URL missing - sync may have partially failed"
+                VERSION_FIELD="*Version*\n\`v${CURRENT_VERSION}\`"
+                STATUS_FIELD="*Status*\n:x: Error"
+                NEXT_ACTION="Check workflow logs and manually verify sync status."
                 PR_URL="${WORKFLOW_RUN_URL}"
               fi
               ;;
             true:true)
-              # PR already exists
-              COLOR="#36a64f"  # Green - info
-              HEADER=":information_source: LiteLLM Upstream Sync"
-              STATUS_TEXT="*PR Already Exists*\n\n• Version: \`v${CURRENT_VERSION}\` → \`v${NEW_VERSION_CLEAN}\`\n• Existing PR is up to date"
-              NEXT_STEPS="*Next Steps*\n• Review existing PR\n• Merge when ready"
+              # PR already exists - info only
+              COLOR="#1E88E5"  # Blue - neutral/informative
+              PROGRESS=$(make_progress 2)
+              TITLE="LiteLLM Upstream Sync"
+              STEP_TEXT="PR Already Exists"
+              STEP_EMOJI=":information_source:"
+              SUMMARY="Existing sync PR is up to date"
+              VERSION_FIELD="*Version*\n\`v${CURRENT_VERSION}\` → \`v${NEW_VERSION_CLEAN}\`"
+              STATUS_FIELD="*Status*\n:white_check_mark: Ready"
+              NEXT_ACTION="Review and merge when ready."
               ;;
             false:*)
-              # Already up to date
-              COLOR="#36a64f"  # Green - success
-              HEADER=":white_check_mark: LiteLLM Upstream Sync"
-              STATUS_TEXT="*Status: Up to Date*\n\n• \`carto/main\` is fully synced with upstream\n• No action required"
-              NEXT_STEPS=""
+              # Already up to date - minimal notification
+              COLOR="#1E88E5"  # Blue - neutral/informative
+              PROGRESS=$(make_progress 4)
+              TITLE="LiteLLM Upstream Sync"
+              STEP_TEXT="Up to Date"
+              STEP_EMOJI=":white_check_mark:"
+              SUMMARY="\`carto/main\` is fully synced with upstream"
+              VERSION_FIELD="*Version*\n\`v${CURRENT_VERSION}\`"
+              STATUS_FIELD="*Status*\n:white_check_mark: Synced"
+              NEXT_ACTION=""
               ;;
             *)
               # Error state
+              COLOR="#1E88E5"  # Blue - neutral/informative
+              PROGRESS=$(make_progress 1)
+              TITLE="LiteLLM Upstream Sync"
               if [[ "${SYNC_STATUS}" == "failure" ]]; then
-                COLOR="#FFA500"  # Orange - warning
-                HEADER=":warning: LiteLLM Upstream Sync: Failed"
-                STATUS_TEXT="*Step Failed*\n\n• :x: Sync process failed\n• Check workflow logs for details"
-                NEXT_STEPS="*Action Required*\n• Review error logs\n• Fix issues and re-run"
+                STEP_TEXT="Sync Failed"
+                SUMMARY="Sync process failed - check workflow logs"
               else
-                COLOR="#FFA500"
-                HEADER=":warning: LiteLLM Upstream Sync: Error"
-                STATUS_TEXT="*Workflow Error*\n\n• :x: Unexpected state\n• Check workflow logs"
-                NEXT_STEPS="*Action Required*\n• Review workflow run\n• Check for configuration issues"
+                STEP_TEXT="Workflow Error"
+                SUMMARY="Unexpected state - check workflow logs"
               fi
+              STEP_EMOJI=":warning:"
+              VERSION_FIELD="*Version*\n\`v${CURRENT_VERSION}\`"
+              STATUS_FIELD="*Status*\n:x: Failed"
+              NEXT_ACTION="Review error logs, fix issues, and re-run."
               PR_URL="${WORKFLOW_RUN_URL}"
               ;;
           esac
@@ -657,12 +700,19 @@ jobs:
             exit 0
           fi
 
-          # Build Block Kit payload
-          # Using heredoc to handle complex JSON with newlines
+          # Build compare URL for viewing changes between versions
+          COMPARE_URL=""
+          if [[ -n "${CURRENT_VERSION}" && -n "${NEW_VERSION}" ]]; then
+            COMPARE_URL="https://github.com/BerriAI/litellm/compare/v${CURRENT_VERSION}-stable...${NEW_VERSION}"
+          fi
+
+          # Build improved Block Kit payload with colored sidebar and better visual hierarchy
           cat > /tmp/slack_payload.json << EOF
           {
             "channel": "${SLACK_CHANNEL_LITELLM}",
-            "text": "${HEADER}",
+            "text": "${TITLE}: ${STEP_TEXT}",
+            "unfurl_links": false,
+            "unfurl_media": false,
             "attachments": [
               {
                 "color": "${COLOR}",
@@ -671,39 +721,69 @@ jobs:
                     "type": "header",
                     "text": {
                       "type": "plain_text",
-                      "text": "${HEADER}",
+                      "text": "${STEP_EMOJI} ${TITLE}",
                       "emoji": true
                     }
                   },
-                  {
-                    "type": "section",
-                    "text": {
-                      "type": "mrkdwn",
-                      "text": "${STATUS_TEXT}"
-                    }
-                  },
-                  ${NEXT_STEPS:+"{\"type\": \"section\", \"text\": {\"type\": \"mrkdwn\", \"text\": \"${NEXT_STEPS}\"}},"}
                   {
                     "type": "context",
                     "elements": [
                       {
                         "type": "mrkdwn",
-                        "text": ":book: <${DOCS_URL}|LiteLLM Fork CI Docs>"
+                        "text": "${PROGRESS}  *${STEP_TEXT}*"
                       }
                     ]
                   },
                   {
+                    "type": "section",
+                    "text": {
+                      "type": "mrkdwn",
+                      "text": "${SUMMARY}"
+                    }
+                  },
+                  {
+                    "type": "divider"
+                  },
+                  {
+                    "type": "section",
+                    "fields": [
+                      {
+                        "type": "mrkdwn",
+                        "text": "${VERSION_FIELD}"
+                      },
+                      {
+                        "type": "mrkdwn",
+                        "text": "${STATUS_FIELD}"
+                      }
+                    ]
+                  }
+                  ${NEXT_ACTION:+,{
+                    "type": "context",
+                    "elements": [
+                      {
+                        "type": "mrkdwn",
+                        "text": ":arrow_right: ${NEXT_ACTION}"
+                      }
+                    ]
+                  }}
+                  ,{
                     "type": "actions",
                     "elements": [
                       {
                         "type": "button",
                         "text": { "type": "plain_text", "text": "View PR", "emoji": true },
+                        "style": "primary",
                         "url": "${PR_URL}"
-                      },
-                      {
+                      }
+                      ${COMPARE_URL:+,{
                         "type": "button",
-                        "text": { "type": "plain_text", "text": "View Workflow", "emoji": true },
-                        "url": "${WORKFLOW_RUN_URL}"
+                        "text": { "type": "plain_text", "text": "View Changes", "emoji": true },
+                        "url": "${COMPARE_URL}"
+                      }}
+                      ,{
+                        "type": "button",
+                        "text": { "type": "plain_text", "text": "Docs", "emoji": true },
+                        "url": "${DOCS_URL}"
                       }
                     ]
                   }
@@ -722,6 +802,7 @@ jobs:
 
           # Send to Slack with retry logic
           SUCCESS=false
+          THREAD_TS=""
           for attempt in 1 2 3; do
             echo "[Slack] Attempt ${attempt}/3..."
 
@@ -749,6 +830,20 @@ jobs:
 
           if [ "$SUCCESS" = "false" ]; then
             echo "::error::Failed to send Slack notification after 3 attempts"
+            echo "::endgroup::"
+            exit 0
           fi
 
           echo "::endgroup::"
+
+          # Store thread_ts in PR comment for future notifications to reply in thread
+          if [[ -n "${PR_NUMBER}" && -n "${THREAD_TS}" ]]; then
+            echo "::group::Storing thread_ts for future replies"
+
+            gh pr comment "${PR_NUMBER}" \
+              --repo ${{ github.repository }} \
+              --body "<!-- SLACK_THREAD_TS:${THREAD_TS} -->"
+
+            echo "✅ Stored thread_ts in PR #${PR_NUMBER}"
+            echo "::endgroup::"
+          fi
