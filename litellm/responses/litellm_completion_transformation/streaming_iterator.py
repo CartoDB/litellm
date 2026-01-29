@@ -578,7 +578,7 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         Returns the first event to emit (additional events are queued in pending_function_call_events)
         """
         events_to_emit: List[BaseLiteLLMOpenAIResponseObject] = []
-        encoded_chunk_id = self._encode_chunk_id(chunk.id)
+        _encoded_chunk_id = self._encode_chunk_id(chunk.id)  # noqa: F841
 
         for tool_call in tool_calls:
             # Handle both dict and object formats
@@ -724,18 +724,12 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
             )
 
             # Encode the response ID to match non-streaming behavior
-            encoded_response = ResponsesAPIRequestUtils._update_responses_api_response_id_with_model_id(
+            ResponsesAPIRequestUtils._update_responses_api_response_id_with_model_id(
                 responses_api_response=responses_api_response,
                 custom_llm_provider=self.custom_llm_provider,
                 litellm_metadata=self.litellm_metadata,
             )
 
-            responses_api_response = LiteLLMCompletionResponsesConfig.transform_chat_completion_response_to_responses_api_response(
-                request_input=self.request_input,
-                chat_completion_response=litellm_model_response,
-                responses_api_request=self.responses_api_request,
-            )
-            
             # PATCH: Store session immediately in Redis for streaming responses
             # This ensures the session is available for subsequent requests
             if responses_api_response.id:
