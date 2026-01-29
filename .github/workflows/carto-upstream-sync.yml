@@ -567,12 +567,15 @@ jobs:
       - sync-main-branch
       - check-carto-main-sync
       - create-sync-pr
+    env:
+      SLACK_CHANNEL_LITELLM: "C0A11FKJHDK"  # litellm-fork changelog
+      DOCS_URL: "https://cartodb.getoutline.com/doc/ci-litellm-fork-pMyvwMTU3l"
     steps:
       - name: Send Slack notification
         env:
-          SLACK_CHANNEL: "C09K0M5MP7V" # cartodb-ops
           HAS_NEW_RELEASE: ${{ needs.check-new-release.outputs.has-new-release }}
           NEW_VERSION: ${{ needs.check-new-release.outputs.new-version }}
+          CURRENT_VERSION: ${{ needs.check-new-release.outputs.current-version }}
           NEEDS_SYNC: ${{ needs.check-carto-main-sync.outputs.needs-sync }}
           COMMITS_BEHIND: ${{ needs.check-carto-main-sync.outputs.commits-behind }}
           PR_EXISTS: ${{ needs.check-carto-main-sync.outputs.pr-exists }}
@@ -582,54 +585,67 @@ jobs:
         run: |
           set -eu
 
-          echo "::group::Determining Slack notification"
+          echo "::group::Building Slack notification"
 
-          # Skip if channel not configured
-          if [[ -z "${SLACK_CHANNEL}" ]]; then
-            echo "[Slack] SLACK_CHANNEL not configured, skipping notification"
-            echo "::endgroup::"
-            exit 0
-          fi
-
-          # Determine message based on workflow results
           WORKFLOW_RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
-          # Build message based on what happened
-          # Using bash $'...' syntax to properly interpret \n as newlines
-          CURRENT_VERSION="${{ needs.check-new-release.outputs.current-version }}"
+          # Extract clean version
+          NEW_VERSION_CLEAN=$(echo "${NEW_VERSION}" | sed -E 's/^v//; s/-stable$//')
+          PR_URL="${NEW_PR_URL:-${EXISTING_PR_URL}}"
 
+          # Determine notification type and build Block Kit payload
           case "${NEEDS_SYNC}:${PR_EXISTS}" in
             true:false)
+              # New PR created - Step 2: PR Created
               if [[ -n "${NEW_PR_URL}" ]]; then
+                COLOR="#FFA500"  # Orange - awaiting
+                HEADER=":arrows_counterclockwise: LiteLLM Upstream Sync"
+
                 if [[ "${HAS_NEW_RELEASE}" == "true" ]]; then
-                  # Extract clean version from NEW_VERSION (remove v prefix and -stable suffix)
-                  NEW_VERSION_CLEAN=$(echo "${NEW_VERSION}" | sed -E 's/^v//; s/-stable$//')
-                  MESSAGE=$':white_check_mark: *LiteLLM Upstream Sync*\n\n*Version Upgrade:* `v'"${CURRENT_VERSION}"$'` → `v'"${NEW_VERSION_CLEAN}"$'`\n\n*Action Required:* Review and merge sync PR\n\n• PR: '"${NEW_PR_URL}"$'\n\n_LiteLLM is the unified LLM proxy for 100+ providers used by CARTO for all AI features_'
+                  STATUS_TEXT="*Step 2 of 4: PR Created* :white_check_mark:\n\n• New upstream release detected\n• Version: \`v${CURRENT_VERSION}\` → \`v${NEW_VERSION_CLEAN}\`\n• Draft PR created for review"
                 else
-                  MESSAGE=$':white_check_mark: *LiteLLM Upstream Sync*\n\n*PR Created*\n\n*Action Required:* Review and merge sync PR\n\n• PR: '"${NEW_PR_URL}"$'\n• Commits: '"${COMMITS_BEHIND}"$' behind\n\n_LiteLLM is the unified LLM proxy for 100+ providers used by CARTO for all AI features_'
+                  STATUS_TEXT="*Step 2 of 4: PR Created* :white_check_mark:\n\n• Upstream changes detected\n• ${COMMITS_BEHIND} commits behind upstream\n• Draft PR created for review"
                 fi
+                NEXT_STEPS="*Next Steps*\n• Automated tests will run\n• Review changes when tests pass"
               else
-                MESSAGE=$':x: *LiteLLM Upstream Sync*\n\n*Workflow Error:* PR URL missing\n\n<'"${WORKFLOW_RUN_URL}"$'|View workflow run>'
+                COLOR="#FFA500"  # Orange - warning
+                HEADER=":warning: LiteLLM Upstream Sync: Error"
+                STATUS_TEXT="*Workflow Error*\n\n• :x: PR URL missing\n• Sync may have partially failed"
+                NEXT_STEPS="*Action Required*\n• Check workflow logs\n• Manually verify sync status"
+                PR_URL="${WORKFLOW_RUN_URL}"
               fi
               ;;
             true:true)
-              # Extract clean version from NEW_VERSION
-              NEW_VERSION_CLEAN=$(echo "${NEW_VERSION}" | sed -E 's/^v//; s/-stable$//')
-              MESSAGE=$':information_source: *LiteLLM Upstream Sync*\n\n*PR Already Exists*\n\n*Version:* `v'"${CURRENT_VERSION}"$'` → `v'"${NEW_VERSION_CLEAN}"$'`\n\n• PR: '"${EXISTING_PR_URL}"$'\n\n_LiteLLM is the unified LLM proxy for 100+ providers used by CARTO for all AI features_'
+              # PR already exists
+              COLOR="#36a64f"  # Green - info
+              HEADER=":information_source: LiteLLM Upstream Sync"
+              STATUS_TEXT="*PR Already Exists*\n\n• Version: \`v${CURRENT_VERSION}\` → \`v${NEW_VERSION_CLEAN}\`\n• Existing PR is up to date"
+              NEXT_STEPS="*Next Steps*\n• Review existing PR\n• Merge when ready"
               ;;
             false:*)
-              MESSAGE=$':white_check_mark: *LiteLLM Upstream Sync*\n\n*Status:* Up to date\n\n`carto/main` is fully synced with upstream\n\n_LiteLLM is the unified LLM proxy for 100+ providers used by CARTO for all AI features_'
+              # Already up to date
+              COLOR="#36a64f"  # Green - success
+              HEADER=":white_check_mark: LiteLLM Upstream Sync"
+              STATUS_TEXT="*Status: Up to Date*\n\n• \`carto/main\` is fully synced with upstream\n• No action required"
+              NEXT_STEPS=""
               ;;
             *)
+              # Error state
               if [[ "${SYNC_STATUS}" == "failure" ]]; then
-                MESSAGE=$':x: *LiteLLM Upstream Sync*\n\n*Sync Failed*\n\n*Action Required:* Check workflow logs\n\n<'"${WORKFLOW_RUN_URL}"$'|View workflow run>'
+                COLOR="#FFA500"  # Orange - warning
+                HEADER=":warning: LiteLLM Upstream Sync: Failed"
+                STATUS_TEXT="*Step Failed*\n\n• :x: Sync process failed\n• Check workflow logs for details"
+                NEXT_STEPS="*Action Required*\n• Review error logs\n• Fix issues and re-run"
               else
-                MESSAGE=$':x: *LiteLLM Upstream Sync*\n\n*Workflow Error*\n\n*Action Required:* Check workflow logs\n\n<'"${WORKFLOW_RUN_URL}"$'|View workflow run>'
+                COLOR="#FFA500"
+                HEADER=":warning: LiteLLM Upstream Sync: Error"
+                STATUS_TEXT="*Workflow Error*\n\n• :x: Unexpected state\n• Check workflow logs"
+                NEXT_STEPS="*Action Required*\n• Review workflow run\n• Check for configuration issues"
               fi
+              PR_URL="${WORKFLOW_RUN_URL}"
               ;;
           esac
 
-          echo "[Slack] Sending notification to channel ${SLACK_CHANNEL}"
           echo "::endgroup::"
 
           echo "::group::Posting to Slack"
@@ -641,41 +657,90 @@ jobs:
             exit 0
           fi
 
-          # Retry logic (up to 3 attempts)
+          # Build Block Kit payload
+          # Using heredoc to handle complex JSON with newlines
+          cat > /tmp/slack_payload.json << EOF
+          {
+            "channel": "${SLACK_CHANNEL_LITELLM}",
+            "text": "${HEADER}",
+            "attachments": [
+              {
+                "color": "${COLOR}",
+                "blocks": [
+                  {
+                    "type": "header",
+                    "text": {
+                      "type": "plain_text",
+                      "text": "${HEADER}",
+                      "emoji": true
+                    }
+                  },
+                  {
+                    "type": "section",
+                    "text": {
+                      "type": "mrkdwn",
+                      "text": "${STATUS_TEXT}"
+                    }
+                  },
+                  ${NEXT_STEPS:+"{\"type\": \"section\", \"text\": {\"type\": \"mrkdwn\", \"text\": \"${NEXT_STEPS}\"}},"}
+                  {
+                    "type": "context",
+                    "elements": [
+                      {
+                        "type": "mrkdwn",
+                        "text": ":book: <${DOCS_URL}|LiteLLM Fork CI Docs>"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "actions",
+                    "elements": [
+                      {
+                        "type": "button",
+                        "text": { "type": "plain_text", "text": "View PR", "emoji": true },
+                        "url": "${PR_URL}"
+                      },
+                      {
+                        "type": "button",
+                        "text": { "type": "plain_text", "text": "View Workflow", "emoji": true },
+                        "url": "${WORKFLOW_RUN_URL}"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+          EOF
+
+          # Validate JSON
+          if ! jq empty /tmp/slack_payload.json 2>/dev/null; then
+            echo "::error::Invalid JSON payload"
+            cat /tmp/slack_payload.json
+            exit 1
+          fi
+
+          # Send to Slack with retry logic
           SUCCESS=false
           for attempt in 1 2 3; do
             echo "[Slack] Attempt ${attempt}/3..."
 
-            # Send to Slack API
-            RESPONSE=$(curl -s -w "\n%{http_code}" \
-              -F "text=${MESSAGE}" \
-              -F "channel=${SLACK_CHANNEL}" \
+            RESPONSE=$(curl -s -X POST https://slack.com/api/chat.postMessage \
               -H "Authorization: Bearer ${{ secrets.SLACK_KEY }}" \
-              -X POST https://slack.com/api/chat.postMessage)
+              -H "Content-Type: application/json" \
+              -d @/tmp/slack_payload.json)
 
-            # Extract HTTP code and body
-            HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
-            BODY=$(echo "$RESPONSE" | head -n-1)
-
-            echo "[Slack] HTTP ${HTTP_CODE}"
-            echo "[Slack] Response: ${BODY}"
-
-            # Check if successful
-            if [ "$HTTP_CODE" = "200" ]; then
-              # Check Slack API response
-              if echo "$BODY" | grep -q '"ok":true'; then
-                echo "✅ [Slack] Notification sent successfully"
-                SUCCESS=true
-                break
-              else
-                ERROR=$(echo "$BODY" | grep -o '"error":"[^"]*"' || echo "unknown error")
-                echo "⚠️ [Slack] Slack API error: ${ERROR}"
-              fi
+            if echo "$RESPONSE" | jq -e '.ok == true' > /dev/null 2>&1; then
+              THREAD_TS=$(echo "$RESPONSE" | jq -r '.ts')
+              echo "thread_ts=${THREAD_TS}" >> $GITHUB_OUTPUT
+              echo "✅ [Slack] Notification sent (ts: ${THREAD_TS})"
+              SUCCESS=true
+              break
             else
-              echo "⚠️ [Slack] HTTP error: ${HTTP_CODE}"
+              ERROR=$(echo "$RESPONSE" | jq -r '.error // "unknown"')
+              echo "⚠️ [Slack] API error: ${ERROR}"
             fi
 
-            # Wait before retry
             if [ $attempt -lt 3 ]; then
               echo "[Slack] Retrying in 5 seconds..."
               sleep 5
@@ -684,7 +749,6 @@ jobs:
 
           if [ "$SUCCESS" = "false" ]; then
             echo "::error::Failed to send Slack notification after 3 attempts"
-            echo "::notice::Check SLACK_KEY secret and channel permissions"
           fi
 
           echo "::endgroup::"

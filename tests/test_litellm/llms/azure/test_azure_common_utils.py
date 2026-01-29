@@ -1536,3 +1536,169 @@ def test_is_azure_v1_api_version(api_version, expected):
     """
     result = BaseAzureLLM._is_azure_v1_api_version(api_version=api_version)
     assert result == expected
+
+
+# Tests for select_azure_base_url_or_endpoint URL sanitization
+from litellm.llms.azure.common_utils import select_azure_base_url_or_endpoint
+
+
+class TestSelectAzureBaseUrlOrEndpoint:
+    """Tests for select_azure_base_url_or_endpoint URL sanitization."""
+
+    def test_strips_chat_completions_suffix(self):
+        """
+        Test that /chat/completions is stripped from deployment URLs.
+
+        When api_base is configured as:
+        https://xxx.openai.azure.com/openai/deployments/gpt-4o/chat/completions
+
+        The Azure SDK will append /chat/completions again, causing:
+        https://xxx.openai.azure.com/openai/deployments/gpt-4o/chat/completions/chat/completions
+
+        This results in a 404 error from Azure.
+        """
+        azure_client_params = {
+            "azure_endpoint": "https://ai-azure-product-dev.openai.azure.com/openai/deployments/gpt-4o/chat/completions"
+        }
+        result = select_azure_base_url_or_endpoint(azure_client_params)
+
+        expected_base_url = (
+            "https://ai-azure-product-dev.openai.azure.com/openai/deployments/gpt-4o"
+        )
+        assert "base_url" in result, "Should have base_url when deployment path detected"
+        assert "azure_endpoint" not in result, "Should remove azure_endpoint"
+        assert (
+            result["base_url"] == expected_base_url
+        ), f"Expected {expected_base_url}, got {result['base_url']}"
+
+    def test_strips_completions_suffix(self):
+        """Test that /completions suffix is stripped for text completion endpoints."""
+        azure_client_params = {
+            "azure_endpoint": "https://ai-azure-product-dev.openai.azure.com/openai/deployments/gpt-4o/completions"
+        }
+        result = select_azure_base_url_or_endpoint(azure_client_params)
+
+        expected_base_url = (
+            "https://ai-azure-product-dev.openai.azure.com/openai/deployments/gpt-4o"
+        )
+        assert result["base_url"] == expected_base_url
+
+    def test_strips_embeddings_suffix(self):
+        """Test that /embeddings suffix is stripped for embedding endpoints."""
+        azure_client_params = {
+            "azure_endpoint": "https://ai-azure-product-dev.openai.azure.com/openai/deployments/text-embedding-ada-002/embeddings"
+        }
+        result = select_azure_base_url_or_endpoint(azure_client_params)
+
+        expected_base_url = "https://ai-azure-product-dev.openai.azure.com/openai/deployments/text-embedding-ada-002"
+        assert result["base_url"] == expected_base_url
+
+    def test_strips_audio_speech_suffix(self):
+        """Test that /audio/speech suffix is stripped for TTS endpoints."""
+        azure_client_params = {
+            "azure_endpoint": "https://ai-azure-product-dev.openai.azure.com/openai/deployments/tts-1/audio/speech"
+        }
+        result = select_azure_base_url_or_endpoint(azure_client_params)
+
+        expected_base_url = (
+            "https://ai-azure-product-dev.openai.azure.com/openai/deployments/tts-1"
+        )
+        assert result["base_url"] == expected_base_url
+
+    def test_strips_audio_transcriptions_suffix(self):
+        """Test that /audio/transcriptions suffix is stripped for transcription endpoints."""
+        azure_client_params = {
+            "azure_endpoint": "https://ai-azure-product-dev.openai.azure.com/openai/deployments/whisper-1/audio/transcriptions"
+        }
+        result = select_azure_base_url_or_endpoint(azure_client_params)
+
+        expected_base_url = (
+            "https://ai-azure-product-dev.openai.azure.com/openai/deployments/whisper-1"
+        )
+        assert result["base_url"] == expected_base_url
+
+    def test_strips_images_generations_suffix(self):
+        """Test that /images/generations suffix is stripped for image generation endpoints."""
+        azure_client_params = {
+            "azure_endpoint": "https://ai-azure-product-dev.openai.azure.com/openai/deployments/dall-e-3/images/generations"
+        }
+        result = select_azure_base_url_or_endpoint(azure_client_params)
+
+        expected_base_url = (
+            "https://ai-azure-product-dev.openai.azure.com/openai/deployments/dall-e-3"
+        )
+        assert result["base_url"] == expected_base_url
+
+    def test_preserves_deployment_path_without_suffix(self):
+        """Test that deployment paths without operation suffixes are preserved."""
+        azure_client_params = {
+            "azure_endpoint": "https://ai-azure-product-dev.openai.azure.com/openai/deployments/gpt-4o"
+        }
+        result = select_azure_base_url_or_endpoint(azure_client_params)
+
+        expected_base_url = (
+            "https://ai-azure-product-dev.openai.azure.com/openai/deployments/gpt-4o"
+        )
+        assert result["base_url"] == expected_base_url
+
+    def test_no_deployment_path_keeps_azure_endpoint(self):
+        """Test that URLs without deployment paths keep azure_endpoint."""
+        azure_client_params = {
+            "azure_endpoint": "https://ai-azure-product-dev.openai.azure.com"
+        }
+        result = select_azure_base_url_or_endpoint(azure_client_params)
+
+        # Should keep azure_endpoint since there's no deployment path
+        assert "azure_endpoint" in result
+        assert "base_url" not in result
+        assert (
+            result["azure_endpoint"]
+            == "https://ai-azure-product-dev.openai.azure.com"
+        )
+
+    def test_handles_trailing_slash(self):
+        """Test that trailing slashes are handled correctly."""
+        azure_client_params = {
+            "azure_endpoint": "https://ai-azure-product-dev.openai.azure.com/openai/deployments/gpt-4o/chat/completions/"
+        }
+        result = select_azure_base_url_or_endpoint(azure_client_params)
+
+        expected_base_url = (
+            "https://ai-azure-product-dev.openai.azure.com/openai/deployments/gpt-4o"
+        )
+        assert result["base_url"] == expected_base_url
+
+    def test_preserves_other_params(self):
+        """Test that other parameters in the dict are preserved."""
+        azure_client_params = {
+            "azure_endpoint": "https://ai-azure-product-dev.openai.azure.com/openai/deployments/gpt-4o/chat/completions",
+            "api_key": "test-key",
+            "api_version": "2023-05-15",
+            "azure_ad_token": "test-token",
+        }
+        result = select_azure_base_url_or_endpoint(azure_client_params)
+
+        assert result["api_key"] == "test-key"
+        assert result["api_version"] == "2023-05-15"
+        assert result["azure_ad_token"] == "test-token"
+        assert "base_url" in result
+        assert "azure_endpoint" not in result
+
+    def test_none_azure_endpoint(self):
+        """Test that None azure_endpoint is handled gracefully."""
+        azure_client_params = {"azure_endpoint": None, "api_key": "test-key"}
+        result = select_azure_base_url_or_endpoint(azure_client_params)
+
+        # Should return params unchanged
+        assert result["azure_endpoint"] is None
+        assert result["api_key"] == "test-key"
+        assert "base_url" not in result
+
+    def test_missing_azure_endpoint(self):
+        """Test that missing azure_endpoint is handled gracefully."""
+        azure_client_params = {"api_key": "test-key"}
+        result = select_azure_base_url_or_endpoint(azure_client_params)
+
+        # Should return params unchanged
+        assert result["api_key"] == "test-key"
+        assert "base_url" not in result
