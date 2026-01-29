@@ -216,6 +216,11 @@ class PerformanceConfigBlock(TypedDict):
     latency: Literal["optimized", "throughput"]
 
 
+class ServiceTierBlock(TypedDict):
+    """Service tier configuration for Bedrock Converse API."""
+    type: Literal["priority", "default", "flex"]
+
+
 class CommonRequestObject(
     TypedDict, total=False
 ):  # common request object across sync + async flows

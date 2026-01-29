@@ -9,6 +9,21 @@ from litellm.secret_managers.main import get_secret, get_secret_str
 from ..types.router import LiteLLM_Params
 
 
+def _is_azure_claude_model(model: str) -> bool:
+    """
+    Check if a model is an Azure-hosted Claude model.
+
+    Args:
+        model: The model name to check
+
+    Returns:
+        True if the model name contains 'claude' (case-insensitive)
+    """
+    if not model:
+        return False
+    return "claude" in model.lower()
+
+
 def _is_non_openai_azure_model(model: str) -> bool:
     try:
         model_name = model.split("/", 1)[1]

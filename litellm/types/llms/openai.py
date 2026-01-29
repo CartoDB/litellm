@@ -378,6 +378,31 @@ class FileContentRequest(TypedDict, total=False):
 
 
 # OpenAI Batches Types
+class OpenAIErrorBody(TypedDict, total=False):
+    """
+    OpenAI error body structure for batch results
+    """
+    error: Dict[str, str]  # {"message": str, "type": str}
+
+
+class OpenAIBatchResultResponse(TypedDict, total=False):
+    """
+    Response part of OpenAI batch result
+    """
+    status_code: int
+    request_id: str
+    body: Any
+
+
+class OpenAIBatchResult(TypedDict, total=False):
+    """
+    Individual result item in OpenAI batch response
+    """
+    custom_id: str
+    response: OpenAIBatchResultResponse
+    error: Optional[OpenAIErrorBody]
+
+
 class CreateBatchRequest(TypedDict, total=False):
     """
     CreateBatchRequest
