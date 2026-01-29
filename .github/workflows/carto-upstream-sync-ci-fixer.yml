@@ -28,6 +28,11 @@ permissions:
   pull-requests: write
   actions: read
 
+# Prevent multiple CI fixers running on the same PR simultaneously
+concurrency:
+  group: upstream-sync-ci-fixer-${{ github.event.workflow_run.head_branch || github.event.inputs.pr-number }}
+  cancel-in-progress: false
+
 jobs:
   check-ci-status:
     name: Check CI Status
@@ -225,6 +230,26 @@ jobs:
           echo '${{ secrets.CI_RESOURCES_SERVICE_ACCOUNT }}' > /tmp/gcp-sa.json
           echo "GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-sa.json" >> $GITHUB_ENV
 
+      - name: Fetch PR comments for context
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          echo "::group::Fetching PR comments for previous fix context"
+
+          PR_NUMBER="${{ needs.check-ci-status.outputs.pr-number }}"
+
+          # Fetch all PR comments (includes previous fix attempts, human feedback)
+          gh pr view ${PR_NUMBER} \
+            --repo ${{ github.repository }} \
+            --json comments \
+            --jq '.comments[] | "---\n**\(.author.login)** at \(.createdAt):\n\(.body)\n"' \
+            > /tmp/pr_comments.md 2>/dev/null || echo "No comments found" > /tmp/pr_comments.md
+
+          COMMENT_COUNT=$(gh pr view ${PR_NUMBER} --repo ${{ github.repository }} --json comments --jq '.comments | length' 2>/dev/null || echo "0")
+          echo "[CI Fixer] Found ${COMMENT_COUNT} PR comments for context"
+
+          echo "::endgroup::"
+
       - name: Run Claude Code to fix failures
         id: claude-fix
         uses: anthropics/claude-code-action@v1
@@ -242,6 +267,20 @@ jobs:
             - Branch: `${{ needs.check-ci-status.outputs.branch-name }}`
             - This PR resolves conflicts from an upstream sync
             - CI checks have failed and need to be fixed
+
+            ## Step 0: Check Previous Fix Attempts
+
+            **IMPORTANT:** Read PR comments first for context on previous fix attempts:
+            ```bash
+            cat /tmp/pr_comments.md
+            ```
+
+            This shows:
+            - Previous Claude fix attempts and what was tried
+            - Human feedback or guidance
+            - Error patterns that have already been addressed
+
+            **If a previous fix attempt exists, learn from it - don't repeat the same approach if it failed.**
 
             ---
 

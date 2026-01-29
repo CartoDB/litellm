@@ -566,6 +566,26 @@ jobs:
 
           echo "::endgroup::"
 
+      - name: Fetch PR comments for context
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          echo "::group::Fetching PR comments for previous resolution context"
+
+          PR_NUMBER="${{ github.event.pull_request.number || github.event.inputs.pr-number }}"
+
+          # Fetch all PR comments (includes previous resolution attempts, human feedback)
+          gh pr view ${PR_NUMBER} \
+            --repo ${{ github.repository }} \
+            --json comments \
+            --jq '.comments[] | "---\n**\(.author.login)** at \(.createdAt):\n\(.body)\n"' \
+            > /tmp/pr_comments.md 2>/dev/null || echo "No comments found" > /tmp/pr_comments.md
+
+          COMMENT_COUNT=$(gh pr view ${PR_NUMBER} --repo ${{ github.repository }} --json comments --jq '.comments | length' 2>/dev/null || echo "0")
+          echo "[Resolver] Found ${COMMENT_COUNT} PR comments for context"
+
+          echo "::endgroup::"
+
       - name: Run Claude Code for conflict resolution (FILE EDITS ONLY)
         id: claude-run
         uses: anthropics/claude-code-action@v1
@@ -615,6 +635,20 @@ jobs:
             ```
             ${{ steps.start-merge.outputs.conflicts }}
             ```
+
+            ## Step 0: Check Previous Resolution Attempts
+
+            **IMPORTANT:** Read PR comments first for context on previous attempts:
+            ```bash
+            cat /tmp/pr_comments.md
+            ```
+
+            This shows:
+            - Previous Claude resolution attempts and what was tried
+            - Human feedback or guidance
+            - Issues that have already been addressed
+
+            **If a previous resolution attempt exists, learn from it - don't repeat failed approaches.**
 
             ## Step 1: Read CARTO Guidelines
 
