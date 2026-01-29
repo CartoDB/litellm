@@ -3862,6 +3862,14 @@ class DailyTagSpendTransaction(BaseDailySpendTransaction):
     tag: str
 
 
+class DailyOrganizationSpendTransaction(BaseDailySpendTransaction):
+    organization_id: str
+
+
+class DailyEndUserSpendTransaction(BaseDailySpendTransaction):
+    end_user_id: str
+
+
 class DailyAgentSpendTransaction(BaseDailySpendTransaction):
     agent_id: str
 
