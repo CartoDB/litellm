@@ -39,9 +39,10 @@ on:
         default: false
 
 # Prevent duplicate runs on the same PR
+# IMPORTANT: Uses shared concurrency group with CI Fixer to prevent both running simultaneously
 concurrency:
-  group: upstream-sync-resolver-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: false
+  group: upstream-sync-${{ github.event.pull_request.number || github.event.inputs.pr-number || github.run_id }}
+  cancel-in-progress: false  # Wait for running workflow to finish (don't cancel)
 
 permissions:
   contents: write      
