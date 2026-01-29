@@ -80,7 +80,8 @@ jobs:
           }
 
           # Check each PR for conflicts
-          for PR in $(echo "${PRS_JSON}" | jq -c '.[]'); do
+          # Use while read with process substitution to handle JSON with spaces in titles
+          while IFS= read -r PR; do
             PR_NUMBER=$(echo "${PR}" | jq -r '.number')
             PR_TITLE=$(echo "${PR}" | jq -r '.title')
             BRANCH=$(echo "${PR}" | jq -r '.headRefName')
@@ -145,7 +146,7 @@ jobs:
             else
               echo "[Conflict Detector] PR #${PR_NUMBER} is clean (status: ${MERGEABLE})"
             fi
-          done
+          done < <(echo "${PRS_JSON}" | jq -c '.[]')
 
           echo ""
           echo "conflicting-prs=${CONFLICTING_PRS}" >> $GITHUB_OUTPUT
