@@ -1,4 +1,5 @@
 name: CARTO - Deploy Docker Image (CI)
+
 on:
   workflow_dispatch:
     inputs:
@@ -27,6 +28,11 @@ on:
       - "Dockerfile"
       - "requirements.txt"
       - ".github/workflows/ghcr_carto_deploy.yaml"
+
+# Cancel previous runs on the same branch/PR
+concurrency:
+  group: docker-build-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 env:
   REGISTRY: ghcr.io
