@@ -35,9 +35,6 @@ DEFAULT_MAX_RECURSE_DEPTH_SENSITIVE_DATA_MASKER = int(
 DEFAULT_FAILURE_THRESHOLD_PERCENT = float(
     os.getenv("DEFAULT_FAILURE_THRESHOLD_PERCENT", 0.5)
 )  # default cooldown a deployment if 50% of requests fail in a given minute
-DEFAULT_FAILURE_THRESHOLD_MINIMUM_REQUESTS = int(
-    os.getenv("DEFAULT_FAILURE_THRESHOLD_MINIMUM_REQUESTS", 10)
-)  # minimum number of requests before applying failure percentage threshold for cooldown
 DEFAULT_MAX_TOKENS = int(os.getenv("DEFAULT_MAX_TOKENS", 4096))
 DEFAULT_ALLOWED_FAILS = int(os.getenv("DEFAULT_ALLOWED_FAILS", 3))
 DEFAULT_REDIS_SYNC_INTERVAL = int(os.getenv("DEFAULT_REDIS_SYNC_INTERVAL", 1))
@@ -107,6 +104,9 @@ RUNWAYML_DEFAULT_API_VERSION = str(
 RUNWAYML_POLLING_TIMEOUT = int(
     os.getenv("RUNWAYML_POLLING_TIMEOUT", 600)
 )  # 10 minutes default for image generation
+
+########## Header constants ##################################################################
+PASS_THROUGH_HEADER_PREFIX = "x-pass-"  # Headers prefixed with this are passed through to providers
 
 ########## Networking constants ##############################################################
 _DEFAULT_TTL_FOR_HTTPX_CLIENTS = 3600  # 1 hour, re-use the same httpx client for 1 hour
