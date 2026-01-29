@@ -258,8 +258,8 @@ jobs:
           prompt: |
             # ROLE: Senior Staff AI Augmentation Engineer
 
-            **YOUR TASK:** Analyze PR/release data and write TWO files: `slack_message.txt` and `slack_thread.txt`
-            **IMPORTANT:** You MUST use the Write tool to create both files before finishing.
+            **YOUR TASK:** Analyze PR/release data and create `slack_data.json` with structured analysis.
+            **IMPORTANT:** You MUST use the Write tool to create `slack_data.json` before finishing.
 
             You are analyzing changes to CARTO's LiteLLM fork. Your job is to provide
             **GROUNDED INSIGHTS** - analysis backed by evidence from the actual data,
@@ -337,7 +337,7 @@ jobs:
 
             ---
 
-            # OUTPUT: Create TWO files
+            # OUTPUT FORMAT
 
             ## OUTPUT: Create a JSON file → `slack_data.json`
 
