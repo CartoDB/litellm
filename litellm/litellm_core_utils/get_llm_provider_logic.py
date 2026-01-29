@@ -37,6 +37,21 @@ def _is_non_openai_azure_model(model: str) -> bool:
     return False
 
 
+def _is_azure_claude_model(model: str) -> bool:
+    """
+    Check if a model name is a Claude model (for Azure AI routing).
+
+    Args:
+        model: The model name to check (e.g., "claude-sonnet-4-5", "claude-3-opus")
+
+    Returns:
+        True if the model is a Claude model, False otherwise
+    """
+    if not model:
+        return False
+    return model.lower().startswith("claude")
+
+
 def handle_cohere_chat_model_custom_llm_provider(
     model: str, custom_llm_provider: Optional[str] = None
 ) -> Tuple[str, Optional[str]]:

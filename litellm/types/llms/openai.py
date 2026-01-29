@@ -1833,6 +1833,30 @@ class OpenAIChatCompletionResponse(TypedDict, total=False):
     service_tier: str
 
 
+class OpenAIErrorDetails(TypedDict, total=False):
+    message: str
+    type: str
+    code: str
+
+
+class OpenAIErrorBody(TypedDict):
+    """OpenAI error response body format."""
+    error: OpenAIErrorDetails
+
+
+class OpenAIBatchResultResponse(TypedDict, total=False):
+    """Response part of an OpenAI batch result."""
+    status_code: int
+    request_id: str
+    body: Any  # Can be OpenAIChatCompletionResponse or OpenAIErrorBody
+
+
+class OpenAIBatchResult(TypedDict):
+    """OpenAI batch result format for each line in the results file."""
+    custom_id: str
+    response: OpenAIBatchResultResponse
+
+
 OpenAIChatCompletionFinishReason = Literal[
     "stop", "content_filter", "function_call", "tool_calls", "length"
 ]

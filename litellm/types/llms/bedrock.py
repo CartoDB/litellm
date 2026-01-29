@@ -10,6 +10,11 @@ class CachePointBlock(TypedDict, total=False):
     type: Literal["default"]
 
 
+class ServiceTierBlock(TypedDict):
+    """Bedrock Converse API serviceTier block."""
+    type: Literal["priority", "default", "flex"]
+
+
 class SystemContentBlock(TypedDict, total=False):
     text: str
     cachePoint: CachePointBlock
