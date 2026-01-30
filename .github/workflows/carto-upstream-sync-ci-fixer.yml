@@ -303,176 +303,155 @@ jobs:
           show_full_output: true
           claude_args: "--model claude-opus-4-5@20251101 --max-turns 200 --allowedTools Read,Write,Edit,Bash,Grep,Glob"
           prompt: |
-            # CI Failure Auto-Fix - Iterative Resolution
+            # CI Failure Auto-Fix Session
 
-            You are an automated CI fixer for PR #${{ needs.check-ci-status.outputs.pr-number }}.
-            Branch: `${{ needs.check-ci-status.outputs.branch-name }}`
-
-            **YOUR MISSION:** Fix ALL failing CI checks (Mock Tests AND Docker Build) until they pass.
-            This workflow runs iteratively - if your fix doesn't work, you'll run again with updated logs.
+            **PR:** #${{ needs.check-ci-status.outputs.pr-number }}
+            **Branch:** `${{ needs.check-ci-status.outputs.branch-name }}`
 
             ---
 
-            ## ⚠️ PRIORITY: MAKE CI PASS
+            ## 🚨 IMPORTANT: HOW THIS WORKS
 
-            **The #1 goal is to make CI pass.** You are authorized to:
+            **DO NOT wait for CI to run.** Your job is simple:
 
-            1. **Add fixes or modify CARTO customizations** if they break CI
-            2. **Modify any file** necessary to fix the errors
-            4. **Delete or skip tests** that can't be fixed easily
+            1. **READ** the CI failure logs (already extracted for you)
+            2. **UNDERSTAND** the error by reading the relevant code
+            3. **PLAN** a fix
+            4. **IMPLEMENT** the fix
+            5. **PUSH** and **END SESSION**
 
-            **Prefer these approaches in order:**
-            1. Fix the actual bug (best)
-            2. Find a middle ground fix between CARTO and upstream if CARTO change broke it
-            2. Restore upstream version if CARTO change broke it only if not other alternative.
-            3. Skip/disable failing tests as last resort
+            **FEEDBACK LOOP:** After you push, CI will run automatically. If it fails again,
+            this workflow triggers a NEW session with the NEW error logs. You don't wait -
+            each session is one fix attempt.
 
             ---
 
-            ## PHASE 1: READ THE FULL CI ERROR LOGS (DO THIS FIRST!)
+            ## 🎯 PRIORITIES (in order)
 
-            **The COMPLETE CI error logs have been pre-extracted. Read them NOW:**
+            1. **FIX CI** - The main goal is making CI pass
+            2. **PRESERVE BOTH** - Try to keep both CARTO customizations AND upstream code working together
+            3. **MERGE INTELLIGENTLY** - If there's a conflict between CARTO and upstream, find a solution that keeps both
+            4. **LAST RESORT** - Only revert CARTO changes or skip tests if no other option exists
+
+            ---
+
+            ## STEP 1: READ THE CI FAILURE LOGS
+
+            The CI logs have been pre-extracted. **Read them completely:**
 
             ```bash
-            echo "=========================================="
-            echo "=== DOCKER BUILD FULL LOG ==="
-            echo "=========================================="
+            echo "============================================"
+            echo "=== STEP 1: READING CI FAILURE LOGS ==="
+            echo "============================================"
+
+            echo ""
+            echo "--- DOCKER BUILD LOG (TypeScript/UI errors) ---"
             cat /tmp/docker_full_log.txt
 
-            echo "=========================================="
-            echo "=== MOCK TESTS FULL LOG ==="
-            echo "=========================================="
+            echo ""
+            echo "--- MOCK TESTS LOG (Python errors) ---"
             cat /tmp/tests_full_log.txt
             ```
 
-            These files contain the COMPLETE output from failed CI jobs:
-            - `/tmp/docker_full_log.txt` - Full Docker build log (TypeScript/Next.js errors)
-            - `/tmp/tests_full_log.txt` - Full test run log (Python import/assertion errors)
+            **IMPORTANT:** Read these logs carefully. Extract:
+            - The exact error message
+            - The file path and line number
+            - The context around the error
 
-            **READ BOTH FILES COMPLETELY. The errors you need to fix are in these logs.**
+            ---
 
-            ### 1.2 Review previous fix attempts on this branch
+            ## STEP 2: READ THE FAILING CODE
+
+            After identifying the error location from the logs, **read the actual source file:**
 
             ```bash
-            echo "=== RECENT COMMITS (previous fix attempts) ==="
-            git log --oneline -15
+            # Example: If error is in ui/litellm-dashboard/src/components/Foo.tsx:42
+            cat ui/litellm-dashboard/src/components/Foo.tsx
 
-            echo "=== FILES CHANGED IN LAST 5 COMMITS ==="
-            git diff --name-only HEAD~5..HEAD 2>/dev/null || git diff --name-only HEAD~3..HEAD
+            # Example: If error is ImportError for 'some_function' in litellm/proxy/utils.py
+            cat litellm/proxy/utils.py
             ```
 
-            ### 1.3 Check PR status
+            **Understand the code context before making changes.**
+
+            ---
+
+            ## STEP 3: CHECK WHAT UPSTREAM HAS (for merge issues)
+
+            If the error is due to missing code or merge conflicts:
 
             ```bash
-            echo "=== PR STATUS ==="
-            gh pr checks ${{ needs.check-ci-status.outputs.pr-number }} --repo ${{ github.repository }}
+            # See what upstream has in that file
+            git fetch origin main
+            git show origin/main:path/to/file.py | head -100
+
+            # Compare with current branch
+            git diff origin/main -- path/to/file.py | head -100
             ```
 
             ---
 
-            ## PHASE 2: IDENTIFY ROOT CAUSE
+            ## STEP 4: PLAN YOUR FIX
 
-            Based on the errors from Phase 1, categorize the failure:
+            Before coding, decide on the approach:
 
-            | Error Pattern | Root Cause | Fix Location |
-            |--------------|------------|--------------|
-            | `Type error: Expected X arguments` | TypeScript function signature mismatch | `ui/litellm-dashboard/src/` |
-            | `Cannot find module` | Missing import in UI | `ui/litellm-dashboard/src/` |
-            | `Failed to compile` | Next.js build error | `ui/litellm-dashboard/src/` |
-            | `ImportError` / `ModuleNotFoundError` | Python import missing | `litellm/` or `tests/` |
-            | `SyntaxError` | Conflict markers or bad merge | Check for `<<<<<<<` markers |
-            | `FAILED tests/...` | Test assertion failure | `tests/` - fix test expectations |
-            | `AssertionError` | Test expecting wrong value | Update test to match CARTO behavior |
+            | Error Type | Best Fix Approach |
+            |------------|-------------------|
+            | Missing function/class | Restore from upstream OR add the missing code |
+            | TypeScript type mismatch | Update call site to match function signature |
+            | Import error | Add the missing import statement |
+            | Merge conflict markers | Remove markers, merge both versions intelligently |
+            | Test assertion failure | Update test OR fix code to match expected behavior |
 
             ---
 
-            ## PHASE 3: FIX THE ISSUE
+            ## STEP 5: IMPLEMENT THE FIX
 
-            ### For TypeScript/UI Errors (Docker Build)
+            Make the necessary code changes using Edit/Write tools.
 
-            **UI code location:** `ui/litellm-dashboard/src/`
-
-            1. **Find the exact error file and line** from Docker logs
-            2. **Read the file** to understand the context
-            3. **Find the function definition** to understand expected signature:
-               ```bash
-               grep -rn "export.*FUNCTION_NAME\|const FUNCTION_NAME\|function FUNCTION_NAME" ui/litellm-dashboard/src/
-               ```
-            4. **Fix the call site** to match the function signature
-            5. **Check for similar issues** in the same file
-
-            ### For Python Import/Module Errors (Mock Tests)
-
-            1. **Identify the missing import** from logs
-            2. **Find where the function/class should be defined:**
-               ```bash
-               grep -rn "def FUNCTION_NAME\|class CLASS_NAME" litellm/
-               ```
-            3. **If missing from a file, check upstream version:**
-               ```bash
-               git show origin/main:path/to/file.py | grep -A 20 "def FUNCTION_NAME"
-               ```
-            4. **Restore the missing code from upstream** if it was accidentally removed
-            5. **Or add the missing import** to the file that needs it
-
-            ### For Python Test Assertion Errors
-
-            1. **Read the failing test** to understand what it expects
-            2. **Fix the code** to match what the test expects, OR
-            3. **Update the test** to match new behavior, OR
-            4. **Skip the test** as last resort:
-               ```python
-               @pytest.mark.skip(reason="Skipped during upstream sync - needs review")
-               ```
-
-            ### For Conflict Markers
-
-            ```bash
-            # Find any remaining conflict markers
-            grep -rn "^<<<<<<< \|^=======\|^>>>>>>>" --include="*.py" --include="*.tsx" --include="*.ts" litellm/ tests/ ui/ 2>/dev/null
-            ```
-
-            ### For Import Errors
-
-            ```bash
-            # Check if the import exists elsewhere
-            grep -rn "from.*import.*MISSING_THING\|import.*MISSING_THING" litellm/
-            ```
+            **For TypeScript errors:** UI code is in `ui/litellm-dashboard/src/`
+            **For Python errors:** Main code in `litellm/`, tests in `tests/`
 
             ---
 
-            ## PHASE 4: VERIFY & PUSH
+            ## STEP 6: COMMIT AND PUSH (then END SESSION)
 
-            ### 4.1 Verify Python fixes (if you made Python changes)
-
-            ```bash
-            # Quick syntax check
-            python -m py_compile litellm/**/*.py 2>&1 | head -20 || true
-
-            # Check for conflict markers
-            grep -r "^<<<<<<< " --include="*.py" litellm/ tests/ && echo "CONFLICT MARKERS FOUND!" || echo "No conflict markers"
-            ```
-
-            ### 4.2 Commit and push your fix
+            **IMPORTANT:** All CI fixes must be ONE commit. Check if previous commit was a CI fix:
 
             ```bash
             git add -A
             git status
 
-            git commit -m "fix(ci): [SPECIFIC FIX DESCRIPTION]
+            # Check if last commit was a CI fix (to amend it)
+            LAST_COMMIT_MSG=$(git log -1 --pretty=%s)
+            LAST_COMMIT_AUTHOR=$(git log -1 --pretty=%an)
 
-            Error fixed: [EXACT ERROR MESSAGE]
-            File: [FILE PATH]
-            Change: [WHAT YOU CHANGED]
+            if [[ "$LAST_COMMIT_MSG" == fix\(ci\):* ]] && [[ "$LAST_COMMIT_AUTHOR" == "claude[bot]" || "$LAST_COMMIT_AUTHOR" == "Cartofante" ]]; then
+              echo "Amending previous CI fix commit..."
+              git commit --amend -m "fix(ci): resolve CI failures from upstream sync
 
-            Previous attempts: [X] commits already tried
-            This fix addresses: [ROOT CAUSE]
+            This commit contains all automated CI fixes.
+            Latest fix: [BRIEF DESCRIPTION OF THIS FIX]
             "
+              git push --force-with-lease origin ${{ needs.check-ci-status.outputs.branch-name }}
+            else
+              echo "Creating new CI fix commit..."
+              git commit -m "fix(ci): resolve CI failures from upstream sync
 
-            git push origin ${{ needs.check-ci-status.outputs.branch-name }}
+            Error: [EXACT ERROR FROM LOGS]
+            File: [FILE PATH]
+            Fix: [WHAT YOU CHANGED AND WHY]
+            "
+              git push origin ${{ needs.check-ci-status.outputs.branch-name }}
+            fi
             ```
 
-            ### 4.3 Comment on PR with details
+            **After pushing, your session is DONE.** CI will run, and if it fails again,
+            a new session will start with the new error logs. All fixes will be amended into ONE commit.
+
+            ---
+
+            ## STEP 7: COMMENT ON PR
 
             ```bash
             gh pr comment ${{ needs.check-ci-status.outputs.pr-number }} --repo ${{ github.repository }} --body "## 🔧 CI Fix Applied
@@ -543,13 +522,18 @@ jobs:
 
             ---
 
-            ## NOW START!
+            ## 🚀 NOW START!
 
-            1. Run Phase 1 commands to get actual errors
-            2. Identify the root cause
-            3. Apply the fix
-            4. Commit and push
-            5. The CI will re-run - if it fails again, this workflow triggers again with new logs
+            **Execute these steps in order:**
+
+            1. **READ LOGS** - `cat /tmp/docker_full_log.txt` and `cat /tmp/tests_full_log.txt`
+            2. **READ CODE** - Read the files mentioned in the error
+            3. **UNDERSTAND** - What's the root cause?
+            4. **FIX** - Make the code change
+            5. **PUSH** - Commit and push
+            6. **DONE** - End session. CI will run. If it fails, new session starts.
+
+            **Remember:** You are NOT waiting for CI. Push your fix and end the session.
         env:
           ANTHROPIC_VERTEX_PROJECT_ID: carto-ci-resources
           CLOUD_ML_REGION: global
