@@ -586,12 +586,7 @@ export function AllKeysTable({
             setKeys((keys) => keys.filter((key) => key.token !== selectedKeyId));
             if (refresh) refresh(); // Minimal fix: refresh the full key list after a delete
           }}
-          accessToken={accessToken}
-          userID={userID}
-          userRole={userRole}
           teams={allTeams}
-          premiumUser={premiumUser}
-          setAccessToken={setAccessToken}
         />
       ) : (
         <div className="border-b py-4 flex-1 overflow-hidden">
