@@ -34,7 +34,7 @@ jobs:
       - name: Check PR readiness and add label
         id: check-and-label
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
         run: |
           set -eu
 
@@ -141,7 +141,7 @@ jobs:
       - name: Notify Slack - Tests Passed
         if: steps.check-and-label.outputs.pr-ready == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
           PR_NUMBER: ${{ steps.check-and-label.outputs.pr-number }}
           PR_URL: ${{ steps.check-and-label.outputs.pr-url }}
           VERSION: ${{ steps.check-and-label.outputs.version }}
