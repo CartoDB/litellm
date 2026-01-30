@@ -196,19 +196,15 @@ jobs:
 
           if [ -n "$DOCKER_RUN" ] && [ "$DOCKER_RUN" != "null" ]; then
             echo "[CI Fixer] Docker run ID: $DOCKER_RUN"
-            echo "Run ID: $DOCKER_RUN" >> /tmp/all_errors.txt
-            echo "" >> /tmp/all_errors.txt
-            # Get FULL failed job log - save to separate file for Claude to read
+            # Get FULL failed job log
             gh run view $DOCKER_RUN --repo ${{ github.repository }} --log-failed 2>&1 > /tmp/docker_full_log.txt
-            # Include last 500 lines in summary (captures build errors fully)
-            echo "Last 500 lines of Docker build log:" >> /tmp/all_errors.txt
-            echo '```' >> /tmp/all_errors.txt
-            tail -500 /tmp/docker_full_log.txt >> /tmp/all_errors.txt
-            echo '```' >> /tmp/all_errors.txt
-            echo "" >> /tmp/all_errors.txt
-            echo "Full log available at: /tmp/docker_full_log.txt" >> /tmp/all_errors.txt
+            DOCKER_LINES=$(wc -l < /tmp/docker_full_log.txt)
+            echo "[CI Fixer] Docker log: ${DOCKER_LINES} lines"
+            echo "Docker Build Run ID: $DOCKER_RUN (${DOCKER_LINES} lines)" >> /tmp/all_errors.txt
+            echo "Full log saved to: /tmp/docker_full_log.txt" >> /tmp/all_errors.txt
           else
             echo "No failed Docker build found" >> /tmp/all_errors.txt
+            touch /tmp/docker_full_log.txt
           fi
 
           # Extract Mock Tests errors - get the FULL failed job log
@@ -223,19 +219,15 @@ jobs:
 
           if [ -n "$TESTS_RUN" ] && [ "$TESTS_RUN" != "null" ]; then
             echo "[CI Fixer] Tests run ID: $TESTS_RUN"
-            echo "Run ID: $TESTS_RUN" >> /tmp/all_errors.txt
-            echo "" >> /tmp/all_errors.txt
-            # Get FULL failed job log - save to separate file for Claude to read
+            # Get FULL failed job log
             gh run view $TESTS_RUN --repo ${{ github.repository }} --log-failed 2>&1 > /tmp/tests_full_log.txt
-            # Include last 500 lines in summary (captures test failures fully)
-            echo "Last 500 lines of test log:" >> /tmp/all_errors.txt
-            echo '```' >> /tmp/all_errors.txt
-            tail -500 /tmp/tests_full_log.txt >> /tmp/all_errors.txt
-            echo '```' >> /tmp/all_errors.txt
-            echo "" >> /tmp/all_errors.txt
-            echo "Full log available at: /tmp/tests_full_log.txt" >> /tmp/all_errors.txt
+            TESTS_LINES=$(wc -l < /tmp/tests_full_log.txt)
+            echo "[CI Fixer] Tests log: ${TESTS_LINES} lines"
+            echo "Mock Tests Run ID: $TESTS_RUN (${TESTS_LINES} lines)" >> /tmp/all_errors.txt
+            echo "Full log saved to: /tmp/tests_full_log.txt" >> /tmp/all_errors.txt
           else
             echo "No failed Mock Tests found" >> /tmp/all_errors.txt
+            touch /tmp/tests_full_log.txt
           fi
 
           # Show extracted errors
@@ -325,38 +317,39 @@ jobs:
 
             **The #1 goal is to make CI pass.** You are authorized to:
 
-            1. **Overwrite CARTO customizations** if they break CI
-            2. **Restore upstream code** if CARTO changes cause failures
-            3. **Modify any file** necessary to fix the errors
+            1. **Add fixes or modify CARTO customizations** if they break CI
+            2. **Modify any file** necessary to fix the errors
             4. **Delete or skip tests** that can't be fixed easily
 
             **Prefer these approaches in order:**
             1. Fix the actual bug (best)
-            2. Restore upstream version if CARTO change broke it
+            2. Find a middle ground fix between CARTO and upstream if CARTO change broke it
+            2. Restore upstream version if CARTO change broke it only if not other alternative.
             3. Skip/disable failing tests as last resort
 
             ---
 
-            ## PHASE 1: READ THE ACTUAL ERRORS (DO THIS FIRST!)
+            ## PHASE 1: READ THE FULL CI ERROR LOGS (DO THIS FIRST!)
 
-            **The CI errors have been pre-extracted for you. Read them NOW:**
+            **The COMPLETE CI error logs have been pre-extracted. Read them NOW:**
 
             ```bash
             echo "=========================================="
-            echo "=== PRE-EXTRACTED CI ERRORS - READ THIS ==="
+            echo "=== DOCKER BUILD FULL LOG ==="
             echo "=========================================="
-            cat /tmp/all_errors.txt
+            cat /tmp/docker_full_log.txt
+
+            echo "=========================================="
+            echo "=== MOCK TESTS FULL LOG ==="
+            echo "=========================================="
+            cat /tmp/tests_full_log.txt
             ```
 
-            This file contains the ACTUAL errors from:
-            - Docker Build failures (TypeScript/Next.js errors)
-            - Mock Tests failures (Python import/assertion errors)
+            These files contain the COMPLETE output from failed CI jobs:
+            - `/tmp/docker_full_log.txt` - Full Docker build log (TypeScript/Next.js errors)
+            - `/tmp/tests_full_log.txt` - Full test run log (Python import/assertion errors)
 
-            **Full logs are also available at:**
-            - `/tmp/docker_full_log.txt` - Complete Docker build output
-            - `/tmp/tests_full_log.txt` - Complete test run output
-
-            **YOU MUST FIX THE ERRORS SHOWN IN THESE FILES.**
+            **READ BOTH FILES COMPLETELY. The errors you need to fix are in these logs.**
 
             ### 1.2 Review previous fix attempts on this branch
 
