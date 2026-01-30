@@ -150,7 +150,6 @@ export function AllKeysTable({
       keys,
       teams,
       organizations,
-      accessToken,
     });
 
   useEffect(() => {
