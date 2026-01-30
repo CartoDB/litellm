@@ -170,26 +170,77 @@ jobs:
 
           echo "::endgroup::"
 
-      - name: Download workflow logs
+      - name: Extract CI errors from failed runs
+        id: extract-errors
         if: steps.failures.outputs.failed-count > 0
         env:
           GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
         run: |
-          echo "::group::Downloading workflow logs"
+          echo "::group::Extracting actual CI errors"
 
-          mkdir -p /tmp/workflow-logs
+          PR_NUMBER="${{ needs.check-ci-status.outputs.pr-number }}"
+          BRANCH="${{ needs.check-ci-status.outputs.branch-name }}"
 
-          # Download logs for each failed run
-          cat /tmp/failed_runs.json | jq -r '.[] | .databaseId' | while read RUN_ID; do
-            echo "[Fixer] 📥 Downloading logs for run ${RUN_ID}..."
-            gh run download ${RUN_ID} \
-              --repo ${{ github.repository }} \
-              --dir /tmp/workflow-logs/${RUN_ID} 2>/dev/null || true
-          done
+          # Initialize error file
+          echo "# CI ERRORS - FIX THESE" > /tmp/all_errors.txt
+          echo "" >> /tmp/all_errors.txt
 
-          # List downloaded logs
-          echo "[Fixer] Downloaded logs:"
-          find /tmp/workflow-logs -type f -name "*.txt" | head -20
+          # Extract Docker Build errors - get the FULL failed job log
+          echo "## Docker Build Errors" >> /tmp/all_errors.txt
+          DOCKER_RUN=$(gh run list --repo ${{ github.repository }} \
+            --workflow="CARTO - Deploy Docker Image (CI)" \
+            --branch="${BRANCH}" \
+            --status=failure \
+            --json databaseId \
+            --jq '.[0].databaseId' 2>/dev/null || echo "")
+
+          if [ -n "$DOCKER_RUN" ] && [ "$DOCKER_RUN" != "null" ]; then
+            echo "[CI Fixer] Docker run ID: $DOCKER_RUN"
+            echo "Run ID: $DOCKER_RUN" >> /tmp/all_errors.txt
+            echo "" >> /tmp/all_errors.txt
+            # Get FULL failed job log - save to separate file for Claude to read
+            gh run view $DOCKER_RUN --repo ${{ github.repository }} --log-failed 2>&1 > /tmp/docker_full_log.txt
+            # Include last 500 lines in summary (captures build errors fully)
+            echo "Last 500 lines of Docker build log:" >> /tmp/all_errors.txt
+            echo '```' >> /tmp/all_errors.txt
+            tail -500 /tmp/docker_full_log.txt >> /tmp/all_errors.txt
+            echo '```' >> /tmp/all_errors.txt
+            echo "" >> /tmp/all_errors.txt
+            echo "Full log available at: /tmp/docker_full_log.txt" >> /tmp/all_errors.txt
+          else
+            echo "No failed Docker build found" >> /tmp/all_errors.txt
+          fi
+
+          # Extract Mock Tests errors - get the FULL failed job log
+          echo "" >> /tmp/all_errors.txt
+          echo "## Mock Tests Errors" >> /tmp/all_errors.txt
+          TESTS_RUN=$(gh run list --repo ${{ github.repository }} \
+            --workflow="LiteLLM Mock Tests (folder - tests/test_litellm)" \
+            --branch="${BRANCH}" \
+            --status=failure \
+            --json databaseId \
+            --jq '.[0].databaseId' 2>/dev/null || echo "")
+
+          if [ -n "$TESTS_RUN" ] && [ "$TESTS_RUN" != "null" ]; then
+            echo "[CI Fixer] Tests run ID: $TESTS_RUN"
+            echo "Run ID: $TESTS_RUN" >> /tmp/all_errors.txt
+            echo "" >> /tmp/all_errors.txt
+            # Get FULL failed job log - save to separate file for Claude to read
+            gh run view $TESTS_RUN --repo ${{ github.repository }} --log-failed 2>&1 > /tmp/tests_full_log.txt
+            # Include last 500 lines in summary (captures test failures fully)
+            echo "Last 500 lines of test log:" >> /tmp/all_errors.txt
+            echo '```' >> /tmp/all_errors.txt
+            tail -500 /tmp/tests_full_log.txt >> /tmp/all_errors.txt
+            echo '```' >> /tmp/all_errors.txt
+            echo "" >> /tmp/all_errors.txt
+            echo "Full log available at: /tmp/tests_full_log.txt" >> /tmp/all_errors.txt
+          else
+            echo "No failed Mock Tests found" >> /tmp/all_errors.txt
+          fi
+
+          # Show extracted errors
+          echo "=== All Extracted Errors ==="
+          cat /tmp/all_errors.txt
 
           echo "::endgroup::"
 
@@ -270,23 +321,42 @@ jobs:
 
             ---
 
-            ## ⚠️ CRITICAL RULES
+            ## ⚠️ PRIORITY: MAKE CI PASS
 
-            1. **NEVER revert CARTO customizations** - they are intentional
-            2. **Fix tests to match CARTO behavior**, not vice versa
-            3. **Check ACTUAL error logs** before making changes
-            4. **Learn from previous attempts** - don't repeat failed fixes
+            **The #1 goal is to make CI pass.** You are authorized to:
+
+            1. **Overwrite CARTO customizations** if they break CI
+            2. **Restore upstream code** if CARTO changes cause failures
+            3. **Modify any file** necessary to fix the errors
+            4. **Delete or skip tests** that can't be fixed easily
+
+            **Prefer these approaches in order:**
+            1. Fix the actual bug (best)
+            2. Restore upstream version if CARTO change broke it
+            3. Skip/disable failing tests as last resort
 
             ---
 
-            ## PHASE 1: ANALYZE FAILURES (DO THIS FIRST!)
+            ## PHASE 1: READ THE ACTUAL ERRORS (DO THIS FIRST!)
 
-            ### 1.1 Check what's currently failing
+            **The CI errors have been pre-extracted for you. Read them NOW:**
 
             ```bash
-            echo "=== PR STATUS ==="
-            gh pr checks ${{ needs.check-ci-status.outputs.pr-number }} --repo ${{ github.repository }}
+            echo "=========================================="
+            echo "=== PRE-EXTRACTED CI ERRORS - READ THIS ==="
+            echo "=========================================="
+            cat /tmp/all_errors.txt
             ```
+
+            This file contains the ACTUAL errors from:
+            - Docker Build failures (TypeScript/Next.js errors)
+            - Mock Tests failures (Python import/assertion errors)
+
+            **Full logs are also available at:**
+            - `/tmp/docker_full_log.txt` - Complete Docker build output
+            - `/tmp/tests_full_log.txt` - Complete test run output
+
+            **YOU MUST FIX THE ERRORS SHOWN IN THESE FILES.**
 
             ### 1.2 Review previous fix attempts on this branch
 
@@ -298,24 +368,11 @@ jobs:
             git diff --name-only HEAD~5..HEAD 2>/dev/null || git diff --name-only HEAD~3..HEAD
             ```
 
-            ### 1.3 Get ACTUAL errors from failed CI jobs
+            ### 1.3 Check PR status
 
-            **For Docker Build failures:**
             ```bash
-            echo "=== DOCKER BUILD ERRORS ==="
-            DOCKER_RUN=$(gh run list --repo ${{ github.repository }} --workflow="CARTO - Deploy Docker Image (CI)" --branch="${{ needs.check-ci-status.outputs.branch-name }}" --status=failure --json databaseId --jq '.[0].databaseId')
-            if [ -n "$DOCKER_RUN" ]; then
-              gh run view $DOCKER_RUN --repo ${{ github.repository }} --log 2>&1 | grep -E "(Type error|error TS|Failed to compile|Cannot find module|Error:|FAILED|ERROR)" | tail -50
-            fi
-            ```
-
-            **For Mock Tests failures:**
-            ```bash
-            echo "=== MOCK TESTS ERRORS ==="
-            TESTS_RUN=$(gh run list --repo ${{ github.repository }} --workflow="LiteLLM Mock Tests (folder - tests/test_litellm)" --branch="${{ needs.check-ci-status.outputs.branch-name }}" --status=failure --json databaseId --jq '.[0].databaseId')
-            if [ -n "$TESTS_RUN" ]; then
-              gh run view $TESTS_RUN --repo ${{ github.repository }} --log 2>&1 | grep -E "(FAILED|ERROR|Error|ImportError|ModuleNotFoundError|AssertionError|SyntaxError)" | tail -50
-            fi
+            echo "=== PR STATUS ==="
+            gh pr checks ${{ needs.check-ci-status.outputs.pr-number }} --repo ${{ github.repository }}
             ```
 
             ---
@@ -351,18 +408,28 @@ jobs:
             4. **Fix the call site** to match the function signature
             5. **Check for similar issues** in the same file
 
-            ### For Python Test Errors (Mock Tests)
+            ### For Python Import/Module Errors (Mock Tests)
 
-            1. **Identify the failing test** from logs
-            2. **Read the test file** to understand what it's testing
-            3. **Check if CARTO changed the behavior** being tested
-            4. **Fix the TEST expectations**, not the CARTO code:
+            1. **Identify the missing import** from logs
+            2. **Find where the function/class should be defined:**
+               ```bash
+               grep -rn "def FUNCTION_NAME\|class CLASS_NAME" litellm/
+               ```
+            3. **If missing from a file, check upstream version:**
+               ```bash
+               git show origin/main:path/to/file.py | grep -A 20 "def FUNCTION_NAME"
+               ```
+            4. **Restore the missing code from upstream** if it was accidentally removed
+            5. **Or add the missing import** to the file that needs it
+
+            ### For Python Test Assertion Errors
+
+            1. **Read the failing test** to understand what it expects
+            2. **Fix the code** to match what the test expects, OR
+            3. **Update the test** to match new behavior, OR
+            4. **Skip the test** as last resort:
                ```python
-               # Update assertion to match CARTO behavior
-               assert result == "carto_expected_value"
-
-               # OR skip if testing removed functionality
-               @pytest.mark.skip(reason="CARTO: Behavior changed intentionally")
+               @pytest.mark.skip(reason="Skipped during upstream sync - needs review")
                ```
 
             ### For Conflict Markers
