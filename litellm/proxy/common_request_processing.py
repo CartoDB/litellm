@@ -17,7 +17,7 @@ from typing import (
 import httpx
 import orjson
 from fastapi import HTTPException, Request, status
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 import litellm
 from litellm._logging import verbose_proxy_logger
@@ -94,6 +94,144 @@ async def _parse_event_data_for_error(event_line: Union[str, bytes]) -> Optional
             # not a known error chunk
             pass
     return None
+
+
+def _extract_error_from_sse_chunk(event_line: Union[str, bytes]) -> dict:
+    """
+    Extract error dictionary from SSE format chunk.
+
+    Args:
+        event_line: SSE format event line, e.g. "data: {"error": {...}}\n\n"
+
+    Returns:
+        Error dictionary in OpenAI API format
+    """
+    event_line = (
+        event_line.decode("utf-8") if isinstance(event_line, bytes) else event_line
+    )
+
+    # Default error format
+    default_error = {
+        "message": "Unknown error",
+        "type": "internal_server_error",
+        "param": None,
+        "code": "500",
+    }
+
+    if event_line.startswith("data: "):
+        json_str = event_line[len("data: ") :].strip()
+        if not json_str or json_str == "[DONE]":
+            return default_error
+
+        try:
+            data = orjson.loads(json_str)
+            if isinstance(data, dict) and "error" in data:
+                error_obj = data["error"]
+                if isinstance(error_obj, dict):
+                    return error_obj
+        except (orjson.JSONDecodeError, json.JSONDecodeError):
+            pass
+
+    return default_error
+
+
+async def create_response(
+    generator: AsyncGenerator[str, None],
+    media_type: str,
+    headers: dict,
+    default_status_code: int = status.HTTP_200_OK,
+) -> Union[StreamingResponse, JSONResponse]:
+    """
+    Create streaming response, checking if the first chunk is an error.
+    If the first chunk is an error, return a standard JSON error response.
+    Otherwise, return StreamingResponse and stream all content.
+    """
+    first_chunk_value: Optional[str] = None
+    final_status_code = default_status_code
+
+    try:
+        # Handle coroutine that returns a generator
+        if asyncio.iscoroutine(generator):
+            generator = await generator
+
+        # Now get the first chunk from the actual generator
+        first_chunk_value = await generator.__anext__()
+
+        if first_chunk_value is not None:
+            try:
+                error_code_from_chunk = await _parse_event_data_for_error(
+                    first_chunk_value
+                )
+                if error_code_from_chunk is not None:
+                    # First chunk is an error, stream hasn't really started yet
+                    # Should return standard JSON error response instead of SSE format
+                    final_status_code = error_code_from_chunk
+                    verbose_proxy_logger.debug(
+                        f"Error detected in first stream chunk. Returning JSON error response with status code: {final_status_code}"
+                    )
+
+                    # Parse error content
+                    error_dict = _extract_error_from_sse_chunk(first_chunk_value)
+
+                    # Consume and close generator (avoid resource leak)
+                    try:
+                        await generator.aclose()
+                    except Exception:
+                        pass
+
+                    # Return JSON format error response
+                    return JSONResponse(
+                        status_code=final_status_code,
+                        content={"error": error_dict},
+                        headers=headers,
+                    )
+            except Exception as e:
+                verbose_proxy_logger.debug(f"Error parsing first chunk value: {e}")
+
+    except StopAsyncIteration:
+        # Generator was empty. Default status
+        async def empty_gen() -> AsyncGenerator[str, None]:
+            if False:
+                yield  # type: ignore
+
+        return StreamingResponse(
+            empty_gen(),
+            media_type=media_type,
+            headers=headers,
+            status_code=default_status_code,
+        )
+    except Exception as e:
+        # Unexpected error consuming first chunk.
+        verbose_proxy_logger.exception(
+            f"Error consuming first chunk from generator: {e}"
+        )
+
+        # Fallback to a generic error stream
+        async def error_gen_message() -> AsyncGenerator[str, None]:
+            yield f"data: {json.dumps({'error': {'message': 'Error processing stream start', 'code': status.HTTP_500_INTERNAL_SERVER_ERROR}})}\n\n"
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(
+            error_gen_message(),
+            media_type=media_type,
+            headers=headers,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+    async def combined_generator() -> AsyncGenerator[str, None]:
+        if first_chunk_value is not None:
+            with tracer.trace(DD_TRACER_STREAMING_CHUNK_YIELD_RESOURCE):
+                yield first_chunk_value
+        async for chunk in generator:
+            with tracer.trace(DD_TRACER_STREAMING_CHUNK_YIELD_RESOURCE):
+                yield chunk
+
+    return StreamingResponse(
+        combined_generator(),
+        media_type=media_type,
+        headers=headers,
+        status_code=final_status_code,
+    )
 
 
 async def create_streaming_response(
