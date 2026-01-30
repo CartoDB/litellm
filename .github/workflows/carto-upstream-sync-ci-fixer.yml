@@ -258,347 +258,238 @@ jobs:
           use_vertex: "true"
           github_token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
           show_full_output: true
-          claude_args: "--model claude-opus-4-5@20251101 --max-turns 150 --allowedTools Read,Write,Edit,Bash,Grep,Glob"
+          claude_args: "--model claude-opus-4-5@20251101 --max-turns 200 --allowedTools Read,Write,Edit,Bash,Grep,Glob"
           prompt: |
-            # Fix CI Failures in Upstream Sync Resolution PR - CARTO-FIRST STRATEGY
+            # CI Failure Auto-Fix - Iterative Resolution
 
-            You are fixing CI failures in PR #${{ needs.check-ci-status.outputs.pr-number }}.
+            You are an automated CI fixer for PR #${{ needs.check-ci-status.outputs.pr-number }}.
+            Branch: `${{ needs.check-ci-status.outputs.branch-name }}`
 
-            **Context:**
-            - Branch: `${{ needs.check-ci-status.outputs.branch-name }}`
-            - This PR resolves conflicts from an upstream sync
-            - CI checks have failed and need to be fixed
+            **YOUR MISSION:** Fix ALL failing CI checks (Mock Tests AND Docker Build) until they pass.
+            This workflow runs iteratively - if your fix doesn't work, you'll run again with updated logs.
 
-            ## Step 0: Check Previous Fix Attempts
+            ---
 
-            **IMPORTANT:** Read PR comments first for context on previous fix attempts:
+            ## ⚠️ CRITICAL RULES
+
+            1. **NEVER revert CARTO customizations** - they are intentional
+            2. **Fix tests to match CARTO behavior**, not vice versa
+            3. **Check ACTUAL error logs** before making changes
+            4. **Learn from previous attempts** - don't repeat failed fixes
+
+            ---
+
+            ## PHASE 1: ANALYZE FAILURES (DO THIS FIRST!)
+
+            ### 1.1 Check what's currently failing
+
             ```bash
-            cat /tmp/pr_comments.md
-            ```
-
-            This shows:
-            - Previous Claude fix attempts and what was tried
-            - Human feedback or guidance
-            - Error patterns that have already been addressed
-
-            **If a previous fix attempt exists, learn from it - don't repeat the same approach if it failed.**
-
-            ---
-
-            ## ⛔ CRITICAL RULE: NEVER REVERT CARTO CUSTOMIZATIONS
-
-            **IF tests fail because of CARTO code:**
-            - The CARTO code is **INTENTIONAL and CORRECT**
-            - Fix or skip the **TESTS**, not the CARTO code
-            - CARTO customizations were made by CartoDB org members for good reasons
-
-            ---
-
-            ## 🚫 FORBIDDEN ACTIONS (NEVER DO THESE)
-
-            | Action | Why It's Forbidden |
-            |--------|-------------------|
-            | Revert a file to upstream version to fix tests | Destroys intentional CARTO work |
-            | Remove CARTO-specific code to make tests pass | Loses critical fixes (Azure URL, Snowflake auth, etc.) |
-            | Delete CARTO fixes that "break" upstream tests | Tests should adapt to CARTO, not vice versa |
-            | Accept upstream version when CARTO version exists | CARTO changes are intentional |
-            | Undo changes made by CartoDB GitHub org members | These are authorized CARTO modifications |
-
-            ## ✅ REQUIRED ACTIONS (ALWAYS DO THESE)
-
-            | Action | When to Use |
-            |--------|-------------|
-            | Preserve all CARTO customizations | Always |
-            | Fix tests to match CARTO behavior | When tests fail due to CARTO changes |
-            | Skip tests that test removed upstream functionality | When CARTO intentionally changed behavior |
-            | Add missing imports from CARTO code | When imports were lost in merge |
-            | Remove leftover conflict markers | Always (these are merge artifacts) |
-
-            ---
-
-            ## Step 1: Understand What Failed
-
-            Check the PR status and failed checks:
-            ```bash
-            gh pr view ${{ needs.check-ci-status.outputs.pr-number }} --repo ${{ github.repository }}
+            echo "=== PR STATUS ==="
             gh pr checks ${{ needs.check-ci-status.outputs.pr-number }} --repo ${{ github.repository }}
             ```
 
-            ## Step 2: Categorize Failures
+            ### 1.2 Review previous fix attempts on this branch
 
-            | Failure Type | Cause | Correct Action |
-            |--------------|-------|----------------|
-            | `SyntaxError` | Conflict markers left in file | Remove markers (keep CARTO code) |
-            | `ImportError` | Incomplete resolution | Add missing imports |
-            | `Test assertion` | CARTO changed behavior | **Fix TEST expectations** (not CARTO code!) |
-            | Lint errors | Formatting issues | Run `make format` |
-            | Type errors | Missing types | Add type annotations |
+            ```bash
+            echo "=== RECENT COMMITS (previous fix attempts) ==="
+            git log --oneline -15
 
-            ## Step 3: Identify Common Issues
+            echo "=== FILES CHANGED IN LAST 5 COMMITS ==="
+            git diff --name-only HEAD~5..HEAD 2>/dev/null || git diff --name-only HEAD~3..HEAD
+            ```
 
-            **Most common failures in conflict resolution:**
+            ### 1.3 Get ACTUAL errors from failed CI jobs
 
-            1. **Leftover conflict markers** (causes syntax errors) - **FIX THESE**
+            **For Docker Build failures:**
+            ```bash
+            echo "=== DOCKER BUILD ERRORS ==="
+            DOCKER_RUN=$(gh run list --repo ${{ github.repository }} --workflow="CARTO - Deploy Docker Image (CI)" --branch="${{ needs.check-ci-status.outputs.branch-name }}" --status=failure --json databaseId --jq '.[0].databaseId')
+            if [ -n "$DOCKER_RUN" ]; then
+              gh run view $DOCKER_RUN --repo ${{ github.repository }} --log 2>&1 | grep -E "(Type error|error TS|Failed to compile|Cannot find module|Error:|FAILED|ERROR)" | tail -50
+            fi
+            ```
+
+            **For Mock Tests failures:**
+            ```bash
+            echo "=== MOCK TESTS ERRORS ==="
+            TESTS_RUN=$(gh run list --repo ${{ github.repository }} --workflow="LiteLLM Mock Tests (folder - tests/test_litellm)" --branch="${{ needs.check-ci-status.outputs.branch-name }}" --status=failure --json databaseId --jq '.[0].databaseId')
+            if [ -n "$TESTS_RUN" ]; then
+              gh run view $TESTS_RUN --repo ${{ github.repository }} --log 2>&1 | grep -E "(FAILED|ERROR|Error|ImportError|ModuleNotFoundError|AssertionError|SyntaxError)" | tail -50
+            fi
+            ```
+
+            ---
+
+            ## PHASE 2: IDENTIFY ROOT CAUSE
+
+            Based on the errors from Phase 1, categorize the failure:
+
+            | Error Pattern | Root Cause | Fix Location |
+            |--------------|------------|--------------|
+            | `Type error: Expected X arguments` | TypeScript function signature mismatch | `ui/litellm-dashboard/src/` |
+            | `Cannot find module` | Missing import in UI | `ui/litellm-dashboard/src/` |
+            | `Failed to compile` | Next.js build error | `ui/litellm-dashboard/src/` |
+            | `ImportError` / `ModuleNotFoundError` | Python import missing | `litellm/` or `tests/` |
+            | `SyntaxError` | Conflict markers or bad merge | Check for `<<<<<<<` markers |
+            | `FAILED tests/...` | Test assertion failure | `tests/` - fix test expectations |
+            | `AssertionError` | Test expecting wrong value | Update test to match CARTO behavior |
+
+            ---
+
+            ## PHASE 3: FIX THE ISSUE
+
+            ### For TypeScript/UI Errors (Docker Build)
+
+            **UI code location:** `ui/litellm-dashboard/src/`
+
+            1. **Find the exact error file and line** from Docker logs
+            2. **Read the file** to understand the context
+            3. **Find the function definition** to understand expected signature:
                ```bash
-               # Search for conflict markers
-               grep -r "^<<<<<<< \|^=======$\|^>>>>>>>" --include="*.py" litellm/ tests/
+               grep -rn "export.*FUNCTION_NAME\|const FUNCTION_NAME\|function FUNCTION_NAME" ui/litellm-dashboard/src/
+               ```
+            4. **Fix the call site** to match the function signature
+            5. **Check for similar issues** in the same file
+
+            ### For Python Test Errors (Mock Tests)
+
+            1. **Identify the failing test** from logs
+            2. **Read the test file** to understand what it's testing
+            3. **Check if CARTO changed the behavior** being tested
+            4. **Fix the TEST expectations**, not the CARTO code:
+               ```python
+               # Update assertion to match CARTO behavior
+               assert result == "carto_expected_value"
+
+               # OR skip if testing removed functionality
+               @pytest.mark.skip(reason="CARTO: Behavior changed intentionally")
                ```
 
-            2. **Import errors** (incomplete resolution) - **FIX THESE**
-               - Check test output for `ImportError`, `ModuleNotFoundError`
-               - Missing imports from upstream or CARTO code
-
-            3. **Syntax errors** (incomplete code blocks) - **FIX THESE**
-               - Run: `python -m py_compile <file>` on suspected files
-               - Look for unbalanced brackets, quotes
-
-            4. **Test assertion failures** (behavior changes) - **FIX THE TESTS, NOT CARTO CODE**
-               - CARTO intentionally changed behavior
-               - Update test expectations to match CARTO behavior
-
-            ## Step 4: Handle Test Failures (CARTO-FIRST)
-
-            **Decision tree for test failures:**
-
-            1. **Test fails because CARTO changed behavior:**
-               - CARTO code is **CORRECT** - it was intentionally changed
-               - **Action:** Update the test to expect CARTO behavior
-               - Example: If CARTO adds null check, test should expect that behavior
-
-            2. **Test fails due to incomplete merge:**
-               - Check if CARTO code was accidentally removed
-               - **Action:** Restore the CARTO code, then test passes
-
-            3. **Test is testing upstream-specific functionality that CARTO removed:**
-               - **Action:** Skip the test with clear reason
-
-            **How to fix tests for CARTO behavior:**
-
-            ```python
-            # Option 1: Update test to expect CARTO behavior
-            def test_something():
-                result = function_under_test()
-                # Updated for CARTO: Now includes null check
-                assert result == "carto_expected_value"  # Not upstream_value
-
-            # Option 2: Skip test if behavior intentionally changed
-            @pytest.mark.skip(reason="CARTO: Behavior changed - see PR #XX for rationale")
-            def test_upstream_specific_behavior():
-                ...
-
-            # Option 3: Use xfail for known differences
-            @pytest.mark.xfail(reason="CARTO: Different behavior by design")
-            def test_that_differs_in_carto():
-                ...
-            ```
-
-            ## Step 5: Check if Test Also Fails Upstream (for unknown failures)
-
-            Only check upstream if you're unsure whether failure is CARTO-related:
+            ### For Conflict Markers
 
             ```bash
-            # Fetch upstream main
-            git fetch upstream main
-
-            # Check out upstream main in a separate worktree
-            git worktree add /tmp/upstream-main upstream/main
-
-            # Run the same failing test on upstream
-            cd /tmp/upstream-main
-            make install-dev
-            pytest <path-to-failing-test> -v
-
-            # Return to our branch
-            cd -
-            git worktree remove /tmp/upstream-main
+            # Find any remaining conflict markers
+            grep -rn "^<<<<<<< \|^=======\|^>>>>>>>" --include="*.py" --include="*.tsx" --include="*.ts" litellm/ tests/ ui/ 2>/dev/null
             ```
 
-            **If test fails on BOTH branches:**
-            - This is an **upstream bug**, not CARTO's problem
-            - Skip/xfail the test and document why
+            ### For Import Errors
 
-            ## Step 6: Analyze Test Logs
-
-            Workflow logs are available in `/tmp/workflow-logs/*/`.
-
-            Look for:
-            - `SyntaxError: invalid syntax` → conflict markers
-            - `ImportError` / `ModuleNotFoundError` → missing imports
-            - `FAILED tests/...` → test assertion failures
-            - Build errors in Docker logs
-
-            ## Step 7: Fix Issues Systematically
-
-            ### For Conflict Markers:
             ```bash
-            # Find them
-            grep -rn "^<<<<<<< \|^=======$\|^>>>>>>>" litellm/ tests/ requirements.txt
-
-            # Remove manually - ALWAYS KEEP CARTO CODE when in doubt
-            # Then verify file syntax
+            # Check if the import exists elsewhere
+            grep -rn "from.*import.*MISSING_THING\|import.*MISSING_THING" litellm/
             ```
 
-            ### For Import Errors:
+            ---
+
+            ## PHASE 4: VERIFY & PUSH
+
+            ### 4.1 Verify Python fixes (if you made Python changes)
+
             ```bash
-            # Read the file with missing imports
-            # Check what was removed during conflict resolution
-            # Restore necessary imports from CARTO version first, then add upstream if needed
+            # Quick syntax check
+            python -m py_compile litellm/**/*.py 2>&1 | head -20 || true
+
+            # Check for conflict markers
+            grep -r "^<<<<<<< " --include="*.py" litellm/ tests/ && echo "CONFLICT MARKERS FOUND!" || echo "No conflict markers"
             ```
 
-            ### For Test Failures:
-            ```bash
-            # Run failing test locally to understand
-            pytest tests/path/to/failing_test.py -v
-
-            # Determine if it's testing CARTO-modified behavior
-            # If yes: Update the TEST, not the CARTO code
-            # If no: Fix the conflict resolution issue
-            ```
-
-            ## Step 8: Run Tests Locally
-
-            **CRITICAL:** Verify fixes before pushing:
+            ### 4.2 Commit and push your fix
 
             ```bash
-            # Install dependencies
-            make install-dev
+            git add -A
+            git status
 
-            # Run linting
-            make lint
+            git commit -m "fix(ci): [SPECIFIC FIX DESCRIPTION]
 
-            # Run type checks
-            make lint-mypy
+            Error fixed: [EXACT ERROR MESSAGE]
+            File: [FILE PATH]
+            Change: [WHAT YOU CHANGED]
 
-            # Run unit tests
-            make test-unit
-
-            # If specific tests failed, run them directly
-            pytest tests/specific/test_file.py -v
-            ```
-
-            ## Step 9: Commit and Push Fixes
-
-            ```bash
-            git add <fixed-files>
-            git commit -m "fix: resolve CI failures (CARTO-first)
-
-            - Fixed syntax errors from leftover conflict markers
-            - Restored missing imports
-            - Updated tests to match CARTO behavior
-            - <specific fixes>
-
-            CARTO customizations preserved:
-            - <list of preserved CARTO code>
-
-            Failures fixed:
-            - <list failed checks>
+            Previous attempts: [X] commits already tried
+            This fix addresses: [ROOT CAUSE]
             "
 
             git push origin ${{ needs.check-ci-status.outputs.branch-name }}
             ```
 
-            ## Step 10: Comment on PR with Summary
-
-            **Always include CARTO preservation status:**
-            ```bash
-            gh pr comment ${{ needs.check-ci-status.outputs.pr-number }} \
-              --repo ${{ github.repository }} \
-              --body "✅ CI failures fixed using CARTO-first strategy.
-
-            **CARTO Customizations Status:** ✅ All preserved
-
-            **Fixes applied:**
-            - Removed leftover conflict markers in <files>
-            - Restored missing imports in <files>
-            - Updated tests to match CARTO behavior in <files>
-
-            **Tests modified (to match CARTO behavior):**
-            - \`tests/path/to/test.py::test_name\` - Updated assertion for CARTO behavior
-
-            All tests now pass with CARTO customizations intact.
-            "
-            ```
-
-            ## Important Notes
-
-            - **CARTO code is SACRED** - never revert it to fix tests
-            - Focus on **fixing actual errors**, not refactoring
-            - Don't introduce new changes unrelated to the failures
-            - If tests fail due to CARTO changes, **fix the tests**
-            - The most common issue is **conflict markers** - search thoroughly!
-            - Test locally before pushing to avoid repeated failures
-
-            ## Handling Docker Build Failures (CRITICAL - CHECK FIRST!)
-
-            **IMPORTANT:** The Docker build includes a Next.js UI build step. Most Docker failures are actually **TypeScript/React errors** in the UI code, NOT Docker issues!
-
-            ### Step 1: Get the ACTUAL error from Docker build logs
+            ### 4.3 Comment on PR with details
 
             ```bash
-            # Find the latest failed Docker build run
-            DOCKER_RUN_ID=$(gh run list --repo ${{ github.repository }} --workflow="CARTO - Deploy Docker Image (CI)" --status failure --json databaseId --jq '.[0].databaseId')
-            echo "Latest failed Docker run: $DOCKER_RUN_ID"
+            gh pr comment ${{ needs.check-ci-status.outputs.pr-number }} --repo ${{ github.repository }} --body "## 🔧 CI Fix Applied
 
-            # Download and check the logs
-            gh run view $DOCKER_RUN_ID --repo ${{ github.repository }} --log 2>&1 | grep -E "(Type error|Error:|Failed to compile|Cannot find|error TS)" | head -20
+            **Error Fixed:**
+            \`\`\`
+            [PASTE EXACT ERROR]
+            \`\`\`
+
+            **Fix Applied:**
+            - File: \`[FILE PATH]\`
+            - Change: [DESCRIPTION]
+
+            **Verification:** Pushed to branch, CI will re-run automatically.
+
+            ---
+            _Attempt #[N] - If this fails, I'll analyze the new errors and try again._"
             ```
 
-            ### Step 2: Identify if it's a TypeScript/UI error
+            ---
 
-            **Common UI build errors (in `ui/litellm-dashboard/`):**
-            - `Type error: Expected X arguments, but got Y` → Function signature mismatch
-            - `Cannot find module` → Missing import
-            - `Property 'X' does not exist` → Type mismatch
-            - `Failed to compile` → Next.js build error
+            ## DECISION TREE
 
-            ### Step 3: Fix TypeScript/UI errors
-
-            **UI code is located in:** `ui/litellm-dashboard/src/`
-
-            ```bash
-            # Check the function definition to understand expected signature
-            grep -rn "export.*functionName\|function functionName\|const functionName" ui/litellm-dashboard/src/
-
-            # Read the file with the error
-            cat ui/litellm-dashboard/src/path/to/file.tsx
-
-            # Fix the call site to match the function signature
+            ```
+            START
+              │
+              ├─► Check PR status (gh pr checks)
+              │
+              ├─► Is Docker Build failing?
+              │     │
+              │     └─► YES: Get Docker logs → Find TypeScript error → Fix in ui/litellm-dashboard/
+              │
+              ├─► Are Mock Tests failing?
+              │     │
+              │     └─► YES: Get test logs → Find failing test → Fix test expectations (not CARTO code)
+              │
+              ├─► Are there conflict markers?
+              │     │
+              │     └─► YES: Remove markers, keep CARTO version
+              │
+              └─► Commit & Push → CI re-runs → If fails, this workflow runs again
             ```
 
-            **Example fix for "Expected 0 arguments, but got 1":**
-            ```typescript
-            // If modelCostMap() expects no arguments but is called with accessToken:
-            // Check if accessToken should be passed differently (context, hook, etc.)
-            // Or if the function signature changed and call site needs updating
+            ---
 
-            // WRONG: const data = await modelCostMap(accessToken);
-            // RIGHT: const data = await modelCostMap();  // if function takes no args
-            ```
+            ## EXAMPLES
 
-            ### Step 4: Verify UI fix locally (optional but recommended)
+            ### Example 1: TypeScript Function Signature Error
 
-            ```bash
-            cd ui/litellm-dashboard
-            npm install --legacy-peer-deps
-            npm run build
-            ```
+            **Error:** `Type error: Expected 0 arguments, but got 1`
+            **File:** `ui/litellm-dashboard/src/.../PriceDataManagementTab.tsx:28`
+            **Code:** `const data = await modelCostMap(accessToken);`
 
-            ### Step 5: Only for actual Docker issues (rare)
+            **Fix Process:**
+            1. Find function definition: `grep -rn "modelCostMap" ui/litellm-dashboard/src/`
+            2. Check signature: `export const modelCostMap = async (): Promise<...>`
+            3. Fix call: Remove the argument → `const data = await modelCostMap();`
 
-            If it's truly a Docker issue (not UI/TypeScript):
-            - Missing files referenced in Dockerfile
-            - Dependency installation failures
-            - Base image issues
+            ### Example 2: Python Test Assertion Error
 
-            ## Success Criteria
+            **Error:** `AssertionError: assert 'old_value' == 'new_carto_value'`
+            **File:** `tests/test_something.py::test_feature`
 
-            - [ ] All CARTO customizations preserved
-            - [ ] All syntax errors resolved
-            - [ ] No conflict markers remain
-            - [ ] All imports are present
-            - [ ] `make lint` passes locally
-            - [ ] `make test-unit` passes locally (tests updated if needed)
-            - [ ] Changes committed and pushed
+            **Fix Process:**
+            1. CARTO intentionally changed the behavior
+            2. Update test: `assert result == 'new_carto_value'`
+            3. Add comment: `# CARTO: Updated for new behavior`
+
+            ---
+
+            ## NOW START!
+
+            1. Run Phase 1 commands to get actual errors
+            2. Identify the root cause
+            3. Apply the fix
+            4. Commit and push
+            5. The CI will re-run - if it fails again, this workflow triggers again with new logs
         env:
           ANTHROPIC_VERTEX_PROJECT_ID: carto-ci-resources
           CLOUD_ML_REGION: global
