@@ -7839,6 +7839,23 @@ class ProviderConfigManager:
             return VertexAIGoogleGenAIConfig()
         return None
 
+    @staticmethod
+    def get_provider_container_config(
+        provider: LlmProviders,
+    ) -> Optional["BaseContainerConfig"]:
+        """
+        Get container configuration for a given provider.
+        """
+        from litellm.llms.base_llm.containers.transformation import BaseContainerConfig
+
+        if litellm.LlmProviders.OPENAI == provider:
+            from litellm.llms.openai.containers.transformation import (
+                OpenAIContainerConfig,
+            )
+
+            return OpenAIContainerConfig()
+        return None
+
 
 def get_end_user_id_for_cost_tracking(
     litellm_params: dict,

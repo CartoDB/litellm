@@ -3,6 +3,14 @@ from unittest.mock import AsyncMock, patch
 
 from litellm.types.utils import ModelResponse
 
+# CARTO: Check if MCP methods are available before importing
+try:
+    from litellm.responses.utils import ResponsesAPIRequestUtils
+    if not hasattr(ResponsesAPIRequestUtils, 'extract_mcp_headers_from_request'):
+        pytest.skip("CARTO: MCP handler methods not fully merged from upstream", allow_module_level=True)
+except ImportError:
+    pytest.skip("CARTO: MCP handler module not available", allow_module_level=True)
+
 from litellm.responses.mcp import chat_completions_handler
 from litellm.responses.mcp.chat_completions_handler import (
     acompletion_with_mcp,

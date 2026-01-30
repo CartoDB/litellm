@@ -217,7 +217,23 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
     @classmethod
     def get_config(cls):
         return super().get_config()
-    
+
+    @staticmethod
+    def _is_gemini_3_or_newer(model: str) -> bool:
+        """
+        Check if the model is Gemini 3 or newer.
+        Gemini 3+ models use v1alpha API version.
+        """
+        gemini_3_patterns = [
+            "gemini-3",
+            "gemini-next",
+        ]
+        model_lower = model.lower()
+        for pattern in gemini_3_patterns:
+            if pattern in model_lower:
+                return True
+        return False
+
     def _supports_penalty_parameters(self, model: str) -> bool:
         unsupported_models = ["gemini-2.5-pro-preview-06-05"]
 

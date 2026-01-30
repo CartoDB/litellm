@@ -14,13 +14,13 @@ import CreateUser from "./create_user_button";
 import EditUserModal from "./edit_user";
 import OnboardingModal from "./onboarding_link";
 import { InvitationLink } from "./onboarding_link";
-import BulkEditUserModal from "./bulk_edit_user";
+import BulkEditUserModal from "./BulkEditUsers";
 
 import { userDeleteCall, modelAvailableCall } from "./networking";
 import { columns } from "./view_users/columns";
 import { UserDataTable } from "./view_users/table";
 import { UserInfo } from "./view_users/types";
-import SSOSettings from "./SSOSettings";
+import SSOSettings from "./Settings/AdminSettings/SSOSettings/SSOSettings";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { updateExistingKeys } from "@/utils/dataUtils";
 import { useDebouncedState } from "@tanstack/react-pacer/debouncer";
