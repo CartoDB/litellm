@@ -376,17 +376,71 @@ jobs:
 
             ---
 
-            ## STEP 3: CHECK WHAT UPSTREAM HAS (for merge issues)
+            ## STEP 3: CHECK WHAT UPSTREAM AND CARTO HAVE (for merge issues)
 
-            If the error is due to missing code or merge conflicts:
+            If the error is due to missing code, modules, or merge conflicts:
 
             ```bash
-            # See what upstream has in that file
-            git fetch origin main
-            git show origin/main:path/to/file.py | head -100
+            # Fetch both remotes - IMPORTANT!
+            git fetch origin carto/main
+            git remote add upstream https://github.com/BerriAI/litellm.git 2>/dev/null || true
+            git fetch upstream main
 
-            # Compare with current branch
-            git diff origin/main -- path/to/file.py | head -100
+            # See what carto/main has
+            git show origin/carto/main:path/to/file.py 2>/dev/null | head -100
+
+            # See what upstream has
+            git show upstream/main:path/to/file.py 2>/dev/null | head -100
+
+            # Compare folder contents across all three branches
+            echo "=== CARTO/MAIN ==="
+            git ls-tree --name-only origin/carto/main path/to/folder/
+            echo "=== UPSTREAM/MAIN ==="
+            git ls-tree --name-only upstream/main path/to/folder/
+            echo "=== CURRENT BRANCH ==="
+            git ls-tree --name-only HEAD path/to/folder/
+            ```
+
+            ---
+
+            ## 🔍 STEP 3.5: TROUBLESHOOTING - COMPARE BRANCH STATES
+
+            **CRITICAL:** For "Cannot find module" or "ImportError" errors, ALWAYS compare branches first!
+
+            ### Decision Matrix for Missing Files
+
+            | Scenario | Fix |
+            |----------|-----|
+            | File exists on carto/main but NOT on sync branch | **Restore it:** `git checkout origin/carto/main -- <path>` |
+            | File exists on upstream with DIFFERENT path | **Update import:** Change import to use new path |
+            | File was renamed in upstream | **Update all imports** to use new name |
+            | CARTO file depends on missing CARTO file | **Restore CARTO dependencies** from origin/carto/main |
+
+            ### Example: Restoring Missing TypeScript Files
+
+            If error is "Cannot find module './chat_ui/llm_calls/fetch_models'":
+
+            ```bash
+            # Check what carto/main has in that folder
+            git ls-tree origin/carto/main ui/litellm-dashboard/src/components/chat_ui/llm_calls/
+
+            # If file exists on carto/main but missing here, restore it:
+            git checkout origin/carto/main -- ui/litellm-dashboard/src/components/chat_ui/llm_calls/fetch_models.tsx
+
+            # Or restore the entire folder if multiple files are missing:
+            git checkout origin/carto/main -- ui/litellm-dashboard/src/components/chat_ui/llm_calls/
+            ```
+
+            ### Example: Restoring Missing Python Functions
+
+            If error is "ImportError: cannot import name 'some_function'":
+
+            ```bash
+            # Check if carto/main has this function
+            git show origin/carto/main:litellm/proxy/utils.py | grep -A 20 "def some_function"
+
+            # If it exists, restore the file from carto/main
+            git checkout origin/carto/main -- litellm/proxy/utils.py
             ```
 
             ---
@@ -397,7 +451,9 @@ jobs:
 
             | Error Type | Best Fix Approach |
             |------------|-------------------|
-            | Missing function/class | Restore from upstream OR add the missing code |
+            | **Cannot find module** | Check if file exists on carto/main → Restore with `git checkout origin/carto/main -- <path>` |
+            | **ImportError (Python)** | Check if function exists on carto/main → Restore file or add function |
+            | Missing function/class | Restore from carto/main OR upstream, whichever has it |
             | TypeScript type mismatch | Update call site to match function signature |
             | Import error | Add the missing import statement |
             | Merge conflict markers | Remove markers, merge both versions intelligently |
