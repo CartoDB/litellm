@@ -528,23 +528,67 @@ jobs:
             - The most common issue is **conflict markers** - search thoroughly!
             - Test locally before pushing to avoid repeated failures
 
-            ## Handling Docker Build Failures
+            ## Handling Docker Build Failures (CRITICAL - CHECK FIRST!)
 
-            If the Docker build fails:
+            **IMPORTANT:** The Docker build includes a Next.js UI build step. Most Docker failures are actually **TypeScript/React errors** in the UI code, NOT Docker issues!
 
-            1. **Check the build logs** in `/tmp/workflow-logs/*/`
-            2. **Common Docker issues:**
-               - Missing files referenced in Dockerfile
-               - Syntax errors in scripts called during build
-               - Dependency installation failures
-            3. **Test Docker build locally:**
-               ```bash
-               docker build -f docker/Dockerfile.non_root -t test-build .
-               ```
-            4. **If it's a complex Docker issue:**
-               - Comment on PR explaining the issue
-               - Tag it for manual review
-               - Don't attempt complex Docker fixes without testing
+            ### Step 1: Get the ACTUAL error from Docker build logs
+
+            ```bash
+            # Find the latest failed Docker build run
+            DOCKER_RUN_ID=$(gh run list --repo ${{ github.repository }} --workflow="CARTO - Deploy Docker Image (CI)" --status failure --json databaseId --jq '.[0].databaseId')
+            echo "Latest failed Docker run: $DOCKER_RUN_ID"
+
+            # Download and check the logs
+            gh run view $DOCKER_RUN_ID --repo ${{ github.repository }} --log 2>&1 | grep -E "(Type error|Error:|Failed to compile|Cannot find|error TS)" | head -20
+            ```
+
+            ### Step 2: Identify if it's a TypeScript/UI error
+
+            **Common UI build errors (in `ui/litellm-dashboard/`):**
+            - `Type error: Expected X arguments, but got Y` → Function signature mismatch
+            - `Cannot find module` → Missing import
+            - `Property 'X' does not exist` → Type mismatch
+            - `Failed to compile` → Next.js build error
+
+            ### Step 3: Fix TypeScript/UI errors
+
+            **UI code is located in:** `ui/litellm-dashboard/src/`
+
+            ```bash
+            # Check the function definition to understand expected signature
+            grep -rn "export.*functionName\|function functionName\|const functionName" ui/litellm-dashboard/src/
+
+            # Read the file with the error
+            cat ui/litellm-dashboard/src/path/to/file.tsx
+
+            # Fix the call site to match the function signature
+            ```
+
+            **Example fix for "Expected 0 arguments, but got 1":**
+            ```typescript
+            // If modelCostMap() expects no arguments but is called with accessToken:
+            // Check if accessToken should be passed differently (context, hook, etc.)
+            // Or if the function signature changed and call site needs updating
+
+            // WRONG: const data = await modelCostMap(accessToken);
+            // RIGHT: const data = await modelCostMap();  // if function takes no args
+            ```
+
+            ### Step 4: Verify UI fix locally (optional but recommended)
+
+            ```bash
+            cd ui/litellm-dashboard
+            npm install --legacy-peer-deps
+            npm run build
+            ```
+
+            ### Step 5: Only for actual Docker issues (rare)
+
+            If it's truly a Docker issue (not UI/TypeScript):
+            - Missing files referenced in Dockerfile
+            - Dependency installation failures
+            - Base image issues
 
             ## Success Criteria
 
