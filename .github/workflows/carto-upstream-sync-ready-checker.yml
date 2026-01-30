@@ -1,0 +1,295 @@
+name: CARTO - Upstream Sync Ready Checker
+
+# Watches CI workflow completions and adds "sync-ready" label when PR is fully ready
+# This label then triggers the n8n notifier workflow
+# Posts Step 4 "Tests Passed" notification when PR is ready for merge
+
+on:
+  workflow_run:
+    workflows:
+      - "LiteLLM Mock Tests (folder - tests/test_litellm)"
+      - "CARTO - Deploy Docker Image (CI)"
+      - "LiteLLM Linting"
+    types:
+      - completed
+    branches:
+      - 'upstream-sync/**'
+
+permissions:
+  contents: read
+  pull-requests: write  # Need write to add labels
+
+env:
+  SLACK_CHANNEL_LITELLM: "C0A11FKJHDK"  # litellm-fork changelog
+  DOCS_URL: "https://cartodb.getoutline.com/doc/ci-litellm-fork-pMyvwMTU3l"
+
+jobs:
+  check-and-label:
+    name: Check if PR is ready
+    runs-on: ubuntu-latest
+    # Only run on successful CI completions
+    if: github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      - name: Check PR readiness and add label
+        id: check-and-label
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+
+          BRANCH="${{ github.event.workflow_run.head_branch }}"
+          echo "::group::Checking if PR from ${BRANCH} is ready for sync-ready label"
+
+          # Find PR for this branch
+          PR_JSON=$(gh pr list \
+            --repo ${{ github.repository }} \
+            --head "${BRANCH}" \
+            --base "carto/main" \
+            --json number,mergeable,labels,url,title \
+            --jq '.[0]')
+
+          if [[ -z "${PR_JSON}" || "${PR_JSON}" == "null" ]]; then
+            echo "[Ready Checker] No PR found for branch ${BRANCH}"
+            echo "::endgroup::"
+            exit 0
+          fi
+
+          PR_NUMBER=$(echo "${PR_JSON}" | jq -r '.number')
+          MERGEABLE=$(echo "${PR_JSON}" | jq -r '.mergeable')
+          PR_URL=$(echo "${PR_JSON}" | jq -r '.url')
+          PR_TITLE=$(echo "${PR_JSON}" | jq -r '.title')
+          LABELS=$(echo "${PR_JSON}" | jq -r '.labels[].name' | tr '\n' ',' | sed 's/,$//')
+          # Use jq for exact label matching (avoid substring matches)
+          HAS_UPSTREAM_SYNC=$(echo "${PR_JSON}" | jq '[.labels[].name] | any(. == "upstream-sync")')
+          HAS_SYNC_READY=$(echo "${PR_JSON}" | jq '[.labels[].name] | any(. == "sync-ready")')
+
+          echo "[Ready Checker] PR #${PR_NUMBER}: ${PR_TITLE}"
+          echo "[Ready Checker] Mergeable: ${MERGEABLE}"
+          echo "[Ready Checker] Labels: ${LABELS}"
+
+          # Check 1: Must have upstream-sync label
+          if [[ "${HAS_UPSTREAM_SYNC}" != "true" ]]; then
+            echo "[Ready Checker] ❌ Missing upstream-sync label - not an upstream sync PR"
+            echo "::endgroup::"
+            exit 0
+          fi
+
+          # Check 2: Must NOT already have sync-ready label (avoid duplicate work)
+          if [[ "${HAS_SYNC_READY}" == "true" ]]; then
+            echo "[Ready Checker] ✅ Already has sync-ready label - nothing to do"
+            echo "::endgroup::"
+            exit 0
+          fi
+
+          # Check 3: Must be mergeable (no conflicts)
+          if [[ "${MERGEABLE}" != "MERGEABLE" ]]; then
+            echo "[Ready Checker] ❌ PR not mergeable (status: ${MERGEABLE}) - waiting for conflict resolution"
+            echo "::endgroup::"
+            exit 0
+          fi
+
+          # Check 4: All required checks must pass (no FAILURE or PENDING)
+          echo "[Ready Checker] Checking all CI status..."
+
+          CHECKS_JSON=$(gh pr checks ${PR_NUMBER} \
+            --repo ${{ github.repository }} \
+            --json name,state)
+
+          FAILED_COUNT=$(echo "${CHECKS_JSON}" | jq '[.[] | select(.state == "FAILURE")] | length')
+          PENDING_COUNT=$(echo "${CHECKS_JSON}" | jq '[.[] | select(.state == "PENDING")] | length')
+          SUCCESS_COUNT=$(echo "${CHECKS_JSON}" | jq '[.[] | select(.state == "SUCCESS")] | length')
+
+          echo "[Ready Checker] Checks: ${SUCCESS_COUNT} success, ${PENDING_COUNT} pending, ${FAILED_COUNT} failed"
+
+          if [[ "${FAILED_COUNT}" -gt 0 ]]; then
+            echo "[Ready Checker] ❌ ${FAILED_COUNT} checks failed - waiting for CI fixer"
+            echo "${CHECKS_JSON}" | jq -r '.[] | select(.state == "FAILURE") | "  - \(.name): FAILED"'
+            echo "::endgroup::"
+            exit 0
+          fi
+
+          if [[ "${PENDING_COUNT}" -gt 0 ]]; then
+            echo "[Ready Checker] ⏳ ${PENDING_COUNT} checks still pending - waiting..."
+            echo "${CHECKS_JSON}" | jq -r '.[] | select(.state == "PENDING") | "  - \(.name): PENDING"'
+            echo "::endgroup::"
+            exit 0
+          fi
+
+          # All conditions met! Add the sync-ready label
+          echo "[Ready Checker] ✅ All conditions met! Adding sync-ready label..."
+
+          gh pr edit ${PR_NUMBER} \
+            --repo ${{ github.repository }} \
+            --add-label "sync-ready"
+
+          echo "[Ready Checker] 🎉 Added sync-ready label to PR #${PR_NUMBER}"
+          echo "::notice title=PR Ready::${PR_URL} is now ready for merge and n8n notification"
+
+          # Export for Slack notification
+          echo "pr-ready=true" >> $GITHUB_OUTPUT
+          echo "pr-number=${PR_NUMBER}" >> $GITHUB_OUTPUT
+          echo "pr-url=${PR_URL}" >> $GITHUB_OUTPUT
+          echo "pr-title=${PR_TITLE}" >> $GITHUB_OUTPUT
+
+          # Extract version from branch
+          VERSION=$(echo "${BRANCH}" | sed 's|upstream-sync/||')
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+          echo "::endgroup::"
+
+      - name: Notify Slack - Tests Passed
+        if: steps.check-and-label.outputs.pr-ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.check-and-label.outputs.pr-number }}
+          PR_URL: ${{ steps.check-and-label.outputs.pr-url }}
+          VERSION: ${{ steps.check-and-label.outputs.version }}
+        run: |
+          set -eu
+
+          echo "::group::Finding thread_ts from PR comments"
+
+          # Look for thread_ts stored by initial notification
+          THREAD_TS=$(gh pr view ${PR_NUMBER} \
+            --repo ${{ github.repository }} \
+            --json comments \
+            --jq '.comments[].body | select(contains("SLACK_THREAD_TS:")) | capture("SLACK_THREAD_TS:(?<ts>[0-9.]+)") | .ts' \
+            | head -1 || echo "")
+
+          if [[ -n "${THREAD_TS}" ]]; then
+            echo "[Slack] Found thread_ts: ${THREAD_TS} - will reply in thread with broadcast"
+            THREAD_PARAM="\"thread_ts\": \"${THREAD_TS}\", \"reply_broadcast\": true,"
+          else
+            echo "[Slack] No thread_ts found - will post new message"
+            THREAD_PARAM=""
+          fi
+
+          echo "::endgroup::"
+
+          echo "::group::Posting Step 4 notification to Slack"
+
+          WORKFLOW_URL="${{ github.event.workflow_run.html_url }}"
+
+          # Clean version for display
+          VERSION_CLEAN=$(echo "${VERSION}" | sed -E 's/^v//; s/-stable$//')
+
+          # Progress bar (step 4 of 4 complete)
+          PROGRESS="◼️◼️◼️◼️"
+
+          # Build compare URL for upstream changes
+          COMPARE_URL="https://github.com/BerriAI/litellm/releases/tag/${VERSION}"
+
+          # Build improved Block Kit payload with colored sidebar
+          cat > /tmp/slack_payload.json << EOF
+          {
+            "channel": "${SLACK_CHANNEL_LITELLM}",
+            ${THREAD_PARAM}
+            "text": "✅ LiteLLM Upstream Sync: Tests Passed",
+            "unfurl_links": false,
+            "unfurl_media": false,
+            "attachments": [
+              {
+                "color": "#1E88E5",
+                "blocks": [
+                  {
+                    "type": "header",
+                    "text": {
+                      "type": "plain_text",
+                      "text": "✅ LiteLLM Upstream Sync",
+                      "emoji": true
+                    }
+                  },
+                  {
+                    "type": "context",
+                    "elements": [
+                      {
+                        "type": "mrkdwn",
+                        "text": "${PROGRESS}  *Step 4 of 4: Tests Passed*"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "section",
+                    "text": {
+                      "type": "mrkdwn",
+                      "text": "All CI checks completed successfully. PR is ready for review and merge."
+                    }
+                  },
+                  {
+                    "type": "divider"
+                  },
+                  {
+                    "type": "section",
+                    "fields": [
+                      {
+                        "type": "mrkdwn",
+                        "text": "*Version*\n\`v${VERSION_CLEAN}\`"
+                      },
+                      {
+                        "type": "mrkdwn",
+                        "text": "*Status*\n:white_check_mark: Ready to merge"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "context",
+                    "elements": [
+                      {
+                        "type": "mrkdwn",
+                        "text": ":arrow_right: Review changes and merge to deploy the update."
+                      }
+                    ]
+                  },
+                  {
+                    "type": "actions",
+                    "elements": [
+                      {
+                        "type": "button",
+                        "text": { "type": "plain_text", "text": "Review PR", "emoji": true },
+                        "style": "primary",
+                        "url": "${PR_URL}"
+                      },
+                      {
+                        "type": "button",
+                        "text": { "type": "plain_text", "text": "View Release", "emoji": true },
+                        "url": "${COMPARE_URL}"
+                      },
+                      {
+                        "type": "button",
+                        "text": { "type": "plain_text", "text": "View Logs", "emoji": true },
+                        "url": "${WORKFLOW_URL}"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+          EOF
+
+          # Check if SLACK_KEY is configured
+          if [[ -z "${{ secrets.SLACK_KEY }}" ]]; then
+            echo "::warning::SLACK_KEY not configured - skipping Slack notification"
+            echo "::endgroup::"
+            exit 0
+          fi
+
+          # Send to Slack
+          RESPONSE=$(curl -s -X POST https://slack.com/api/chat.postMessage \
+            -H "Authorization: Bearer ${{ secrets.SLACK_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d @/tmp/slack_payload.json)
+
+          if echo "$RESPONSE" | jq -e '.ok == true' > /dev/null 2>&1; then
+            if [[ -n "${THREAD_TS}" ]]; then
+              echo "✅ [Slack] Tests passed notification sent (replied in thread)"
+            else
+              echo "✅ [Slack] Tests passed notification sent (new message)"
+            fi
+          else
+            ERROR=$(echo "$RESPONSE" | jq -r '.error // "unknown"')
+            echo "⚠️ [Slack] Failed to send notification: ${ERROR}"
+          fi
+
+          echo "::endgroup::"
