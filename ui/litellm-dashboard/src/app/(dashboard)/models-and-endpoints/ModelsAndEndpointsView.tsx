@@ -722,10 +722,7 @@ const ModelsAndEndpointsView: React.FC<ModelDashboardProps> = ({
                 </TabPanel>
                 <TabPanel>
                   <CredentialsPanel
-                    accessToken={accessToken}
                     uploadProps={uploadProps}
-                    credentialList={credentialsList}
-                    fetchCredentials={fetchCredentials}
                   />
                 </TabPanel>
                 <TabPanel>
