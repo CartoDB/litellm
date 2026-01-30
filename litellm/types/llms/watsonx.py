@@ -41,3 +41,20 @@ class WatsonXModelPattern(str, Enum):
     IBM_MISTRALAI = "ibm-mistralai"
     GPT_OSS = "openai/gpt-oss"
     LLAMA3_INSTRUCT = "meta-llama/llama-3-instruct"
+
+
+class WatsonXAudioTranscriptionRequestBody(TypedDict, total=False):
+    """
+    Request body for WatsonX audio transcription API.
+
+    WatsonX follows the OpenAI spec for audio transcription with
+    additional project_id/space_id fields for authentication.
+    """
+    model: str
+    project_id: Optional[str]
+    space_id: Optional[str]
+    language: Optional[str]
+    prompt: Optional[str]
+    response_format: Optional[str]
+    temperature: Optional[float]
+    timestamp_granularities: Optional[List[str]]

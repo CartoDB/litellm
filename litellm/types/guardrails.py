@@ -52,6 +52,8 @@ class SupportedGuardrailIntegrations(Enum):
     JAVELIN = "javelin"
     ENKRYPTAI = "enkryptai"
     IBM_GUARDRAILS = "ibm_guardrails"
+    GENERIC_GUARDRAIL_API = "generic_guardrail_api"
+    LITELLM_CONTENT_FILTER = "litellm_content_filter"
 
 
 class Role(Enum):
@@ -638,3 +640,43 @@ class PatchGuardrailRequest(BaseModel):
     guardrail_name: Optional[str] = None
     litellm_params: Optional[BaseLitellmParams] = None
     guardrail_info: Optional[Dict[str, Any]] = None
+
+
+class ContentFilterAction(str, Enum):
+    """Action to take when content matches a pattern or keyword."""
+    BLOCK = "BLOCK"
+    MASK = "MASK"
+
+
+class BlockedWord(BaseModel):
+    """Represents a blocked word/keyword with associated action and metadata."""
+    keyword: str = Field(description="The keyword or phrase to block")
+    action: ContentFilterAction = Field(
+        default=ContentFilterAction.BLOCK,
+        description="Action to take when keyword is detected"
+    )
+    description: Optional[str] = Field(
+        default=None, description="Optional description of why this keyword is blocked"
+    )
+    case_sensitive: bool = Field(
+        default=False, description="Whether to match case-sensitively"
+    )
+
+
+class ContentFilterPattern(BaseModel):
+    """Represents a regex pattern for content filtering."""
+    pattern_name: str = Field(description="Name identifier for the pattern")
+    pattern: Optional[str] = Field(
+        default=None, description="Regex pattern to match (required for custom patterns)"
+    )
+    pattern_type: Literal["prebuilt", "custom"] = Field(
+        default="custom",
+        description="Whether this is a prebuilt pattern (e.g., 'us_ssn') or custom regex"
+    )
+    action: ContentFilterAction = Field(
+        default=ContentFilterAction.MASK,
+        description="Action to take when pattern matches"
+    )
+    description: Optional[str] = Field(
+        default=None, description="Optional description of what this pattern detects"
+    )

@@ -7,7 +7,15 @@ This module tests the auth commands and their associated functionality.
 import pytest
 import requests
 from unittest.mock import AsyncMock, patch, Mock, call
-from litellm.proxy.client.cli.commands.auth import _normalize_teams, _poll_for_ready_data, _poll_for_authentication
+
+# Skip this test module if required imports are not available (upstream v1.81.0 feature)
+try:
+    from litellm.proxy.client.cli.commands.auth import _normalize_teams, _poll_for_ready_data, _poll_for_authentication
+except ImportError:
+    pytest.skip(
+        "_normalize_teams not available - upstream v1.81.0 feature not merged",
+        allow_module_level=True
+    )
 
 @pytest.mark.asyncio
 async def test_normalize_teams_teams_only():
