@@ -16,9 +16,9 @@ import { EndpointType } from "./mode_endpoint_mapping";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { coy } from "react-syntax-highlighter/dist/esm/styles/prism";
 import EndpointSelector from "./EndpointSelector";
-import TagSelector from "../tag_management/TagSelector";
-import VectorStoreSelector from "../vector_store_management/VectorStoreSelector";
-import GuardrailSelector from "../guardrails/GuardrailSelector";
+import TagSelector from "../../tag_management/TagSelector";
+import VectorStoreSelector from "../../vector_store_management/VectorStoreSelector";
+import GuardrailSelector from "../../guardrails/GuardrailSelector";
 import { generateCodeSnippet } from "./CodeSnippets";
 import { MessageType } from "./types";
 import ReasoningContent from "./ReasoningContent";
@@ -50,7 +50,7 @@ import {
   FilePdfOutlined,
   ArrowUpOutlined,
 } from "@ant-design/icons";
-import NotificationsManager from "../molecules/notifications_manager";
+import NotificationsManager from "../../molecules/notifications_manager";
 import { makeOpenAIEmbeddingsRequest } from "../llm_calls/embeddings_api";
 import { truncateString } from "./chatUtils";
 
