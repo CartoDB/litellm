@@ -63,6 +63,25 @@ else:
     LiteLLMLoggingObj = Any
 
 
+class OCIRequestWrapper:
+    """
+    Wrapper for HTTP requests compatible with OCI signer interface.
+
+    This class wraps request data in a format compatible with OCI SDK signers,
+    which expect objects with method, url, headers, body, and path_url attributes.
+    """
+    method: str
+    url: str
+    headers: dict
+    body: bytes
+
+    @property
+    def path_url(self) -> str:
+        """Returns the path + query string for OCI signing."""
+        parsed_url = urlparse(self.url)
+        return parsed_url.path + ("?" + parsed_url.query if parsed_url.query else "")
+
+
 def sha256_base64(data: bytes) -> str:
     digest = hashlib.sha256(data).digest()
     return base64.b64encode(digest).decode()

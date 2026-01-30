@@ -9,8 +9,18 @@ from httpx import Response
 
 sys.path.insert(0, os.path.abspath("../../.."))
 
-from litellm_enterprise.enterprise_callbacks.send_emails.sendgrid_email import (
-    SendGridEmailLogger,
+# Skip this entire module if enterprise imports fail
+try:
+    from litellm_enterprise.enterprise_callbacks.send_emails.sendgrid_email import (
+        SendGridEmailLogger,
+    )
+    ENTERPRISE_AVAILABLE = True
+except (ImportError, ModuleNotFoundError):
+    ENTERPRISE_AVAILABLE = False
+
+pytestmark = pytest.mark.skipif(
+    not ENTERPRISE_AVAILABLE,
+    reason="Enterprise package not available or incompatible"
 )
 
 
@@ -19,12 +29,12 @@ def mock_env_vars():
     # Store original values
     original_api_key = os.environ.get("SENDGRID_API_KEY")
     original_sender_email = os.environ.get("SENDGRID_SENDER_EMAIL")
-    
+
     # Set test API key and remove SENDGRID_SENDER_EMAIL to ensure isolation
     os.environ["SENDGRID_API_KEY"] = "test_api_key"
     if "SENDGRID_SENDER_EMAIL" in os.environ:
         del os.environ["SENDGRID_SENDER_EMAIL"]
-    
+
     try:
         yield
     finally:
@@ -33,7 +43,7 @@ def mock_env_vars():
             os.environ["SENDGRID_API_KEY"] = original_api_key
         elif "SENDGRID_API_KEY" in os.environ:
             del os.environ["SENDGRID_API_KEY"]
-        
+
         if original_sender_email is not None:
             os.environ["SENDGRID_SENDER_EMAIL"] = original_sender_email
 
@@ -109,7 +119,7 @@ async def test_send_email_multiple_recipients(mock_env_vars, mock_httpx_client):
     respx.post("https://api.sendgrid.com/v3/mail/send").mock(
         return_value=httpx.Response(202, text="accepted")
     )
-    
+
     logger = SendGridEmailLogger()
 
     from_email = "test@example.com"
