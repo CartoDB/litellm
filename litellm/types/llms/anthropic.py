@@ -1,7 +1,7 @@
 from enum import Enum
-from typing import Dict, Iterable, List, Optional, Union
+from typing import Any, Dict, Iterable, List, Optional, Union
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing_extensions import Literal, Required, TypedDict
 
 from .openai import ChatCompletionCachedContent, ChatCompletionThinkingBlock, ChatCompletionRedactedThinkingBlock
@@ -13,11 +13,28 @@ class AnthropicMessagesToolChoice(TypedDict, total=False):
     disable_parallel_tool_use: bool  # default is false
 
 
-class AnthropicInputSchema(TypedDict, total=False):
-    type: Optional[str]
-    properties: Optional[dict]
-    additionalProperties: Optional[bool]
-    required: Optional[List[str]]
+AnthropicInputSchema = TypedDict(
+    "AnthropicInputSchema",
+    {
+        "type": Optional[str],
+        "properties": Optional[dict],
+        "additionalProperties": Optional[bool],
+        "required": Optional[List[str]],
+        "$defs": Optional[Dict],
+        "strict": Optional[bool],
+    },
+    total=False,
+)
+
+
+class AnthropicOutputSchema(TypedDict, total=False):
+    type: Required[Literal["json_schema"]]
+    schema: Required[dict]
+
+
+class AnthropicOutputConfig(TypedDict, total=False):
+    """Configuration for controlling Claude's output behavior."""
+    effort: Literal["high", "medium", "low"]
 
 
 class AnthropicMessagesTool(TypedDict, total=False):
@@ -26,6 +43,9 @@ class AnthropicMessagesTool(TypedDict, total=False):
     input_schema: Optional[AnthropicInputSchema]
     type: Literal["custom"]
     cache_control: Optional[Union[dict, ChatCompletionCachedContent]]
+    defer_loading: bool
+    allowed_callers: Optional[List[str]]
+    input_examples: Optional[List[Dict[str, Any]]]
 
 
 class AnthropicComputerTool(TypedDict, total=False):
