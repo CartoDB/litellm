@@ -23,7 +23,7 @@ interface ModelDataTableProps<TData, TValue> {
   data: TData[];
   columns: ColumnDef<TData, TValue>[];
   isLoading?: boolean;
-  table: any; // Add table prop to access column visibility controls
+  table?: any; // Optional: pass a ref to access column visibility controls
   defaultSorting?: SortingState;
 }
 

@@ -1,7 +1,7 @@
 # LITELLM PROXY DEPENDENCIES #
 anyio==4.8.0 # openai + http req.
 httpx==0.28.1
-openai==1.99.5  # openai req.
+openai==2.9.0  # openai req.
 fastapi==0.116.1 # server dep
 starlette==0.47.2 # starlette fastapi dep
 backoff==2.2.1 # server dep
@@ -44,7 +44,7 @@ sentry_sdk==2.21.0 # for sentry error handling
 detect-secrets==1.5.0 # Enterprise - secret detection / masking in LLM requests
 cryptography==44.0.1
 tzdata==2025.1 # IANA time zone database
-litellm-proxy-extras==0.2.29 # for proxy extras - e.g. prisma migrations
+litellm-proxy-extras==0.4.27 # for proxy extras - e.g. prisma migrations
 ### LITELLM PACKAGE DEPENDENCIES
 python-dotenv==1.0.1 # for env
 tiktoken==0.8.0 # for calculating usage

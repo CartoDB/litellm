@@ -283,11 +283,7 @@ const TopKeyView: React.FC<TopKeyViewProps> = ({
                   keyId={selectedKey}
                   onClose={handleClose}
                   keyData={keyData}
-                  accessToken={accessToken}
-                  userID={userID}
-                  userRole={userRole}
                   teams={teams}
-                  premiumUser={premiumUser}
                 />
               </div>
             </div>
