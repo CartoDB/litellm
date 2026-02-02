@@ -276,6 +276,8 @@ class CallTypes(str, Enum):
     acreate_batch = "acreate_batch"
     aretrieve_batch = "aretrieve_batch"
     retrieve_batch = "retrieve_batch"
+    acancel_batch = "acancel_batch"
+    cancel_batch = "cancel_batch"
     pass_through = "pass_through_endpoint"
     anthropic_messages = "anthropic_messages"
     get_assistants = "get_assistants"
@@ -2635,6 +2637,7 @@ class CostBreakdown(TypedDict, total=False):
     )
     total_cost: float  # Total cost (input + output + tool usage)
     tool_usage_cost: float  # Cost of usage of built-in tools
+    additional_costs: Dict[str, float]  # Free-form additional costs (e.g., {"azure_model_router_flat_cost": 0.00014})
     original_cost: float  # Cost before discount (optional)
     discount_percent: float  # Discount percentage applied (e.g., 0.05 = 5%) (optional)
     discount_amount: float  # Discount amount in USD (optional)
