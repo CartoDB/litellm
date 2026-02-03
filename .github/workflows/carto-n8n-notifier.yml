@@ -79,11 +79,20 @@ jobs:
           LABELS=$(echo "${LABELS_JSON}" | jq -r '.labels[].name' | tr '\n' ',' | sed 's/,$//')
           # Use jq for exact label matching (avoid substring matches)
           HAS_UPSTREAM_SYNC=$(echo "${LABELS_JSON}" | jq '[.labels[].name] | any(. == "upstream-sync")')
+          HAS_SILENT_SYNC=$(echo "${LABELS_JSON}" | jq '[.labels[].name] | any(. == "silent-sync")')
 
           echo "[Notifier] Labels: ${LABELS}"
 
           if [[ "${HAS_UPSTREAM_SYNC}" != "true" ]]; then
             echo "[Notifier] ❌ Missing upstream-sync label - not a valid sync PR"
+            echo "is-valid=false" >> $GITHUB_OUTPUT
+            echo "::endgroup::"
+            exit 0
+          fi
+
+          # Check for silent mode - skip n8n webhook
+          if [[ "${HAS_SILENT_SYNC}" == "true" ]]; then
+            echo "[Notifier] 🔇 Silent mode enabled (silent-sync label) - skipping n8n webhook"
             echo "is-valid=false" >> $GITHUB_OUTPUT
             echo "::endgroup::"
             exit 0

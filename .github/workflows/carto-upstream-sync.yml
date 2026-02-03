@@ -30,6 +30,11 @@ on:
     - cron: "0 12 * * 1"  # Every Monday at noon (12:00 UTC)
 
   workflow_dispatch:  # Manual trigger for testing
+    inputs:
+      silent:
+        description: "Silent mode - skip all Slack and n8n notifications (useful for testing)"
+        type: boolean
+        default: false
 
 jobs:
   ##############################################################################
@@ -479,12 +484,20 @@ jobs:
           NEW_VERSION: ${{ needs.check-new-release.outputs.new-version }}
           SYNC_BRANCH: ${{ steps.create-sync-branch.outputs.branch-name }}
           GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          SILENT_MODE: ${{ inputs.silent }}
         run: |
           set -eu
 
           echo "::group::Creating Pull Request"
 
           PR_BODY_FILE="sync-pr-body.md"
+
+          # Build label arguments
+          LABEL_ARGS="--label upstream-sync --label automated"
+          if [[ "${SILENT_MODE}" == "true" ]]; then
+            LABEL_ARGS="${LABEL_ARGS} --label silent-sync"
+            echo "[Sync] Silent mode enabled - adding silent-sync label"
+          fi
 
           # Create PR from sync branch to carto/main
           # Using dedicated branch (not main) allows pushing conflict resolution commits
@@ -494,8 +507,7 @@ jobs:
             --head "${SYNC_BRANCH}" \
             --title "🔄 Upstream Sync: LiteLLM ${NEW_VERSION}" \
             --body-file ${PR_BODY_FILE} \
-            --label "upstream-sync" \
-            --label "automated")
+            ${LABEL_ARGS})
 
           echo "[Sync] Pull Request created: ${PR_URL}"
           echo "pr-url=${PR_URL}" >> $GITHUB_OUTPUT
@@ -566,7 +578,7 @@ jobs:
   notify-slack:
     runs-on: ubuntu-latest
     name: "Notify Slack"
-    if: always()
+    if: always() && inputs.silent != true
     needs:
       - check-new-release
       - sync-main-branch

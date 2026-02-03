@@ -63,6 +63,7 @@ jobs:
           # Use jq for exact label matching (avoid substring matches)
           HAS_UPSTREAM_SYNC=$(echo "${PR_JSON}" | jq '[.labels[].name] | any(. == "upstream-sync")')
           HAS_SYNC_READY=$(echo "${PR_JSON}" | jq '[.labels[].name] | any(. == "sync-ready")')
+          HAS_SILENT_SYNC=$(echo "${PR_JSON}" | jq '[.labels[].name] | any(. == "silent-sync")')
 
           echo "[Ready Checker] PR #${PR_NUMBER}: ${PR_TITLE}"
           echo "[Ready Checker] Mergeable: ${MERGEABLE}"
@@ -131,6 +132,11 @@ jobs:
           echo "pr-number=${PR_NUMBER}" >> $GITHUB_OUTPUT
           echo "pr-url=${PR_URL}" >> $GITHUB_OUTPUT
           echo "pr-title=${PR_TITLE}" >> $GITHUB_OUTPUT
+          echo "silent-mode=${HAS_SILENT_SYNC}" >> $GITHUB_OUTPUT
+
+          if [[ "${HAS_SILENT_SYNC}" == "true" ]]; then
+            echo "[Ready Checker] 🔇 Silent mode enabled - will skip Slack notification"
+          fi
 
           # Extract version from branch
           VERSION=$(echo "${BRANCH}" | sed 's|upstream-sync/||')
@@ -139,7 +145,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Notify Slack - Tests Passed
-        if: steps.check-and-label.outputs.pr-ready == 'true'
+        if: steps.check-and-label.outputs.pr-ready == 'true' && steps.check-and-label.outputs.silent-mode != 'true'
         env:
           GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
           PR_NUMBER: ${{ steps.check-and-label.outputs.pr-number }}
