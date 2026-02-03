@@ -298,6 +298,35 @@ jobs:
           git config --global user.name "Cartofante"
           git config --global user.email "cartofante@carto.com"
 
+      - name: Check sync-required files status
+        id: sync-check
+        run: |
+          echo "::group::Checking sync-required files"
+
+          # Files that MUST stay in sync with upstream (accept upstream version)
+          SYNC_FILES="schema.prisma"
+
+          HEAD_REF="${{ steps.pr-info.outputs.head-ref }}"
+
+          for FILE in $SYNC_FILES; do
+            if [ -f "$FILE" ]; then
+              # Compare with upstream version from this branch (which has upstream content)
+              CURRENT_LINES=$(wc -l < $FILE | tr -d ' ')
+              echo "[Resolver] $FILE: $CURRENT_LINES lines (current)"
+
+              # Store sync-required files list for Claude
+              echo "$FILE" >> /tmp/sync_required_files.txt
+            fi
+          done
+
+          if [ -f /tmp/sync_required_files.txt ]; then
+            echo "sync-files=$(cat /tmp/sync_required_files.txt | tr '\n' ' ')" >> $GITHUB_OUTPUT
+          else
+            echo "sync-files=" >> $GITHUB_OUTPUT
+          fi
+
+          echo "::endgroup::"
+
       - name: Start merge with carto/main (HARDCODED - creates conflicts)
         id: start-merge
         run: |
@@ -668,10 +697,25 @@ jobs:
             >>>>>>> carto/main
             ```
 
-            **Resolution priorities (CARTO-FIRST):**
+            ## ⚠️ CRITICAL: SYNC-REQUIRED FILES (ALWAYS ACCEPT UPSTREAM)
+
+            These files MUST track upstream even if CARTO has commits. Accept the upstream (HEAD) version:
+
+            | File | Reason |
+            |------|--------|
+            | `schema.prisma` | Database schema MUST match LiteLLM code expectations |
+            | `litellm/proxy/schema.prisma` | Upstream Prisma schema |
+
+            **For schema.prisma specifically:**
+            - ALWAYS accept the upstream (HEAD) version - it has more tables
+            - Missing tables cause runtime errors like: `'Prisma' object has no attribute 'litellm_agentstable'`
+            - If CARTO added unique tables, add them AFTER accepting upstream, but this is rare
+
+            **Resolution priorities (with SYNC-REQUIRED EXCEPTION):**
 
             | Priority | File Pattern | Resolution | Reason |
             |----------|--------------|------------|--------|
+            | **0** | `schema.prisma` | **ACCEPT UPSTREAM (HEAD)** | Database schema must match code |
             | 1 | Files in CARTO-MODIFIED list above | **KEEP carto/main** | CartoDB org members made intentional changes |
             | 2 | `carto_*.yaml`, `carto-*.yml` | **KEEP carto/main** | CARTO workflows |
             | 3 | `CARTO_*.md` | **KEEP carto/main** | CARTO docs |

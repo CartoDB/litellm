@@ -407,6 +407,18 @@ jobs:
 
             **CRITICAL:** For "Cannot find module" or "ImportError" errors, ALWAYS compare branches first!
 
+            | Error Pattern | Root Cause | Fix Location |
+            |--------------|------------|--------------|
+            | `Type error: Expected X arguments` | TypeScript function signature mismatch | `ui/litellm-dashboard/src/` |
+            | `Cannot find module` | Missing import in UI | `ui/litellm-dashboard/src/` |
+            | `Failed to compile` | Next.js build error | `ui/litellm-dashboard/src/` |
+            | `ImportError` / `ModuleNotFoundError` | Python import missing | `litellm/` or `tests/` |
+            | `SyntaxError` | Conflict markers or bad merge | Check for `<<<<<<<` markers |
+            | `FAILED tests/...` | Test assertion failure | `tests/` - fix test expectations |
+            | `AssertionError` | Test expecting wrong value | Update test to match CARTO behavior |
+            | `'Prisma' object has no attribute` | **schema.prisma missing tables** | Sync `schema.prisma` from upstream |
+            | `AttributeError: 'Prisma'` | **schema.prisma out of sync** | Sync `schema.prisma` from upstream |
+
             ### Decision Matrix for Missing Files
 
             | Scenario | Fix |
@@ -443,6 +455,35 @@ jobs:
             git checkout origin/carto/main -- litellm/proxy/utils.py
             ```
 
+            ### For Schema/Prisma Errors
+
+            If you see errors like:
+            - `'Prisma' object has no attribute 'litellm_agentstable'`
+            - `AttributeError: 'Prisma' object has no attribute`
+
+            This means `schema.prisma` is missing tables from upstream. **This is a CRITICAL issue.**
+
+            **Fix:**
+            ```bash
+            # Check current vs upstream table count
+            echo "Current tables: $(grep -c '^model ' schema.prisma)"
+            echo "Upstream tables: $(git show upstream/main:schema.prisma | grep -c '^model ')"
+
+            # Sync the entire schema from upstream
+            git show upstream/main:schema.prisma > schema.prisma
+
+            # Or from the current branch's origin (which should have upstream content)
+            git show origin/HEAD:schema.prisma > schema.prisma
+            ```
+
+            **Required tables that MUST exist:**
+            - LiteLLM_AgentsTable
+            - LiteLLM_SSOConfig
+            - LiteLLM_CacheConfig
+            - LiteLLM_ManagedVectorStoreIndexTable
+            - LiteLLM_UISettings
+            - LiteLLM_SkillsTable
+
             ---
 
             ## STEP 4: PLAN YOUR FIX
@@ -458,6 +499,7 @@ jobs:
             | Import error | Add the missing import statement |
             | Merge conflict markers | Remove markers, merge both versions intelligently |
             | Test assertion failure | Update test OR fix code to match expected behavior |
+            | **Schema/Prisma error** | Sync `schema.prisma` from upstream (see above) |
 
             ---
 

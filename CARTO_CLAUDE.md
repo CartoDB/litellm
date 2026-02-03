@@ -402,6 +402,26 @@ When conflicts are detected, the `carto-upstream-sync-resolver.yml` workflow:
 
 \* CARTO commits = commits by CartoDB GitHub org members (verified via `gh api orgs/CartoDB/members`)
 
+#### Sync-Required Files (SPECIAL HANDLING)
+
+> ⚠️ **EXCEPTION TO CARTO-FIRST RULE:** Some files MUST track upstream even if CARTO has modified them.
+
+| File | Sync Strategy | Reason |
+|------|---------------|--------|
+| `schema.prisma` | **ALWAYS accept upstream** | Database schema must match LiteLLM code expectations |
+| `litellm/proxy/schema.prisma` | **ALWAYS accept upstream** | Proxy schema must match code |
+
+**Why schema.prisma is special:**
+- LiteLLM code references Prisma models by name (e.g., `prisma.litellm_agentstable`)
+- Missing tables cause runtime errors: `'Prisma' object has no attribute 'litellm_agentstable'`
+- Upstream adds new tables with each release that the code depends on
+- CARTO customizations to schema are **additive** (add new tables), not replacive
+
+**Resolution for sync-required files:**
+1. Accept the upstream (HEAD) version completely
+2. If CARTO has unique additions (rare), add them AFTER the upstream content
+3. Validate all required tables exist before committing
+
 **CARTO Customizations (dynamically fetched from merged PRs):**
 
 The resolver workflow automatically builds rich context about CARTO customizations:
