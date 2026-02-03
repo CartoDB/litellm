@@ -130,10 +130,13 @@ COPY --from=builder \
 COPY --from=builder /usr/bin/prisma /usr/bin/prisma
 
 # Final runtime environment configuration
+# CARTO: Set UI and assets paths to match our /tmp locations
 ENV PRISMA_BINARY_CACHE_DIR=/app/.cache/prisma-python/binaries \
     PRISMA_CLI_BINARY_TARGETS="debian-openssl-3.0.x" \
     HOME=/app \
     LITELLM_NON_ROOT=true \
+    LITELLM_UI_PATH=/tmp/litellm_ui \
+    LITELLM_ASSETS_PATH=/tmp/litellm_assets \
     XDG_CACHE_HOME=/app/.cache
 
 # Install packages from wheels and optional extras without network
