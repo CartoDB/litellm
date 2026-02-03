@@ -845,6 +845,145 @@ jobs:
           echo "resolved=true" >> $GITHUB_OUTPUT
           echo "::endgroup::"
 
+      # =========================================================================
+      # CARTO Patch Verification - Dynamically verify CARTO code is preserved
+      # =========================================================================
+      - name: Verify CARTO patches preserved (dynamic check)
+        id: verify-carto-patches
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          echo "::group::Verifying CARTO patches are preserved"
+
+          # Get list of CARTO-modified files from earlier step
+          CARTO_FILES="${{ steps.carto-files.outputs.carto-files }}"
+
+          if [ -z "$CARTO_FILES" ]; then
+            echo "[Verify] No CARTO-modified files were identified - skipping verification"
+            echo "verified=true" >> $GITHUB_OUTPUT
+            echo "::endgroup::"
+            exit 0
+          fi
+
+          echo "[Verify] Checking CARTO patches in $(echo "$CARTO_FILES" | wc -l | tr -d ' ') files..."
+
+          MISSING_PATCHES=0
+          WARNINGS=""
+
+          # For each CARTO-modified file, verify it still has CARTO-specific code
+          for FILE in $CARTO_FILES; do
+            if [ ! -f "$FILE" ]; then
+              echo "::warning::CARTO file missing: $FILE"
+              WARNINGS="${WARNINGS}\n- ⚠️ File missing: $FILE"
+              continue
+            fi
+
+            # Check for CARTO markers (comments that indicate CARTO customizations)
+            # Look for: # CARTO:, # PATCH:, _patch_, or commits from CARTO PRs
+            if grep -qE "# CARTO:|# PATCH:|_patch_|CARTO.*fix|Redis.*session" "$FILE" 2>/dev/null; then
+              echo "  ✅ $FILE - CARTO markers found"
+            else
+              # No explicit markers - check if file differs from upstream
+              # by comparing with the upstream tag
+              UPSTREAM_TAG="${{ steps.pr-info.outputs.base-ref }}"
+
+              # Get the file from carto/main to compare
+              CARTO_CONTENT=$(git show origin/carto/main:"$FILE" 2>/dev/null | head -100 || echo "")
+              CURRENT_CONTENT=$(head -100 "$FILE" 2>/dev/null || echo "")
+
+              if [ "$CARTO_CONTENT" != "$CURRENT_CONTENT" ]; then
+                # File was modified - check if CARTO changes are still there
+                # by looking for unique lines from carto/main version
+                CARTO_UNIQUE=$(git show origin/carto/main:"$FILE" 2>/dev/null | grep -vxFf <(cat "$FILE") | head -5 || echo "")
+
+                if [ -n "$CARTO_UNIQUE" ]; then
+                  echo "::warning::CARTO code may be missing from: $FILE"
+                  WARNINGS="${WARNINGS}\n- ⚠️ CARTO code may be missing: $FILE"
+                  MISSING_PATCHES=$((MISSING_PATCHES + 1))
+                else
+                  echo "  ✅ $FILE - CARTO changes preserved"
+                fi
+              else
+                echo "  ✅ $FILE - matches carto/main"
+              fi
+            fi
+          done
+
+          if [ $MISSING_PATCHES -gt 0 ]; then
+            echo ""
+            echo "::warning::$MISSING_PATCHES files may have lost CARTO patches!"
+            echo "Review these files manually before merging."
+            echo "verified=partial" >> $GITHUB_OUTPUT
+            echo "warnings<<EOF" >> $GITHUB_OUTPUT
+            echo -e "$WARNINGS" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          else
+            echo ""
+            echo "✅ All CARTO patches verified"
+            echo "verified=true" >> $GITHUB_OUTPUT
+          fi
+
+          echo "::endgroup::"
+
+      # =========================================================================
+      # File Rename Detection - Detect upstream renames affecting CARTO patches
+      # =========================================================================
+      - name: Detect upstream file renames affecting CARTO patches
+        id: detect-renames
+        run: |
+          echo "::group::Detecting file renames that may affect CARTO patches"
+
+          # Get CARTO-modified files
+          CARTO_FILES="${{ steps.carto-files.outputs.carto-files }}"
+
+          if [ -z "$CARTO_FILES" ]; then
+            echo "[Renames] No CARTO files to check"
+            echo "has-problematic-renames=false" >> $GITHUB_OUTPUT
+            echo "::endgroup::"
+            exit 0
+          fi
+
+          # Check for renames between carto/main and HEAD (the merged result)
+          RENAMES=$(git diff --name-status --find-renames=50% origin/carto/main HEAD -- litellm/ 2>/dev/null | grep "^R" || echo "")
+
+          if [ -z "$RENAMES" ]; then
+            echo "[Renames] No file renames detected"
+            echo "has-problematic-renames=false" >> $GITHUB_OUTPUT
+            echo "::endgroup::"
+            exit 0
+          fi
+
+          echo "[Renames] Found renames:"
+          echo "$RENAMES"
+
+          PROBLEMATIC=""
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            OLD_PATH=$(echo "$line" | awk '{print $2}')
+            NEW_PATH=$(echo "$line" | awk '{print $3}')
+
+            # Check if the old path was a CARTO-modified file
+            if echo "$CARTO_FILES" | grep -q "^${OLD_PATH}$"; then
+              echo "::warning::CARTO patch in renamed file: $OLD_PATH → $NEW_PATH"
+              PROBLEMATIC="${PROBLEMATIC}\n- \`${OLD_PATH}\` → \`${NEW_PATH}\`"
+            fi
+          done <<< "$RENAMES"
+
+          if [ -n "$PROBLEMATIC" ]; then
+            echo "has-problematic-renames=true" >> $GITHUB_OUTPUT
+            echo "renamed-files<<EOF" >> $GITHUB_OUTPUT
+            echo -e "$PROBLEMATIC" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+            echo ""
+            echo "::warning::Some CARTO-patched files were renamed by upstream!"
+            echo "Verify the patches were applied to the new file locations."
+          else
+            echo "[Renames] No CARTO-patched files were renamed"
+            echo "has-problematic-renames=false" >> $GITHUB_OUTPUT
+          fi
+
+          echo "::endgroup::"
+
       - name: Complete merge commit (HARDCODED - creates merge with both parents)
         id: complete-merge
         run: |
@@ -928,6 +1067,8 @@ jobs:
           | Start merge | Workflow (hardcoded) | ✅ |
           | Edit conflicted files | Claude Code | ${{ steps.claude-run.outcome == 'success' && '✅' || '❌' }} |
           | Verify no markers | Workflow (hardcoded) | ${{ steps.verify-resolution.outcome == 'success' && '✅' || '❌' }} |
+          | Verify CARTO patches | Workflow (dynamic) | ${{ steps.verify-carto-patches.outputs.verified == 'true' && '✅' || (steps.verify-carto-patches.outputs.verified == 'partial' && '⚠️' || '❌') }} |
+          | Detect file renames | Workflow (hardcoded) | ${{ steps.detect-renames.outputs.has-problematic-renames == 'true' && '⚠️' || '✅' }} |
           | Create merge commit | Workflow (hardcoded) | ${{ steps.complete-merge.outcome == 'success' && '✅' || '❌' }} |
           | Push to sync branch | Workflow (hardcoded) | ${{ steps.push-resolution.outcome == 'success' && '✅' || '❌' }} |
 
@@ -1001,6 +1142,8 @@ jobs:
           |------|--------|
           | ✏️ Claude file edits | ${{ steps.claude-run.outcome }} |
           | 🔍 Verify no markers | ${{ steps.verify-resolution.outcome }} |
+          | 🔒 Verify CARTO patches | ${{ steps.verify-carto-patches.outputs.verified == 'true' && 'success' || (steps.verify-carto-patches.outputs.verified == 'partial' && 'warning' || 'failed') }} |
+          | 🔄 Detect file renames | ${{ steps.detect-renames.outputs.has-problematic-renames == 'true' && 'warning' || 'success' }} |
           | 📝 Create merge commit | ${{ steps.complete-merge.outcome }} |
           | 📌 Push to sync branch | ${{ steps.push-resolution.outcome }} |
 
