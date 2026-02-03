@@ -73,6 +73,9 @@ RUN find /usr/lib -type f -path "*/tornado/test/*" -delete && \
 # Install semantic_router and aurelio-sdk using script
 RUN chmod +x docker/install_auto_router.sh && ./docker/install_auto_router.sh
 
+# CARTO: Create UI directory for non-root runtime (fixes permission denied error)
+RUN mkdir -p /var/lib/litellm && chmod 777 /var/lib/litellm
+
 # CARTO: Generate prisma client with explicit binary target to avoid wolfi warning
 ENV PRISMA_CLI_BINARY_TARGETS="debian-openssl-3.0.x"
 RUN prisma generate

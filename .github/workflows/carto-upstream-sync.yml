@@ -142,17 +142,18 @@ jobs:
           git remote add upstream https://github.com/BerriAI/litellm.git || true
           git fetch upstream --tags
 
-          # Merge upstream/main while preserving upstream commit history
-          echo "[Sync] Merging upstream/main with -X theirs strategy (preserves commit history)..."
+          # Merge the specific stable tag (not upstream/main!) to ensure version consistency
+          # This is critical: code and schema must match the same tagged release
+          echo "[Sync] Merging ${NEW_VERSION} tag with -X theirs strategy (preserves commit history)..."
 
           # Use merge strategy that accepts all upstream changes on conflict
           # This preserves the full commit history with original SHAs
-          git merge upstream/main --no-edit -X theirs -m "sync: merge upstream/main for ${NEW_VERSION}
+          git merge "${NEW_VERSION}" --no-edit -X theirs -m "sync: merge ${NEW_VERSION} (stable tag)
 
           Automatic sync from upstream BerriAI/litellm
           Preparing for ${NEW_VERSION} release
 
-          Strategy: Merge with history preservation (main mirrors upstream)"
+          Strategy: Merge from stable tag (ensures code/schema version match)"
 
           if [ $? -eq 0 ]; then
             echo "[Sync] ✅ Merge successful with preserved history"
@@ -175,12 +176,12 @@ jobs:
               done
 
               # Complete the merge commit
-              git commit --no-edit -m "sync: merge upstream/main for ${NEW_VERSION}
+              git commit --no-edit -m "sync: merge ${NEW_VERSION} (stable tag)
 
-          Automatic sync from upstream BerriAI/litellm
-          Preparing for ${NEW_VERSION} release
+          Automatic sync from upstream BerriAI/litellm stable tag
+          Version: ${NEW_VERSION}
 
-          Strategy: Merge with manual conflict resolution (accepted all upstream changes)"
+          Strategy: Merge from stable tag with manual conflict resolution"
 
               echo "[Sync] ✅ Conflicts resolved, merge completed with preserved history"
             else
