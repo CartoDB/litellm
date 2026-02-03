@@ -6,8 +6,12 @@
 # releases from BerriAI/litellm.
 #
 # Branch Strategy:
-#   1. BerriAI/litellm:main -> CartoDB/litellm:main (direct push with PAT)
+#   1. BerriAI/litellm:<tag> -> CartoDB/litellm:main (merge specific stable tag)
 #   2. CartoDB/litellm:main -> CartoDB/litellm:carto/main (PR for manual review)
+#
+# IMPORTANT: We merge the specific stable TAG (e.g., v1.81.0-stable), NOT upstream/main.
+# This ensures the code matches the schema for that release. Merging upstream/main
+# would bring in unreleased code that may require database tables not in the stable schema.
 #
 # The workflow runs every Monday at noon and performs two checks:
 #   - Detects new stable releases (tagged with -stable suffix) and syncs main
@@ -129,30 +133,32 @@ jobs:
           git config --global user.email "cartofante@carto.com"
           git config --global user.name "Cartofante"
 
-      - name: Sync main with upstream/main
+      - name: Sync main with upstream stable tag
         env:
           NEW_VERSION: ${{ needs.check-new-release.outputs.new-version }}
         run: |
           set -eu
 
-          echo "::group::Syncing main branch with upstream"
-          echo "[Sync] main should be a mirror of upstream - merging with proper history preservation"
+          echo "::group::Syncing main branch with upstream stable tag"
+          echo "[Sync] main should sync with the specific stable tag (NOT upstream/main)"
 
           # Add upstream remote
           git remote add upstream https://github.com/BerriAI/litellm.git || true
           git fetch upstream --tags
 
-          # Merge upstream/main while preserving upstream commit history
-          echo "[Sync] Merging upstream/main with -X theirs strategy (preserves commit history)..."
+          # Merge the specific upstream tag (NOT upstream/main!)
+          # IMPORTANT: We merge the tag to ensure code matches the stable release schema
+          # Merging upstream/main would bring in unreleased code that may require
+          # database tables not present in the stable release schema.
+          echo "[Sync] Merging tag ${NEW_VERSION} with -X theirs strategy (preserves commit history)..."
 
           # Use merge strategy that accepts all upstream changes on conflict
           # This preserves the full commit history with original SHAs
-          git merge upstream/main --no-edit -X theirs -m "sync: merge upstream/main for ${NEW_VERSION}
+          git merge "${NEW_VERSION}" --no-edit -X theirs -m "sync: merge ${NEW_VERSION} tag
 
-          Automatic sync from upstream BerriAI/litellm
-          Preparing for ${NEW_VERSION} release
+          Automatic sync from upstream BerriAI/litellm tag ${NEW_VERSION}
 
-          Strategy: Merge with history preservation (main mirrors upstream)"
+          Strategy: Merge with history preservation (main syncs to stable tag)"
 
           if [ $? -eq 0 ]; then
             echo "[Sync] ✅ Merge successful with preserved history"
@@ -175,12 +181,11 @@ jobs:
               done
 
               # Complete the merge commit
-              git commit --no-edit -m "sync: merge upstream/main for ${NEW_VERSION}
+              git commit --no-edit -m "sync: merge ${NEW_VERSION} tag
 
-          Automatic sync from upstream BerriAI/litellm
-          Preparing for ${NEW_VERSION} release
+          Automatic sync from upstream BerriAI/litellm tag ${NEW_VERSION}
 
-          Strategy: Merge with manual conflict resolution (accepted all upstream changes)"
+          Strategy: Merge with manual conflict resolution (accepted all tag changes)"
 
               echo "[Sync] ✅ Conflicts resolved, merge completed with preserved history"
             else
