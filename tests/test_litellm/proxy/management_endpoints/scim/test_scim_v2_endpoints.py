@@ -243,7 +243,7 @@ async def test_handle_existing_user_by_email_existing_user_updated(mocker):
     # Mock the transformation function
     mock_transform = mocker.patch(
         "litellm.proxy.management_endpoints.scim.scim_v2.ScimTransformations.transform_litellm_user_to_scim_user",
-        AsyncMock(return_value=mock_scim_user)
+        new=AsyncMock(return_value=mock_scim_user)
     )
     
     new_user_request = NewUserRequest(
@@ -357,7 +357,7 @@ async def test_handle_team_membership_changes_add_and_remove(mocker):
     """Should call patch_team_membership with both teams to add and remove"""
     mock_patch_team_membership = mocker.patch(
         "litellm.proxy.management_endpoints.scim.scim_v2.patch_team_membership",
-        AsyncMock()
+        new=AsyncMock()
     )
     
     # Both adding and removing teams

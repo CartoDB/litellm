@@ -70,7 +70,10 @@ RUN rm -rf dist/* && python -m build && \
   cp dist/*.whl /wheels/
 
 # Optionally build local litellm-proxy-extras wheel
+# CARTO: Remove any existing proxy-extras wheels from PyPI before copying local build
+# This prevents version conflicts when wildcard installing
 RUN if [ "$PROXY_EXTRAS_SOURCE" = "local" ]; then \
+      rm -f /wheels/litellm_proxy_extras-*.whl && \
       cd /app/litellm-proxy-extras && rm -rf dist && python -m build && \
       cp dist/*.whl /wheels/; \
     fi
@@ -145,8 +148,9 @@ RUN pip install --no-index --find-links=/wheels/ -r requirements.txt && \
     pip install --no-index --find-links=/wheels/ --no-deps semantic_router==0.1.11 && \
     pip install --no-index --find-links=/wheels/ aurelio-sdk==0.0.19 && \
     if [ "$PROXY_EXTRAS_SOURCE" = "local" ]; then \
-      if ls /wheels/litellm_proxy_extras-*.whl >/dev/null 2>&1; then \
-        pip install --no-index --find-links=/wheels/ /wheels/litellm_proxy_extras-*.whl; \
+      EXTRAS_WHEEL=$(ls -t /wheels/litellm_proxy_extras-*.whl 2>/dev/null | head -1); \
+      if [ -n "$EXTRAS_WHEEL" ]; then \
+        pip install --no-index --find-links=/wheels/ "$EXTRAS_WHEEL"; \
       else \
         echo "litellm_proxy_extras wheel not found; skipping local install"; \
       fi; \

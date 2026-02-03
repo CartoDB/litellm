@@ -258,6 +258,16 @@ class TestResponsesBackgroundCostTracking:
         assert mock_managed_files_obj.store_unified_object_id.called
 
 
+try:
+    from litellm_enterprise.proxy.common_utils.check_responses_cost import (
+        CheckResponsesCost,
+    )
+    HAS_ENTERPRISE = True
+except ImportError:
+    HAS_ENTERPRISE = False
+
+
+@pytest.mark.skipif(not HAS_ENTERPRISE, reason="litellm_enterprise not available")
 class TestCheckResponsesCost:
     """Tests for the CheckResponsesCost polling class"""
 
