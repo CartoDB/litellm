@@ -833,9 +833,24 @@ jobs:
         run: |
           echo "::group::Verifying conflict resolution"
 
-          # Check for conflict markers in all files
-          if grep -r "^<<<<<<< \|^=======\$\|^>>>>>>>" --include="*.py" --include="*.yaml" --include="*.yml" --include="*.md" . 2>/dev/null | grep -v ".git"; then
+          # Check for conflict markers in all relevant file types
+          # Pattern matches: <<<<<<< (start), ======= (middle, allowing trailing spaces), >>>>>>> (end)
+          MARKER_PATTERN="^<<<<<<<\|^=======\|^>>>>>>>"
+
+          FOUND_MARKERS=$(grep -r "${MARKER_PATTERN}" \
+            --include="*.py" \
+            --include="*.yaml" --include="*.yml" \
+            --include="*.md" \
+            --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" \
+            --include="*.toml" \
+            --include="*.prisma" \
+            --include="*.json" \
+            --include="*.txt" \
+            . 2>/dev/null | grep -v ".git" || echo "")
+
+          if [ -n "$FOUND_MARKERS" ]; then
             echo "❌ ERROR: Conflict markers still present!"
+            echo "$FOUND_MARKERS"
             echo "Claude did not fully resolve all conflicts."
             echo "resolved=false" >> $GITHUB_OUTPUT
             exit 1
@@ -883,9 +898,8 @@ jobs:
             if grep -qE "# CARTO:|# PATCH:|_patch_|CARTO.*fix|Redis.*session" "$FILE" 2>/dev/null; then
               echo "  ✅ $FILE - CARTO markers found"
             else
-              # No explicit markers - check if file differs from upstream
-              # by comparing with the upstream tag
-              UPSTREAM_TAG="${{ steps.pr-info.outputs.base-ref }}"
+              # No explicit markers - check if file content from carto/main is preserved
+              # by comparing unique lines from carto/main with the resolved file
 
               # Get the file from carto/main to compare
               CARTO_CONTENT=$(git show origin/carto/main:"$FILE" 2>/dev/null | head -100 || echo "")

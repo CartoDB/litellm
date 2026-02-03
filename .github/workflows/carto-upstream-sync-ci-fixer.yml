@@ -172,7 +172,7 @@ jobs:
 
       - name: Extract CI errors from failed runs
         id: extract-errors
-        if: steps.failures.outputs.failed-count > 0
+        if: steps.failures.outputs.failed-count != '0'
         env:
           GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
         run: |

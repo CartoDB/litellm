@@ -99,8 +99,10 @@ jobs:
           echo "[Sync] Latest version: ${LATEST_VERSION}"
           echo "[Sync] Current version: ${CURRENT_VERSION}"
 
-          # Compare versions (simple string comparison works for semver)
-          if [[ "${LATEST_VERSION}" > "${CURRENT_VERSION}" ]]; then
+          # Compare versions using sort -V for proper semver comparison
+          # String comparison fails for cases like "1.9.0" vs "1.10.0"
+          HIGHER_VERSION=$(printf '%s\n%s' "${LATEST_VERSION}" "${CURRENT_VERSION}" | sort -V | tail -1)
+          if [[ "${HIGHER_VERSION}" == "${LATEST_VERSION}" && "${LATEST_VERSION}" != "${CURRENT_VERSION}" ]]; then
             echo "[Sync] ✅ New stable release available: ${LATEST_STABLE}"
             echo "has-new-release=true" >> $GITHUB_OUTPUT
             echo "new-version=${LATEST_STABLE}" >> $GITHUB_OUTPUT
@@ -301,6 +303,7 @@ jobs:
     if: needs.check-carto-main-sync.outputs.needs-sync == 'true' && needs.check-carto-main-sync.outputs.pr-exists == 'false'
     outputs:
       pr-url: ${{ steps.create-pr.outputs.pr-url }}
+      pr-number: ${{ steps.create-pr.outputs.pr-number }}
       sync-branch: ${{ steps.create-sync-branch.outputs.branch-name }}
     steps:
       - name: Checkout main branch
@@ -511,6 +514,9 @@ jobs:
 
           echo "[Sync] Pull Request created: ${PR_URL}"
           echo "pr-url=${PR_URL}" >> $GITHUB_OUTPUT
+          # Extract PR number from URL for downstream steps
+          PR_NUMBER=$(echo "${PR_URL}" | grep -oE '[0-9]+$')
+          echo "pr-number=${PR_NUMBER}" >> $GITHUB_OUTPUT
           echo "::notice title=PR Created::${PR_URL}"
 
           echo "::endgroup::"
@@ -719,11 +725,11 @@ jobs:
               NEXT_ACTION=""
               ;;
             *)
-              # Error state
+              # Error state - unexpected combination of NEEDS_SYNC and PR_EXISTS
               COLOR="#1E88E5"  # Blue - neutral/informative
               PROGRESS=$(make_progress 1)
               TITLE="LiteLLM Upstream Sync"
-              if [[ "${SYNC_STATUS}" == "failure" ]]; then
+              if [[ "${RESULT_SYNC_MAIN}" == "failure" ]]; then
                 STEP_TEXT="Sync Failed"
                 SUMMARY="Sync process failed - check workflow logs"
               else
