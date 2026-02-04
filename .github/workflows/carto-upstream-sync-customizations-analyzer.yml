@@ -935,11 +935,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
         run: |
-          echo "::group::Downloading analysis from previous run"
+          echo "::group::Getting analysis for fix-only mode"
 
           BRANCH_NAME="${{ steps.fix-pr-info.outputs.head-ref }}"
+          PR_NUMBER="${{ steps.fix-pr-info.outputs.pr-number }}"
+          ANALYSIS_FOUND=false
 
-          # Find most recent successful analyzer run for this branch
+          # Strategy 1: Try to download artifacts from previous successful run
+          echo "[Fixer] Trying to download artifacts from previous run..."
           RUN_ID=$(gh run list \
             --repo ${{ github.repository }} \
             --workflow "carto-upstream-sync-customizations-analyzer.yml" \
@@ -949,13 +952,60 @@ jobs:
             --jq "[.[] | select(.headBranch == \"${BRANCH_NAME}\")] | .[0].databaseId")
 
           if [[ -n "${RUN_ID}" && "${RUN_ID}" != "null" ]]; then
-            gh run download ${RUN_ID} \
+            if gh run download ${RUN_ID} \
               --repo ${{ github.repository }} \
               --name feature-analysis \
-              --dir /tmp/
-            echo "[Fixer] Downloaded analysis from run #${RUN_ID}"
-          else
-            echo "::error::No previous analysis found for fix-only mode on branch ${BRANCH_NAME}"
+              --dir /tmp/ 2>/dev/null; then
+              echo "[Fixer] Downloaded analysis from run #${RUN_ID}"
+              ANALYSIS_FOUND=true
+            else
+              echo "[Fixer] Failed to download artifacts from run #${RUN_ID}"
+            fi
+          fi
+
+          # Strategy 2: Extract analysis from PR description
+          if [[ "${ANALYSIS_FOUND}" != "true" ]]; then
+            echo "[Fixer] Trying to extract analysis from PR description..."
+
+            PR_BODY=$(gh pr view ${PR_NUMBER} --repo ${{ github.repository }} --json body --jq '.body')
+
+            # Check if analysis section exists in PR description
+            if echo "${PR_BODY}" | grep -q "CARTO_FEATURES_START"; then
+              echo "[Fixer] Found analysis in PR description, extracting..."
+
+              # Extract the feature breakdown section and build a minimal analysis JSON
+              # Look for INCORRECTLY_DROPPED features in the breakdown
+              DROPPED_FEATURES=$(echo "${PR_BODY}" | grep -A 5 "❌ Incorrectly Dropped" | grep -oE "PR #[0-9]+" | grep -oE "[0-9]+" || echo "")
+              DROPPED_COUNT=$(echo "${PR_BODY}" | grep -oE "Incorrectly Dropped.*\|.*[0-9]+" | grep -oE "[0-9]+$" | head -1 || echo "0")
+
+              if [[ -n "${DROPPED_COUNT}" && "${DROPPED_COUNT}" -gt 0 ]]; then
+                echo "[Fixer] Found ${DROPPED_COUNT} incorrectly dropped features in PR description"
+
+                # Create a minimal analysis JSON from PR description
+                cat > /tmp/feature_analysis.json << ANALYSIS_EOF
+          {
+            "analysis_timestamp": "extracted from PR description",
+            "pr_number": ${PR_NUMBER},
+            "source": "pr_description",
+            "features": [],
+            "summary": {
+              "incorrectly_dropped": ${DROPPED_COUNT}
+            },
+            "overall_assessment": "NEEDS_ATTENTION",
+            "note": "Analysis extracted from PR description. Claude will re-analyze the dropped features during fix."
+          }
+          ANALYSIS_EOF
+
+                ANALYSIS_FOUND=true
+                echo "[Fixer] Created analysis JSON from PR description"
+              else
+                echo "[Fixer] No incorrectly dropped features found in PR description"
+              fi
+            fi
+          fi
+
+          if [[ "${ANALYSIS_FOUND}" != "true" ]]; then
+            echo "::error::No analysis found. Run in 'analyze' or 'analyze-and-fix' mode first."
             exit 1
           fi
 
