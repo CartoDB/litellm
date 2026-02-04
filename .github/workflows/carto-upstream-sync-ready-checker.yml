@@ -1,4 +1,4 @@
-name: CARTO - Upstream Sync Ready Checker
+name: CARTO Upstream Sync - Ready Checker
 
 # Watches CI workflow completions and adds "sync-ready" label when PR is fully ready
 # This label then triggers the n8n notifier workflow

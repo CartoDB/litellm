@@ -1,4 +1,4 @@
-name: CARTO - Upstream Sync Conflict Detector
+name: CARTO Upstream Sync - Conflict Detector
 
 # Monitors for conflicts when carto/main changes while an upstream-sync PR is open.
 # If a sync-ready PR becomes CONFLICTING, removes the label so the resolver can fix it.

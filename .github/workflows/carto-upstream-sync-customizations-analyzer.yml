@@ -1,4 +1,4 @@
-name: CARTO Upstream Sync - Feature Analyzer
+name: CARTO Upstream Sync - Customizations Analyzer
 
 # Multi-mode workflow to analyze and optionally fix CARTO feature preservation.
 # Triggered automatically when CI passes on upstream-sync PRs, or manually.
@@ -10,19 +10,19 @@ name: CARTO Upstream Sync - Feature Analyzer
 #
 # Usage:
 #   # Analysis only (default)
-#   gh workflow run carto-upstream-sync-feature-analyzer.yml \
+#   gh workflow run carto-upstream-sync-customizations-analyzer.yml \
 #     --repo CartoDB/litellm \
 #     -f pr-number=88 \
 #     -f mode=analyze
 #
 #   # Analyze and fix
-#   gh workflow run carto-upstream-sync-feature-analyzer.yml \
+#   gh workflow run carto-upstream-sync-customizations-analyzer.yml \
 #     --repo CartoDB/litellm \
 #     -f pr-number=88 \
 #     -f mode=analyze-and-fix
 #
 #   # Fix only (use previous analysis)
-#   gh workflow run carto-upstream-sync-feature-analyzer.yml \
+#   gh workflow run carto-upstream-sync-customizations-analyzer.yml \
 #     --repo CartoDB/litellm \
 #     -f pr-number=88 \
 #     -f mode=fix-only
@@ -177,7 +177,7 @@ jobs:
 
           RECENT_RUNS=$(gh run list \
             --repo ${{ github.repository }} \
-            --workflow "carto-upstream-sync-feature-analyzer.yml" \
+            --workflow "carto-upstream-sync-customizations-analyzer.yml" \
             --status completed \
             --limit 10 \
             --json conclusion,headBranch,createdAt \
@@ -962,7 +962,7 @@ jobs:
           # Find most recent successful analyzer run for this branch
           RUN_ID=$(gh run list \
             --repo ${{ github.repository }} \
-            --workflow "carto-upstream-sync-feature-analyzer.yml" \
+            --workflow "carto-upstream-sync-customizations-analyzer.yml" \
             --status success \
             --limit 20 \
             --json databaseId,headBranch \
