@@ -1,0 +1,698 @@
+name: CARTO Upstream Sync - Feature Analyzer
+
+# Standalone workflow to analyze CARTO feature preservation decisions.
+# Can be triggered manually on any upstream-sync PR to understand
+# how each CARTO customization was handled during conflict resolution.
+#
+# Usage:
+#   gh workflow run carto-upstream-sync-feature-analyzer.yml \
+#     --repo CartoDB/litellm \
+#     -f pr-number=88
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr-number:
+        description: "PR number to analyze"
+        required: true
+      debug:
+        description: "Enable debug logging"
+        type: boolean
+        default: false
+
+  # Can also be called from resolver workflow after resolution
+  workflow_call:
+    inputs:
+      pr-number:
+        description: "PR number to analyze"
+        required: true
+        type: string
+
+concurrency:
+  group: feature-analyzer-${{ github.event.inputs.pr-number || inputs.pr-number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  analyze-carto-features:
+    name: Analyze CARTO Feature Preservation
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Get PR info
+        id: pr-info
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          set -eu
+
+          PR_NUMBER="${{ github.event.inputs.pr-number || inputs.pr-number }}"
+          echo "::group::Fetching PR #${PR_NUMBER} info"
+
+          PR_JSON=$(gh pr view ${PR_NUMBER} --repo ${{ github.repository }} --json headRefName,baseRefName,title,labels)
+
+          HEAD_REF=$(echo "${PR_JSON}" | jq -r '.headRefName')
+          BASE_REF=$(echo "${PR_JSON}" | jq -r '.baseRefName')
+          PR_TITLE=$(echo "${PR_JSON}" | jq -r '.title')
+          HAS_UPSTREAM_SYNC=$(echo "${PR_JSON}" | jq '[.labels[].name] | any(. == "upstream-sync")')
+
+          echo "pr-number=${PR_NUMBER}" >> $GITHUB_OUTPUT
+          echo "head-ref=${HEAD_REF}" >> $GITHUB_OUTPUT
+          echo "base-ref=${BASE_REF}" >> $GITHUB_OUTPUT
+          echo "pr-title=${PR_TITLE}" >> $GITHUB_OUTPUT
+          echo "is-upstream-sync=${HAS_UPSTREAM_SYNC}" >> $GITHUB_OUTPUT
+
+          # Extract upstream TAG from PR title (format: "Upstream Sync: vX.Y.Z → carto/main")
+          UPSTREAM_TAG=$(echo "$PR_TITLE" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+[a-z0-9.-]*' | head -1 || echo "")
+          echo "upstream-tag=${UPSTREAM_TAG}" >> $GITHUB_OUTPUT
+
+          echo "[Analyzer] PR #${PR_NUMBER}: ${HEAD_REF} → ${BASE_REF}"
+          echo "[Analyzer] Title: ${PR_TITLE}"
+          echo "[Analyzer] Upstream TAG: ${UPSTREAM_TAG:-not found}"
+          echo "[Analyzer] Is upstream-sync PR: ${HAS_UPSTREAM_SYNC}"
+
+          echo "::endgroup::"
+
+      - name: Validate PR
+        run: |
+          if [[ "${{ steps.pr-info.outputs.is-upstream-sync }}" != "true" ]]; then
+            echo "::warning::This PR does not have the 'upstream-sync' label. Analysis may not be meaningful."
+          fi
+
+          if [[ -z "${{ steps.pr-info.outputs.upstream-tag }}" ]]; then
+            echo "::warning::Could not extract upstream TAG from PR title. Will use origin/main as reference."
+          fi
+
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr-info.outputs.head-ref }}
+          fetch-depth: 0
+          token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+
+      - name: Comment on PR - Starting analysis
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          gh pr comment ${{ steps.pr-info.outputs.pr-number }} \
+            --repo ${{ github.repository }} \
+            --body "## 📊 CARTO Feature Analysis Started
+
+          **Mode:** Standalone analysis
+
+          Analyzing how each CARTO customization was handled during conflict resolution.
+          This will explain WHY each decision was made.
+
+          | Step | Status |
+          |------|--------|
+          | Extract CARTO PRs | ⏳ In progress |
+          | Compare code versions | ⏳ Pending |
+          | Analyze decisions | ⏳ Pending |
+          | Generate report | ⏳ Pending |
+
+          [View workflow →](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+
+      - name: Analyze CARTO PRs for feature context
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          echo "::group::Analyzing CARTO PRs for feature context"
+
+          OUTPUT_PATH="/tmp/carto-analysis"
+          mkdir -p "${OUTPUT_PATH}"
+
+          # Fetch CartoDB org members
+          echo "[Analyzer] Fetching CartoDB org members..."
+          ORG_MEMBERS=$(gh api "orgs/CartoDB/members" --paginate --jq '.[].login' 2>/dev/null | tr '\n' '|' | sed 's/|$//')
+          if [ -z "$ORG_MEMBERS" ]; then
+            echo "[Analyzer] Warning: Could not fetch org members, using fallback"
+            ORG_MEMBERS="Cartofante|mateo-di"
+          fi
+
+          # Fetch merged PRs to carto/main, filter by org members
+          echo "[Analyzer] Fetching PRs merged to carto/main..."
+          gh pr list \
+            --repo ${{ github.repository }} \
+            --base carto/main \
+            --state merged \
+            --limit 1000 \
+            --json number,title,author,mergedAt,files,body,labels \
+            > "${OUTPUT_PATH}/all_prs.json" 2>/dev/null || echo "[]" > "${OUTPUT_PATH}/all_prs.json"
+
+          # Filter to CARTO org members, excluding upstream-sync PRs
+          jq --arg pattern "$ORG_MEMBERS" '
+            [.[] |
+              select(.author.login | test("^(" + $pattern + ")$"; "i")) |
+              select(([(.labels // [])[].name] | any(. == "upstream-sync")) | not) |
+              select(.title | test("^(sync:|upstream sync:|fix: resolve.*upstream|fix: resolve conflicts|fix\\(ci\\):|merge:)"; "i") | not) |
+              select(.title | test("Upstream Sync:"; "i") | not)
+            ]
+          ' "${OUTPUT_PATH}/all_prs.json" > "${OUTPUT_PATH}/carto_prs.json"
+
+          CARTO_PRS=$(jq 'length' "${OUTPUT_PATH}/carto_prs.json")
+          echo "[Analyzer] Found ${CARTO_PRS} CARTO feature PRs"
+
+          rm -f "${OUTPUT_PATH}/all_prs.json"
+          echo "::endgroup::"
+
+      - name: Build CARTO features inventory with code snapshots
+        run: |
+          echo "::group::Building CARTO features inventory"
+
+          # Create structured inventory
+          jq '[.[] | {
+            pr_number: .number,
+            title: .title,
+            body: (.body // ""),
+            author: .author.login,
+            merged_at: .mergedAt,
+            category: (
+              if .title | test("fix\\(azure\\)"; "i") then "Azure"
+              elif .title | test("fix\\(snowflake\\)"; "i") then "Snowflake"
+              elif .title | test("fix\\(databricks\\)"; "i") then "Databricks"
+              elif .title | test("fix\\(oci\\)"; "i") then "OCI"
+              elif .title | test("fix\\(responses\\)|responses.api"; "i") then "Responses API"
+              elif .title | test("fix\\(streaming\\)|streaming"; "i") then "Streaming"
+              elif .title | test("docker|prisma|dockerfile"; "i") then "Infrastructure"
+              elif .title | test("workflow|slack|release|ci"; "i") then "CI/CD"
+              else "Core"
+              end
+            ),
+            files: [.files[].path]
+          }]' /tmp/carto-analysis/carto_prs.json > /tmp/carto_inventory.json
+
+          INVENTORY_COUNT=$(jq 'length' /tmp/carto_inventory.json)
+          echo "[Analyzer] Built inventory with ${INVENTORY_COUNT} CARTO features"
+
+          echo "::endgroup::"
+
+      - name: Build code comparison
+        run: |
+          echo "::group::Building code comparison snapshots"
+
+          mkdir -p /tmp/code_comparison
+
+          # Determine upstream reference
+          UPSTREAM_TAG="${{ steps.pr-info.outputs.upstream-tag }}"
+
+          if [ -n "$UPSTREAM_TAG" ]; then
+            # Fetch the tag
+            git fetch origin "refs/tags/${UPSTREAM_TAG}:refs/tags/${UPSTREAM_TAG}" 2>/dev/null || true
+
+            if git rev-parse "refs/tags/${UPSTREAM_TAG}" &>/dev/null; then
+              UPSTREAM_REF="refs/tags/${UPSTREAM_TAG}"
+              echo "[Analyzer] Using upstream TAG: ${UPSTREAM_TAG}"
+            else
+              UPSTREAM_REF="origin/main"
+              echo "[Analyzer] TAG not found, using origin/main"
+            fi
+          else
+            UPSTREAM_REF="origin/main"
+            echo "[Analyzer] No TAG in title, using origin/main"
+          fi
+
+          echo "upstream-ref=${UPSTREAM_REF}" >> $GITHUB_OUTPUT
+
+          # Get list of files touched by CARTO PRs
+          CARTO_FILES=$(jq -r '[.[].files[]] | unique | .[]' /tmp/carto_inventory.json | head -50)
+
+          for FILE in $CARTO_FILES; do
+            mkdir -p "/tmp/code_comparison/$(dirname "$FILE")"
+
+            # Upstream version (from TAG or main)
+            git show "${UPSTREAM_REF}:${FILE}" > "/tmp/code_comparison/${FILE}.upstream" 2>/dev/null || echo "" > "/tmp/code_comparison/${FILE}.upstream"
+
+            # CARTO version (from carto/main)
+            git show origin/carto/main:"$FILE" > "/tmp/code_comparison/${FILE}.carto" 2>/dev/null || echo "" > "/tmp/code_comparison/${FILE}.carto"
+
+            # Resolved version (current state in PR branch)
+            if [ -f "$FILE" ]; then
+              cp "$FILE" "/tmp/code_comparison/${FILE}.resolved"
+            else
+              echo "" > "/tmp/code_comparison/${FILE}.resolved"
+            fi
+          done
+
+          echo "[Analyzer] Prepared code comparisons for $(echo "$CARTO_FILES" | wc -w | tr -d ' ') files"
+
+          echo "::endgroup::"
+
+      - name: Create analysis context document
+        run: |
+          echo "::group::Creating analysis context"
+
+          cat > /tmp/analysis_context.md << 'CONTEXT_EOF'
+          # CARTO Feature Analysis Context
+
+          ## What You're Analyzing
+
+          This PR syncs upstream LiteLLM changes into carto/main. During conflict resolution,
+          Claude (or a human) made decisions about how to handle each CARTO customization.
+
+          Your job is to analyze the FINAL RESOLVED STATE and explain:
+          1. What happened to each CARTO feature
+          2. WHY that decision was made
+          3. Whether the decision was correct
+
+          ## Code Comparison Files
+
+          For each CARTO-modified file, you have three versions in /tmp/code_comparison/:
+          - `{file}.upstream` - The upstream TAG version (what LiteLLM ships)
+          - `{file}.carto` - The CARTO customization (from carto/main before merge)
+          - `{file}.resolved` - The final resolved version (what will be merged)
+
+          ## Decision Categories
+
+          For each CARTO feature, classify the decision:
+
+          | Decision | Meaning | Evidence |
+          |----------|---------|----------|
+          | UPSTREAM_SUBSTITUTES | Upstream now provides equivalent functionality | CARTO code removed, upstream code does same thing |
+          | CUSTOMIZED_UPSTREAM | Upstream used as base, CARTO additions kept | Mix of upstream + CARTO code |
+          | PRESERVED_CARTO | Full CARTO implementation kept | CARTO code present, upstream version not used |
+          | INCORRECTLY_DROPPED | CARTO feature was lost (BUG!) | CARTO code missing, upstream doesn't provide equivalent |
+
+          CONTEXT_EOF
+
+          # Add CARTO features list
+          echo "" >> /tmp/analysis_context.md
+          echo "## CARTO Features to Analyze" >> /tmp/analysis_context.md
+          echo "" >> /tmp/analysis_context.md
+
+          jq -r '.[] | "### PR #\(.pr_number): \(.title)\n- **Category:** \(.category)\n- **Files:** \(.files | join(", "))\n- **Description:** \(.body | split("\n")[0:3] | join(" ") | .[0:200])...\n"' /tmp/carto_inventory.json >> /tmp/analysis_context.md
+
+          echo "[Analyzer] Created analysis context at /tmp/analysis_context.md"
+
+          echo "::endgroup::"
+
+      - name: Setup GCP credentials for Vertex AI
+        run: |
+          echo '${{ secrets.CI_RESOURCES_SERVICE_ACCOUNT }}' > /tmp/gcp-sa.json
+          echo "GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-sa.json" >> $GITHUB_ENV
+
+      - name: Run Claude Code for feature analysis
+        id: claude-analyze
+        uses: anthropics/claude-code-action@v1
+        with:
+          use_vertex: "true"
+          github_token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          show_full_output: true
+          claude_args: "--model claude-opus-4-5@20251101 --max-turns 150 --allowedTools Read,Bash,Grep,Glob ${{ github.event.inputs.debug == 'true' && '--debug' || '' }}"
+          prompt: |
+            # CARTO Feature Preservation Analysis
+
+            ## YOUR GOAL
+
+            Analyze how each CARTO customization was handled during the upstream sync resolution.
+            Explain WHY each decision was made and whether it was correct.
+
+            **DO NOT MAKE ANY CHANGES** - this is analysis only.
+
+            ---
+
+            ## CONTEXT
+
+            **PR:** #${{ steps.pr-info.outputs.pr-number }}
+            **Title:** ${{ steps.pr-info.outputs.pr-title }}
+            **Branch:** `${{ steps.pr-info.outputs.head-ref }}`
+            **Upstream Reference:** ${{ steps.pr-info.outputs.upstream-tag || 'origin/main' }}
+
+            This PR merges upstream LiteLLM changes into carto/main. Conflicts were resolved
+            (either by Claude or manually). Your job is to analyze what happened.
+
+            ---
+
+            ## STEP 1: Read the analysis context
+
+            ```bash
+            cat /tmp/analysis_context.md
+            ```
+
+            This shows you all CARTO features that need analysis.
+
+            ---
+
+            ## STEP 2: For each CARTO feature, analyze the resolution
+
+            For each PR listed in the context:
+
+            1. **Identify the key files** from the PR
+
+            2. **Compare the three versions:**
+               ```bash
+               # Example for a specific file
+               FILE="path/to/file.py"
+
+               echo "=== UPSTREAM VERSION ==="
+               head -100 "/tmp/code_comparison/${FILE}.upstream"
+
+               echo "=== CARTO VERSION ==="
+               head -100 "/tmp/code_comparison/${FILE}.carto"
+
+               echo "=== RESOLVED VERSION ==="
+               head -100 "/tmp/code_comparison/${FILE}.resolved"
+               ```
+
+            3. **Determine what happened:**
+               - Is the CARTO functionality present in resolved?
+               - Does upstream provide equivalent functionality?
+               - Was code merged from both sources?
+
+            4. **Classify the decision:**
+               - UPSTREAM_SUBSTITUTES: Upstream provides same functionality
+               - CUSTOMIZED_UPSTREAM: Upstream base + CARTO additions
+               - PRESERVED_CARTO: Full CARTO code kept
+               - INCORRECTLY_DROPPED: CARTO feature lost (this is a bug!)
+
+            ---
+
+            ## STEP 3: Write the analysis report
+
+            Create `/tmp/feature_analysis.json`:
+
+            ```bash
+            cat > /tmp/feature_analysis.json << 'ANALYSIS_EOF'
+            {
+              "analysis_timestamp": "YYYY-MM-DD HH:MM:SS UTC",
+              "pr_number": ${{ steps.pr-info.outputs.pr-number }},
+              "features": [
+                {
+                  "pr": 70,
+                  "title": "fix(azure): Strip operation suffixes",
+                  "category": "Azure",
+                  "decision": "UPSTREAM_SUBSTITUTES",
+                  "confidence": "high",
+                  "reason": "Upstream v1.81.0 added strip_operation_suffix() in azure/common_utils.py:45 that provides identical functionality to CARTO's implementation",
+                  "evidence": {
+                    "carto_code": "def strip_suffix(url): ...",
+                    "upstream_code": "def strip_operation_suffix(url): ...",
+                    "resolved_uses": "upstream"
+                  },
+                  "files_analyzed": ["litellm/llms/azure/common_utils.py"],
+                  "recommendation": "Correct decision - upstream provides equivalent functionality"
+                }
+              ],
+              "summary": {
+                "upstream_substitutes": 0,
+                "customized_upstream": 0,
+                "preserved_carto": 0,
+                "incorrectly_dropped": 0,
+                "total": 0
+              },
+              "issues": [
+                "List any INCORRECTLY_DROPPED features here - these are bugs that need fixing"
+              ],
+              "overall_assessment": "PASS or NEEDS_ATTENTION"
+            }
+            ANALYSIS_EOF
+            ```
+
+            ---
+
+            ## STEP 4: Create human-readable summary
+
+            Create `/tmp/analysis_summary.md`:
+
+            ```bash
+            cat > /tmp/analysis_summary.md << 'SUMMARY_EOF'
+            # CARTO Feature Preservation Analysis
+
+            ## Summary
+
+            | Decision | Count |
+            |----------|-------|
+            | Upstream Substitutes | X |
+            | Customized Upstream | X |
+            | Preserved CARTO | X |
+            | Incorrectly Dropped | X |
+
+            ## Overall Assessment: PASS / NEEDS_ATTENTION
+
+            [Brief explanation]
+
+            ## Feature Details
+
+            ### Upstream Substitutes
+            [List features where upstream now provides equivalent functionality]
+
+            ### Customized Upstream
+            [List features where upstream was enhanced with CARTO code]
+
+            ### Preserved CARTO
+            [List features where full CARTO implementation was kept]
+
+            ### Issues Found
+            [List any features that were incorrectly dropped - these need fixing!]
+
+            SUMMARY_EOF
+            ```
+
+            ---
+
+            ## SAY "ANALYSIS COMPLETE" WHEN DONE
+
+            After writing both files, say **"ANALYSIS COMPLETE"**.
+
+        env:
+          ANTHROPIC_VERTEX_PROJECT_ID: carto-ci-resources
+          CLOUD_ML_REGION: global
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GITHUB_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+
+      - name: Cleanup GCP credentials
+        if: always()
+        run: rm -f /tmp/gcp-sa.json
+
+      - name: Verify analysis output
+        id: verify-analysis
+        run: |
+          echo "::group::Verifying analysis output"
+
+          if [ -f /tmp/feature_analysis.json ]; then
+            echo "[Analyzer] Feature analysis JSON found"
+
+            if jq empty /tmp/feature_analysis.json 2>/dev/null; then
+              # Extract summary counts
+              UPSTREAM=$(jq -r '.summary.upstream_substitutes // 0' /tmp/feature_analysis.json)
+              CUSTOMIZED=$(jq -r '.summary.customized_upstream // 0' /tmp/feature_analysis.json)
+              PRESERVED=$(jq -r '.summary.preserved_carto // 0' /tmp/feature_analysis.json)
+              DROPPED=$(jq -r '.summary.incorrectly_dropped // 0' /tmp/feature_analysis.json)
+              TOTAL=$(jq -r '.summary.total // 0' /tmp/feature_analysis.json)
+              ASSESSMENT=$(jq -r '.overall_assessment // "UNKNOWN"' /tmp/feature_analysis.json)
+
+              echo "[Analyzer] Analysis summary:"
+              echo "  - Upstream substitutes: ${UPSTREAM}"
+              echo "  - Customized upstream: ${CUSTOMIZED}"
+              echo "  - Preserved CARTO: ${PRESERVED}"
+              echo "  - Incorrectly dropped: ${DROPPED}"
+              echo "  - Total: ${TOTAL}"
+              echo "  - Assessment: ${ASSESSMENT}"
+
+              echo "upstream_substitutes=${UPSTREAM}" >> $GITHUB_OUTPUT
+              echo "customized_upstream=${CUSTOMIZED}" >> $GITHUB_OUTPUT
+              echo "preserved_carto=${PRESERVED}" >> $GITHUB_OUTPUT
+              echo "incorrectly_dropped=${DROPPED}" >> $GITHUB_OUTPUT
+              echo "total=${TOTAL}" >> $GITHUB_OUTPUT
+              echo "assessment=${ASSESSMENT}" >> $GITHUB_OUTPUT
+              echo "analysis_exists=true" >> $GITHUB_OUTPUT
+            else
+              echo "[Analyzer] Feature analysis JSON is invalid"
+              echo "analysis_exists=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "[Analyzer] Feature analysis not generated"
+            echo "analysis_exists=false" >> $GITHUB_OUTPUT
+          fi
+
+          if [ -f /tmp/analysis_summary.md ]; then
+            echo "[Analyzer] Analysis summary MD found"
+            echo "summary_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "[Analyzer] Analysis summary not generated"
+            echo "summary_exists=false" >> $GITHUB_OUTPUT
+          fi
+
+          echo "::endgroup::"
+
+      - name: Update PR description with analysis
+        if: steps.verify-analysis.outputs.analysis_exists == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          echo "::group::Updating PR description with analysis"
+
+          PR_NUMBER="${{ steps.pr-info.outputs.pr-number }}"
+
+          # Get current PR body
+          CURRENT_BODY=$(gh pr view $PR_NUMBER --repo ${{ github.repository }} --json body --jq '.body')
+
+          # Remove existing CARTO features section if present
+          CLEAN_BODY=$(echo "$CURRENT_BODY" | sed '/<!-- CARTO_FEATURES_START -->/,/<!-- CARTO_FEATURES_END -->/d')
+
+          # Build CARTO features status section
+          ASSESSMENT="${{ steps.verify-analysis.outputs.assessment }}"
+          if [ "$ASSESSMENT" == "PASS" ]; then
+            ASSESSMENT_ICON="✅"
+          else
+            ASSESSMENT_ICON="⚠️"
+          fi
+
+          cat > /tmp/carto_section.md << SECTION_EOF
+          <!-- CARTO_FEATURES_START -->
+
+          ## CARTO Customizations Analysis
+
+          **Overall Assessment:** ${ASSESSMENT_ICON} ${ASSESSMENT}
+
+          <details>
+          <summary>Decision Summary (click to expand)</summary>
+
+          | Decision | Count | Description |
+          |----------|-------|-------------|
+          | **Upstream Substitutes** | ${{ steps.verify-analysis.outputs.upstream_substitutes }} | Upstream provides equivalent functionality |
+          | **Customized Upstream** | ${{ steps.verify-analysis.outputs.customized_upstream }} | Upstream enhanced with CARTO-specific behavior |
+          | **Preserved CARTO** | ${{ steps.verify-analysis.outputs.preserved_carto }} | Full CARTO implementation kept |
+          | **Incorrectly Dropped** | ${{ steps.verify-analysis.outputs.incorrectly_dropped }} | CARTO feature lost (needs fixing!) |
+          | **Total** | **${{ steps.verify-analysis.outputs.total }}** | |
+
+          </details>
+
+          <details>
+          <summary>Analysis Details (click to expand)</summary>
+
+          **Analyzed:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          **Workflow Run:** [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          **Method:** Claude Code (Opus 4.5) post-resolution semantic analysis
+
+          </details>
+
+          <!-- CARTO_FEATURES_END -->
+          SECTION_EOF
+
+          # Combine and update PR
+          NEW_BODY="${CLEAN_BODY}
+
+          $(cat /tmp/carto_section.md)"
+
+          gh pr edit $PR_NUMBER --repo ${{ github.repository }} --body "$NEW_BODY"
+
+          echo "[Analyzer] PR description updated"
+          echo "::endgroup::"
+
+      - name: Post analysis comment
+        if: steps.verify-analysis.outputs.analysis_exists == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          PR_NUMBER="${{ steps.pr-info.outputs.pr-number }}"
+
+          # Build comment from analysis
+          ASSESSMENT="${{ steps.verify-analysis.outputs.assessment }}"
+          if [ "$ASSESSMENT" == "PASS" ]; then
+            HEADER="## CARTO Feature Preservation Analysis Complete"
+          else
+            HEADER="## CARTO Feature Preservation Analysis - Attention Needed"
+          fi
+
+          cat > /tmp/analysis_comment.md << COMMENT_EOF
+          ${HEADER}
+
+          ### Summary
+
+          | Decision | Count |
+          |----------|-------|
+          | Upstream Substitutes | ${{ steps.verify-analysis.outputs.upstream_substitutes }} |
+          | Customized Upstream | ${{ steps.verify-analysis.outputs.customized_upstream }} |
+          | Preserved CARTO | ${{ steps.verify-analysis.outputs.preserved_carto }} |
+          | Incorrectly Dropped | ${{ steps.verify-analysis.outputs.incorrectly_dropped }} |
+
+          **Overall Assessment:** ${ASSESSMENT}
+
+          COMMENT_EOF
+
+          # Add detailed analysis if summary exists
+          if [ -f /tmp/analysis_summary.md ]; then
+            echo "<details>" >> /tmp/analysis_comment.md
+            echo "<summary>Detailed Analysis (click to expand)</summary>" >> /tmp/analysis_comment.md
+            echo "" >> /tmp/analysis_comment.md
+            cat /tmp/analysis_summary.md >> /tmp/analysis_comment.md
+            echo "" >> /tmp/analysis_comment.md
+            echo "</details>" >> /tmp/analysis_comment.md
+          fi
+
+          # Add feature-by-feature breakdown
+          if [ -f /tmp/feature_analysis.json ]; then
+            echo "" >> /tmp/analysis_comment.md
+            echo "<details>" >> /tmp/analysis_comment.md
+            echo "<summary>Feature-by-Feature Breakdown (click to expand)</summary>" >> /tmp/analysis_comment.md
+            echo "" >> /tmp/analysis_comment.md
+
+            jq -r '.features[] |
+              "**PR #\(.pr):** \(.title)\n" +
+              "- Decision: " + (
+                if .decision == "UPSTREAM_SUBSTITUTES" then "Upstream Substitutes"
+                elif .decision == "CUSTOMIZED_UPSTREAM" then "Customized Upstream"
+                elif .decision == "PRESERVED_CARTO" then "Preserved CARTO"
+                else "Incorrectly Dropped"
+                end
+              ) + " (\(.confidence // "unknown") confidence)\n" +
+              "- Reason: \(.reason // "N/A")\n" +
+              "- Files: \((.files_analyzed // []) | join(", "))\n" +
+              "- Recommendation: \(.recommendation // "N/A")\n"
+            ' /tmp/feature_analysis.json >> /tmp/analysis_comment.md 2>/dev/null || echo "Could not parse features" >> /tmp/analysis_comment.md
+
+            echo "" >> /tmp/analysis_comment.md
+            echo "</details>" >> /tmp/analysis_comment.md
+          fi
+
+          cat >> /tmp/analysis_comment.md << COMMENT_FOOTER
+
+          ---
+          **Workflow Run:** [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          COMMENT_FOOTER
+
+          gh pr comment $PR_NUMBER --repo ${{ github.repository }} --body "$(cat /tmp/analysis_comment.md)"
+
+          echo "[Analyzer] Analysis comment posted"
+
+      - name: Comment on PR - Analysis failed
+        if: failure() || steps.verify-analysis.outputs.analysis_exists != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          PR_NUMBER="${{ steps.pr-info.outputs.pr-number }}"
+
+          gh pr comment ${PR_NUMBER} \
+            --repo ${{ github.repository }} \
+            --body "## CARTO Feature Analysis Failed
+
+          The analysis encountered an error or did not produce output.
+
+          [View workflow logs →](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+
+      - name: Summary
+        if: always()
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          ## CARTO Feature Preservation Analysis
+
+          **PR:** #${{ steps.pr-info.outputs.pr-number }}
+          **Title:** ${{ steps.pr-info.outputs.pr-title }}
+          **Upstream Reference:** ${{ steps.pr-info.outputs.upstream-tag || 'origin/main' }}
+
+          ### Analysis Results
+
+          | Metric | Value |
+          |--------|-------|
+          | Analysis Completed | ${{ steps.verify-analysis.outputs.analysis_exists == 'true' && 'Yes' || 'No' }} |
+          | Upstream Substitutes | ${{ steps.verify-analysis.outputs.upstream_substitutes || 'N/A' }} |
+          | Customized Upstream | ${{ steps.verify-analysis.outputs.customized_upstream || 'N/A' }} |
+          | Preserved CARTO | ${{ steps.verify-analysis.outputs.preserved_carto || 'N/A' }} |
+          | Incorrectly Dropped | ${{ steps.verify-analysis.outputs.incorrectly_dropped || 'N/A' }} |
+          | **Overall Assessment** | ${{ steps.verify-analysis.outputs.assessment || 'N/A' }} |
+
+          EOF
