@@ -551,33 +551,31 @@ jobs:
 
             ## STEP 6: COMMIT AND PUSH (then END SESSION)
 
-            **IMPORTANT:** All CI fixes must be ONE commit. Check if previous commit was a CI fix:
+            **CRITICAL:** All CI fixes MUST be in ONE commit. Always amend if a previous CI fix exists.
 
             ```bash
             git add -A
             git status
 
-            # Check if last commit was a CI fix (to amend it)
+            # Check if last commit was a CI fix by Cartofante (to amend it)
             LAST_COMMIT_MSG=$(git log -1 --pretty=%s)
             LAST_COMMIT_AUTHOR=$(git log -1 --pretty=%an)
 
-            if [[ "$LAST_COMMIT_MSG" == fix\(ci\):* ]] && [[ "$LAST_COMMIT_AUTHOR" == "claude[bot]" || "$LAST_COMMIT_AUTHOR" == "Cartofante" ]]; then
-              echo "Amending previous CI fix commit..."
-              git commit --amend -m "fix(ci): resolve CI failures from upstream sync
+            echo "Last commit: '$LAST_COMMIT_MSG' by '$LAST_COMMIT_AUTHOR'"
 
-            This commit contains all automated CI fixes.
-            Latest fix: [BRIEF DESCRIPTION OF THIS FIX]
-            "
+            if [[ "$LAST_COMMIT_MSG" == fix\(ci\):* ]] && [[ "$LAST_COMMIT_AUTHOR" == "Cartofante" ]]; then
+              echo "✅ Found previous CI fix commit - AMENDING..."
+              git commit --amend --no-edit
               git push --force-with-lease origin ${{ needs.check-ci-status.outputs.branch-name }}
+              echo "Amended and pushed successfully"
             else
-              echo "Creating new CI fix commit..."
+              echo "📝 No previous CI fix commit - creating new one..."
               git commit -m "fix(ci): resolve CI failures from upstream sync
 
-            Error: [EXACT ERROR FROM LOGS]
-            File: [FILE PATH]
-            Fix: [WHAT YOU CHANGED AND WHY]
+            Automated fix by Claude Code.
             "
               git push origin ${{ needs.check-ci-status.outputs.branch-name }}
+              echo "Committed and pushed successfully"
             fi
             ```
 
