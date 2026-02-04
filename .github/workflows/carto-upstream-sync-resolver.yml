@@ -447,32 +447,73 @@ jobs:
           echo "GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-sa.json" >> $GITHUB_ENV
 
       # =========================================================================
-      # Run CARTO PR Analysis (generates file list on-demand)
+      # CARTO PR Analysis - Identify files modified by CARTO org members
+      # (Inlined because sync branches don't have .github/actions/)
       # =========================================================================
-      - name: Run CARTO PR analysis
-        id: carto-analysis
-        uses: ./.github/actions/carto-pr-analysis
-        with:
-          github_token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
-          output_path: /tmp/carto-analysis
-
-      - name: Classify conflicted files
+      - name: Analyze CARTO PRs and classify conflicted files
         id: carto-files
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
         run: |
-          echo "::group::Classifying conflicted files"
+          echo "::group::Analyzing CARTO PRs"
 
           CONFLICTS="${{ steps.start-merge.outputs.conflicts }}"
-          CARTO_FILES_PATH="/tmp/carto-analysis/carto_files.txt"
+          OUTPUT_PATH="/tmp/carto-analysis"
+          mkdir -p "${OUTPUT_PATH}"
+
+          # Step 1: Fetch CartoDB org members
+          echo "[Resolver] Fetching CartoDB org members..."
+          ORG_MEMBERS=$(gh api "orgs/CartoDB/members" --paginate --jq '.[].login' 2>/dev/null | tr '\n' '|' | sed 's/|$//')
+
+          if [ -z "$ORG_MEMBERS" ]; then
+            echo "[Resolver] Warning: Could not fetch org members, using fallback"
+            ORG_MEMBERS="Cartofante|mateo-di"
+          fi
+
+          MEMBER_COUNT=$(echo "$ORG_MEMBERS" | tr '|' '\n' | wc -l | tr -d ' ')
+          echo "[Resolver] Found ${MEMBER_COUNT} org members"
+
+          # Step 2: Fetch all merged PRs to carto/main
+          echo "[Resolver] Fetching PRs merged to carto/main..."
+          gh pr list \
+            --repo ${{ github.repository }} \
+            --base carto/main \
+            --state merged \
+            --limit 1000 \
+            --json number,title,author,body,mergedAt,additions,deletions,files \
+            > "${OUTPUT_PATH}/all_prs.json" 2>/dev/null || echo "[]" > "${OUTPUT_PATH}/all_prs.json"
+
+          TOTAL_PRS=$(jq 'length' "${OUTPUT_PATH}/all_prs.json")
+          echo "[Resolver] Found ${TOTAL_PRS} total PRs merged to carto/main"
+
+          # Step 3: Filter to CARTO org member authors only
+          jq --arg pattern "$ORG_MEMBERS" '
+            [.[] | select(.author.login | test("^(" + $pattern + ")$"; "i"))]
+          ' "${OUTPUT_PATH}/all_prs.json" > "${OUTPUT_PATH}/carto_prs.json"
+
+          CARTO_PRS=$(jq 'length' "${OUTPUT_PATH}/carto_prs.json")
+          echo "[Resolver] Found ${CARTO_PRS} PRs by CARTO org members"
+
+          # Step 4: Extract unique file paths from CARTO PRs
+          jq -r '[.[] | .files[].path] | unique | .[]' "${OUTPUT_PATH}/carto_prs.json" > "${OUTPUT_PATH}/carto_files.txt"
+
+          FILE_COUNT=$(wc -l < "${OUTPUT_PATH}/carto_files.txt" | tr -d ' ')
+          echo "[Resolver] Found ${FILE_COUNT} unique CARTO-modified files"
+
+          # Cleanup temp file
+          rm -f "${OUTPUT_PATH}/all_prs.json"
+
+          echo "::endgroup::"
+
+          echo "::group::Classifying conflicted files"
 
           # Initialize output files
           > /tmp/carto_modified.txt
           > /tmp/upstream_only.txt
 
-          echo "[Resolver] Analyzing ${{ steps.carto-analysis.outputs.file_count }} CARTO-modified files from ${{ steps.carto-analysis.outputs.pr_count }} PRs"
-
           # Classify each conflicted file
           for FILE in $CONFLICTS; do
-            if grep -qxF "$FILE" "${CARTO_FILES_PATH}" 2>/dev/null; then
+            if grep -qxF "$FILE" "${OUTPUT_PATH}/carto_files.txt" 2>/dev/null; then
               echo "[Resolver] CARTO-MODIFIED: $FILE"
               echo "$FILE" >> /tmp/carto_modified.txt
             else

@@ -295,14 +295,46 @@ jobs:
           echo "::endgroup::"
 
       # =========================================================================
-      # Run CARTO PR Analysis (generates file list on-demand)
+      # CARTO PR Analysis - Identify files modified by CARTO org members
+      # (Inlined because sync branches don't have .github/actions/)
       # =========================================================================
-      - name: Run CARTO PR analysis
+      - name: Analyze CARTO PRs
         id: carto-analysis
-        uses: ./.github/actions/carto-pr-analysis
-        with:
-          github_token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
-          output_path: /tmp/carto-analysis
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          echo "::group::Analyzing CARTO PRs"
+
+          OUTPUT_PATH="/tmp/carto-analysis"
+          mkdir -p "${OUTPUT_PATH}"
+
+          # Fetch CartoDB org members
+          ORG_MEMBERS=$(gh api "orgs/CartoDB/members" --paginate --jq '.[].login' 2>/dev/null | tr '\n' '|' | sed 's/|$//')
+          if [ -z "$ORG_MEMBERS" ]; then
+            ORG_MEMBERS="Cartofante|mateo-di"
+          fi
+
+          # Fetch merged PRs to carto/main, filter by org members
+          gh pr list \
+            --repo ${{ github.repository }} \
+            --base carto/main \
+            --state merged \
+            --limit 1000 \
+            --json number,title,author,files \
+            > "${OUTPUT_PATH}/all_prs.json" 2>/dev/null || echo "[]" > "${OUTPUT_PATH}/all_prs.json"
+
+          jq --arg pattern "$ORG_MEMBERS" '
+            [.[] | select(.author.login | test("^(" + $pattern + ")$"; "i"))]
+          ' "${OUTPUT_PATH}/all_prs.json" > "${OUTPUT_PATH}/carto_prs.json"
+
+          # Extract unique file paths
+          jq -r '[.[] | .files[].path] | unique | .[]' "${OUTPUT_PATH}/carto_prs.json" > "${OUTPUT_PATH}/carto_files.txt"
+
+          FILE_COUNT=$(wc -l < "${OUTPUT_PATH}/carto_files.txt" | tr -d ' ')
+          echo "[CI Fixer] Found ${FILE_COUNT} CARTO-modified files"
+
+          rm -f "${OUTPUT_PATH}/all_prs.json"
+          echo "::endgroup::"
 
       - name: Run Claude Code to fix failures
         id: claude-fix
