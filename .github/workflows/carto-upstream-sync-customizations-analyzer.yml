@@ -1009,7 +1009,7 @@ jobs:
           use_vertex: "true"
           github_token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
           show_full_output: true
-          claude_args: "--model claude-opus-4-5@20251101 --max-turns 200"
+          claude_args: "--model claude-opus-4-5@20251101 --max-turns 200 --allowedTools Read,Write,Edit,Bash,Grep,Glob"
           prompt: |
             # Fix INCORRECTLY_DROPPED CARTO Features
 
