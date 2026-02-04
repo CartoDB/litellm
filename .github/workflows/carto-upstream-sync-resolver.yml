@@ -498,7 +498,8 @@ jobs:
             [.[] |
               select(.author.login | test("^(" + $pattern + ")$"; "i")) |
               # Exclude PRs with upstream-sync label (catches all main sync PRs)
-              select(([.labels[].name] | any(. == "upstream-sync")) | not) |
+              # Use (.labels // []) to handle PRs with no labels (null check)
+              select(([(.labels // [])[].name] | any(. == "upstream-sync")) | not) |
               # Exclude PRs with sync/resolve/CI-fixer titles
               select(.title | test("^(sync:|upstream sync:|fix: resolve.*upstream|fix: resolve conflicts|fix\\(ci\\):|merge:)"; "i") | not) |
               # Also exclude PRs containing "Upstream Sync:" (catches emoji prefix like 🔄)
