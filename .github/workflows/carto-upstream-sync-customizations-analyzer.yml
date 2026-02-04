@@ -1029,7 +1029,7 @@ jobs:
           use_vertex: "true"
           github_token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
           show_full_output: true
-          claude_args: "--model claude-opus-4-5@20251101 --max-turns 150"
+          claude_args: "--model claude-opus-4-5@20251101 --max-turns 200"
           prompt: |
             # Fix INCORRECTLY_DROPPED CARTO Features
 
@@ -1038,89 +1038,271 @@ jobs:
             **PR:** #${{ steps.fix-pr-info.outputs.pr-number }}
             **Branch:** `${{ steps.fix-pr-info.outputs.head-ref }}`
 
-            The feature analysis found INCORRECTLY_DROPPED features that need fixing.
+            The feature analysis identified CARTO customizations that were incorrectly dropped
+            during the upstream sync conflict resolution. Your job is to restore these features
+            using a systematic, comprehensive approach.
 
             ---
 
-            ## STEP 1: Read the analysis
+            ## PHASE 1: Discovery & Analysis
+
+            ### Step 1.1: Load the analysis report
 
             ```bash
             cat /tmp/feature_analysis.json | jq '.features[] | select(.decision == "INCORRECTLY_DROPPED")'
             ```
 
-            This shows you which features were lost and need to be restored.
+            For EACH dropped feature, you will perform a complete recovery cycle (Phases 2-5).
 
             ---
 
-            ## STEP 2: For each dropped feature, restore it
+            ## PHASE 2: Deep Feature Analysis (per feature)
 
-            For each INCORRECTLY_DROPPED feature:
+            For each INCORRECTLY_DROPPED feature, perform comprehensive analysis:
 
-            1. **Read the carto/main version** of the affected files:
+            ### Step 2.1: Understand CARTO's Original Implementation
+
+            1. **Read the CARTO PR description** to understand the original intent:
                ```bash
-               git show origin/carto/main:path/to/file.py
+               gh pr view <PR_NUMBER> --repo ${{ github.repository }} --json body,title,files
                ```
 
-            2. **Read the current resolved version** to understand what's there now:
+            2. **Examine CARTO's implementation** in detail:
                ```bash
-               cat path/to/file.py
+               git show origin/carto/main:<file_path>
                ```
 
-            3. **Implement the missing functionality:**
-               - Add the CARTO-specific code that was lost
-               - Integrate it with any upstream changes
-               - Ensure you don't break existing upstream functionality
+            3. **Document what CARTO added:**
+               - What problem did this solve?
+               - What functions/classes/methods were added?
+               - What imports were needed?
+               - What are the key code patterns used?
+
+            ### Step 2.2: Analyze Upstream's Current Implementation
+
+            1. **Read the current resolved version** (upstream after merge):
+               ```bash
+               cat <file_path>
+               ```
+
+            2. **Compare with pure upstream** if needed:
+               ```bash
+               git show origin/main:<file_path>
+               ```
+
+            3. **Document upstream's approach:**
+               - Does upstream have similar functionality?
+               - What are the key differences in architecture?
+               - Are there naming conflicts or overlapping concerns?
+               - What upstream code must be preserved?
+
+            ### Step 2.3: Identify Integration Points
+
+            1. **Find where CARTO code should integrate:**
+               - Import locations
+               - Class inheritance or composition
+               - Function call sites
+               - Configuration or initialization points
+
+            2. **Identify potential conflicts:**
+               - Same function names with different signatures
+               - Overlapping class hierarchies
+               - Import conflicts
+               - Initialization order dependencies
 
             ---
 
-            ## STEP 3: Verify the fix
+            ## PHASE 3: Integration Strategy & Workplan
 
-            Run Docker build to verify the code compiles:
-            ```bash
-            docker build -t test-fix .
+            ### Step 3.1: Design Integration Strategy
+
+            For each dropped feature, determine the best approach:
+
+            | Strategy | When to Use |
+            |----------|-------------|
+            | **Direct Restoration** | CARTO code is independent, no upstream equivalent |
+            | **Merge & Enhance** | Upstream has partial solution, CARTO adds value |
+            | **Adapter Pattern** | CARTO and upstream have different interfaces |
+            | **Configuration Switch** | Both implementations valid for different use cases |
+
+            ### Step 3.2: Create Detailed Workplan
+
+            Write the workplan to `/tmp/workplan.md`:
+
+            ```markdown
+            # Feature Recovery Workplan
+
+            ## Feature: [PR #XX - Title]
+
+            ### Problem Statement
+            [What CARTO's PR originally solved]
+
+            ### CARTO's Solution
+            - Added `ClassName` in `file.py` (lines X-Y)
+            - Modified `function_name()` to handle edge case
+            - Added imports: `from module import X`
+
+            ### Upstream's Current State
+            - File structure: [describe]
+            - Related functionality: [describe]
+            - Key differences: [list]
+
+            ### Integration Strategy: [chosen strategy]
+
+            ### Implementation Steps
+            1. [ ] Add missing imports at line X
+            2. [ ] Restore `ClassName` class after line Y
+            3. [ ] Modify `existing_function()` to call CARTO code
+            4. [ ] Update any type hints or exports
+            5. [ ] Verify no syntax errors
+
+            ### Risk Assessment
+            - Low/Medium/High risk areas
+            - Backward compatibility concerns
+            - Testing requirements
             ```
 
             ---
 
-            ## STEP 4: Commit changes
+            ## PHASE 4: Implementation (per feature)
+
+            ### Step 4.1: Create Todo List
+
+            Use the TaskCreate tool to create todos from your workplan:
+
+            ```
+            For each implementation step in the workplan, create a todo:
+            - Subject: Clear, actionable description
+            - Description: Detailed context including file paths and line numbers
+            - ActiveForm: Present tense action (e.g., "Restoring SnowflakeStreamingHandler")
+            ```
+
+            ### Step 4.2: Implement Each Todo
+
+            For each todo:
+
+            1. **Mark as in_progress** using TaskUpdate
+            2. **Read the target file** to understand current state
+            3. **Apply the change** using Edit tool
+               - Be surgical: change only what's necessary
+               - Preserve upstream code structure
+               - Add comments if integration is complex
+            4. **Verify the change** is syntactically correct
+            5. **Mark as completed** using TaskUpdate
+
+            ### Step 4.3: Integration Testing
+
+            After implementing all todos for a feature:
+
+            1. **Syntax check** the modified files:
+               ```bash
+               python -m py_compile <file_path>
+               ```
+
+            2. **Import check** to verify no circular dependencies:
+               ```bash
+               python -c "import <module_path>"
+               ```
+
+            ---
+
+            ## PHASE 5: Verification & Commit
+
+            ### Step 5.1: Full Verification
+
+            After ALL features are restored:
+
+            1. **Run linting:**
+               ```bash
+               cd /home/project && make lint-ruff 2>&1 | head -50
+               ```
+
+            2. **Run type checking (optional, may have pre-existing issues):**
+               ```bash
+               cd /home/project && make lint-mypy 2>&1 | head -50
+               ```
+
+            3. **Docker build test:**
+               ```bash
+               docker build -t test-fix . 2>&1 | tail -30
+               ```
+
+            ### Step 5.2: Commit Changes
+
+            Create a well-documented commit:
 
             ```bash
             git add -A
-            git commit -m "fix(carto): restore dropped CARTO features
+            git status
+            git commit -m "$(cat <<'EOF'
+            fix(carto): restore dropped CARTO customizations
 
-            Restored features identified as INCORRECTLY_DROPPED by analyzer."
+            Features restored:
+            - [PR #XX] Feature description
+            - [PR #YY] Feature description
+
+            Integration approach:
+            - Used [strategy] for each feature
+            - Preserved upstream functionality
+            - Added CARTO enhancements on top
+
+            Verified: syntax checks, import validation, docker build
+            EOF
+            )"
             git push origin HEAD
             ```
 
             ---
 
-            ## STEP 5: Document what you fixed
+            ## PHASE 6: Documentation
 
-            Create `/tmp/fix_report.json` with details about what you fixed:
+            ### Step 6.1: Create Fix Report
 
-            ```bash
-            cat > /tmp/fix_report.json << 'FIX_EOF'
+            Write `/tmp/fix_report.json`:
+
+            ```json
             {
               "fixed_features": [
                 {
                   "pr": 70,
-                  "title": "Original PR title from analysis",
+                  "title": "Original PR title",
                   "files_modified": ["path/to/file.py"],
-                  "decision": "Detailed explanation of what you did to restore the feature",
-                  "evidence": "How you verified the fix (e.g., 'Function now present at line 123-145')"
+                  "integration_strategy": "Direct Restoration | Merge & Enhance | etc.",
+                  "changes_made": [
+                    "Added SnowflakeStreamingHandler class (lines 26-96)",
+                    "Added get_supported_openai_params() method",
+                    "Added necessary imports"
+                  ],
+                  "decision": "Detailed explanation of integration approach",
+                  "evidence": "Verification results (syntax check passed, docker build succeeded)"
                 }
               ],
-              "summary": "Restored N CARTO features that were incorrectly dropped",
-              "verification": "Docker build passed"
+              "summary": "Restored N CARTO features using systematic analysis and integration",
+              "verification": {
+                "syntax_check": "passed",
+                "import_check": "passed",
+                "docker_build": "passed"
+              },
+              "workplan_followed": true
             }
-            FIX_EOF
             ```
+
+            ---
+
+            ## IMPORTANT GUIDELINES
+
+            1. **Be thorough**: Read and understand before modifying
+            2. **Be surgical**: Change only what's necessary
+            3. **Preserve upstream**: Don't break existing functionality
+            4. **Document everything**: Future maintainers need to understand
+            5. **Test incrementally**: Verify after each major change
+            6. **Use todos**: Track progress systematically
 
             ---
 
             ## SAY "FIX COMPLETE" WHEN DONE
 
-            After committing and creating the report, say **"FIX COMPLETE"**.
+            After completing all phases and pushing the commit, say **"FIX COMPLETE"**.
 
         env:
           ANTHROPIC_VERTEX_PROJECT_ID: carto-ci-resources
