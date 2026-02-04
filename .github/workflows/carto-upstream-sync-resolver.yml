@@ -560,6 +560,47 @@ jobs:
 
           echo "::endgroup::"
 
+      # =========================================================================
+      # Auto-resolve UPSTREAM-ONLY files - these should accept upstream version
+      # This is done BEFORE Claude runs to reduce Claude's workload and prevent
+      # mistakes in files that don't have CARTO customizations
+      # =========================================================================
+      - name: Auto-resolve UPSTREAM-ONLY files
+        id: auto-resolve-upstream
+        run: |
+          echo "::group::Auto-resolving UPSTREAM-ONLY files"
+
+          UPSTREAM_FILES="${{ steps.carto-files.outputs.upstream-files }}"
+          AUTO_RESOLVED=0
+          FAILED=0
+
+          for FILE in $UPSTREAM_FILES; do
+            if [ -n "$FILE" ] && [ -f "$FILE" ]; then
+              echo "[Auto-resolve] Accepting upstream: $FILE"
+              if git checkout --theirs "$FILE" 2>/dev/null; then
+                git add "$FILE" 2>/dev/null || true
+                AUTO_RESOLVED=$((AUTO_RESOLVED + 1))
+              else
+                echo "[Auto-resolve] Warning: Could not resolve $FILE"
+                FAILED=$((FAILED + 1))
+              fi
+            fi
+          done
+
+          echo ""
+          echo "[Auto-resolve] Summary:"
+          echo "  Successfully resolved: ${AUTO_RESOLVED} files"
+          echo "  Failed to resolve: ${FAILED} files"
+          echo "auto-resolved=${AUTO_RESOLVED}" >> $GITHUB_OUTPUT
+          echo "failed=${FAILED}" >> $GITHUB_OUTPUT
+
+          # Show remaining conflicts after auto-resolution
+          REMAINING=$(git diff --name-only --diff-filter=U 2>/dev/null | wc -l | tr -d ' ')
+          echo "  Remaining conflicts for Claude: ${REMAINING} files"
+          echo "remaining=${REMAINING}" >> $GITHUB_OUTPUT
+
+          echo "::endgroup::"
+
       - name: Build CARTO context from PR analysis
         id: carto-context
         run: |
@@ -645,7 +686,9 @@ jobs:
             **Key Principle:** CARTO customizations made by CartoDB organization members are **INTENTIONAL and MUST be preserved**. Upstream changes should be merged **AROUND** CARTO code, not replacing it.
 
             The git merge has ALREADY been started by the workflow.
-            You are in a merge conflict state with ${{ steps.start-merge.outputs.conflict-count }} conflicted files.
+
+            **IMPORTANT:** The workflow has already AUTO-RESOLVED ${{ steps.auto-resolve-upstream.outputs.auto-resolved }} UPSTREAM-ONLY files.
+            You only need to focus on the remaining ${{ steps.auto-resolve-upstream.outputs.remaining }} CARTO-MODIFIED files.
 
             **DO NOT RUN THESE COMMANDS - THE WORKFLOW WILL HANDLE THEM:**
             - ❌ `git commit` - Workflow does this AFTER you finish
@@ -654,30 +697,32 @@ jobs:
             - ❌ `gh pr create` - Workflow does this AFTER you finish
 
             **YOUR ONLY JOB:**
-            1. Read conflicted files
+            1. Read conflicted CARTO-MODIFIED files (upstream-only are already resolved!)
             2. Edit files to remove conflict markers (PRESERVING CARTO CODE)
             3. Run tests and fix issues
             4. Say "RESOLUTION COMPLETE" when done
 
             ## Pre-Analysis: CARTO vs Upstream Files
 
-            The workflow has analyzed which files have CARTO commits:
+            The workflow has analyzed and pre-resolved files:
 
-            **🔒 CARTO-MODIFIED FILES (MUST KEEP CARTO VERSION):**
+            **🔒 CARTO-MODIFIED FILES (MUST KEEP CARTO VERSION - YOUR FOCUS):**
             ```
             ${{ steps.carto-files.outputs.carto-files }}
             ```
 
-            **📥 UPSTREAM-ONLY FILES (Accept upstream):**
-            ```
-            ${{ steps.carto-files.outputs.upstream-files }}
+            **✅ UPSTREAM-ONLY FILES (Already auto-resolved by workflow):**
+            These ${{ steps.auto-resolve-upstream.outputs.auto-resolved }} files have been automatically resolved to accept upstream.
+            You do NOT need to touch these files.
+
+            ## Remaining Conflicted Files (${{ steps.auto-resolve-upstream.outputs.remaining }} CARTO-modified files)
+
+            To see the actual remaining conflicts, run:
+            ```bash
+            git diff --name-only --diff-filter=U
             ```
 
-            ## All Conflicted Files (${{ steps.start-merge.outputs.conflict-count }} files)
-
-            ```
-            ${{ steps.start-merge.outputs.conflicts }}
-            ```
+            These should match the CARTO-MODIFIED files above.
 
             ## Step 0: Check Previous Resolution Attempts
 
