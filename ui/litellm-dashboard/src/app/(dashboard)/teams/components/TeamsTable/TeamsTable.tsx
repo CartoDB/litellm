@@ -1,4 +1,14 @@
-import { Button, Icon, Table, TableBody, TableCell, TableHead, TableHeaderCell, TableRow, Text } from "@tremor/react";
+import {
+  Button,
+  Icon,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeaderCell,
+  TableRow,
+  Text,
+} from "@tremor/react";
 import { Tooltip } from "antd";
 import { formatNumberWithCommas } from "@/utils/dataUtils";
 import { PencilAltIcon, TrashIcon } from "@heroicons/react/outline";

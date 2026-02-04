@@ -2,7 +2,7 @@ import Image from '@theme/IdealImage';
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 
-# Claude Code Quickstart
+# Claude Code
 
 This tutorial shows how to call Claude models through LiteLLM proxy from Claude Code.
 
@@ -37,22 +37,18 @@ Create a secure configuration using environment variables:
 
 ```yaml
 model_list:
-  # Configure the models you want to use
-  - model_name: claude-sonnet-4-5-20250929
+  # Claude models
+  - model_name: claude-3-5-sonnet-20241022    
     litellm_params:
-      model: anthropic/claude-sonnet-4-5-20250929
+      model: anthropic/claude-3-5-sonnet-20241022
+      api_key: os.environ/ANTHROPIC_API_KEY
+  
+  - model_name: claude-3-5-haiku-20241022
+    litellm_params:
+      model: anthropic/claude-3-5-haiku-20241022
       api_key: os.environ/ANTHROPIC_API_KEY
 
-  - model_name: claude-haiku-4-5-20251001
-    litellm_params:
-      model: anthropic/claude-haiku-4-5-20251001
-      api_key: os.environ/ANTHROPIC_API_KEY
-
-  - model_name: claude-opus-4-5-20251101
-    litellm_params:
-      model: anthropic/claude-opus-4-5-20251101
-      api_key: os.environ/ANTHROPIC_API_KEY
-
+  
 litellm_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
 ```
@@ -63,10 +59,6 @@ Set your environment variables:
 export ANTHROPIC_API_KEY="your-anthropic-api-key"
 export LITELLM_MASTER_KEY="sk-1234567890"  # Generate a secure key
 ```
-
-:::tip
-Alternatively, you can store `ANTHROPIC_API_KEY` in a `.env` file in your proxy directory. LiteLLM will automatically load it when starting.
-:::
 
 ### 2. Start proxy
 
@@ -113,61 +105,21 @@ LITELLM_MASTER_KEY gives claude access to all proxy models, whereas a virtual ke
 Alternatively, use the Anthropic pass-through endpoint:
 
 ```bash
-export ANTHROPIC_BASE_URL="http://0.0.0.0:4000/anthropic"
+export ANTHROPIC_BASE_URL="http://0.0.0.0:4000"
 export ANTHROPIC_AUTH_TOKEN="$LITELLM_MASTER_KEY"
 ```
 
 ### 5. Use Claude Code
 
-Start Claude Code with the model you want to use:
+Start Claude Code and it will automatically use your configured models:
 
 ```bash
-# Specify model at startup
-claude --model claude-sonnet-4-5-20250929
-
-# Or specify a different model
-claude --model claude-haiku-4-5-20251001
-claude --model claude-opus-4-5-20251101
-
-# Or change model during a session
+# Claude Code will use the models configured in your LiteLLM proxy
 claude
-/model claude-sonnet-4-5-20250929
-```
 
-Alternatively, set default models with environment variables:
-
-```bash
-export ANTHROPIC_DEFAULT_SONNET_MODEL=claude-sonnet-4-5-20250929
-export ANTHROPIC_DEFAULT_HAIKU_MODEL=claude-haiku-4-5-20251001
-export ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-4-5-20251101
-claude
-```
-
-### Using 1M Context Window
-
-Claude Code supports extended context (1 million tokens) using the `[1m]` suffix:
-
-```bash
-# Use Sonnet with 1M context (requires quotes in shell)
-claude --model 'claude-sonnet-4-5-20250929[1m]'
-
-# Inside a Claude Code session (no quotes needed)
-/model claude-sonnet-4-5-20250929[1m]
-```
-
-:::warning
-**Important:** When using `--model` with `[1m]` in the shell, you must use quotes to prevent the shell from interpreting the brackets.
-:::
-
-**How it works:**
-- Claude Code strips the `[1m]` suffix before sending to LiteLLM
-- Claude Code automatically adds the header `anthropic-beta: context-1m-2025-08-07`
-- Your LiteLLM config should **NOT** include `[1m]` in model names
-
-**Verify 1M context is active:**
-```bash
-/context
-# Should show: 21k/1000k tokens (2%)
+# Or specify a model if you have multiple configured
+claude --model claude-3-5-sonnet-20241022
+claude --model claude-3-5-haiku-20241022
 ```
 
 Example conversation:
@@ -188,10 +140,9 @@ Common issues and solutions:
 
 **Model not found:**
 - Ensure the model name in Claude Code matches exactly with your `config.yaml`
-- Use `--model` flag or environment variables to specify the model
 - Check LiteLLM logs for detailed error messages
 
-## Using Bedrock/Vertex AI/Azure Foundry Models
+## Using Multiple Models
 
 Expand your configuration to support multiple providers and models:
 
@@ -200,6 +151,25 @@ Expand your configuration to support multiple providers and models:
 
 ```yaml
 model_list:
+  # OpenAI models
+  - model_name: codex-mini
+    litellm_params:  
+      model: openai/codex-mini
+      api_key: os.environ/OPENAI_API_KEY
+      api_base: https://api.openai.com/v1
+
+  - model_name: o3-pro
+    litellm_params:
+      model: openai/o3-pro
+      api_key: os.environ/OPENAI_API_KEY
+      api_base: https://api.openai.com/v1
+
+  - model_name: gpt-4o
+    litellm_params:
+      model: openai/gpt-4o
+      api_key: os.environ/OPENAI_API_KEY
+      api_base: https://api.openai.com/v1
+
   # Anthropic models
   - model_name: claude-3-5-sonnet-20241022
     litellm_params:
@@ -219,24 +189,6 @@ model_list:
       aws_secret_access_key: os.environ/AWS_SECRET_ACCESS_KEY
       aws_region_name: us-east-1
 
-  # Azure Foundry
-  - model_name: claude-4-azure
-    litellm_params:
-      model: azure_ai/claude-opus-4-1
-      api_key: os.environ/AZURE_AI_API_KEY
-      api_base: os.environ/AZURE_AI_API_BASE # https://my-resource.services.ai.azure.com/anthropic
-
-  # Google Vertex AI
-  - model_name: anthropic-vertex
-    litellm_params:
-      model: vertex_ai/claude-haiku-4-5@20251001
-      vertex_ai_project: "my-test-project"
-      vertex_ai_location: "us-east-1"
-      vertex_credentials: os.environ/VERTEX_FILE_PATH_ENV_VAR # os.environ["VERTEX_FILE_PATH_ENV_VAR"] = "/path/to/service_account.json" 
-
-
-
-
 litellm_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
 ```
@@ -252,16 +204,110 @@ claude --model claude-3-5-haiku-20241022
 
 # Use Bedrock deployment
 claude --model claude-bedrock
-
-# Use Azure Foundry deployment
-claude --model claude-4-azure
-
-# Use Vertex AI deployment
-claude --model anthropic-vertex
 ```
 
 </TabItem>
 </Tabs>
 
 <Image img={require('../../img/release_notes/claude_code_demo.png')} style={{ width: '500px', height: 'auto' }} />
+
+
+## Connecting MCP Servers
+
+You can also connect MCP servers to Claude Code via LiteLLM Proxy.
+
+:::note
+
+Limitations:
+
+- Currently, only HTTP MCP servers are supported
+- Does not work in Cursor IDE yet.
+
+:::
+
+1. Add the MCP server to your `config.yaml`
+
+<Tabs>
+<TabItem value="github" label="GitHub MCP">
+
+In this example, we'll add the Github MCP server to our `config.yaml`
+
+```yaml title="config.yaml" showLineNumbers
+mcp_servers:
+  github_mcp:
+    url: "https://api.githubcopilot.com/mcp"
+    auth_type: oauth2
+    authorization_url: https://github.com/login/oauth/authorize
+    token_url: https://github.com/login/oauth/access_token
+    client_id: os.environ/GITHUB_OAUTH_CLIENT_ID
+    client_secret: os.environ/GITHUB_OAUTH_CLIENT_SECRET
+    scopes: ["public_repo", "user:email"]
+```
+
+</TabItem>
+<TabItem value="atlassian" label="Atlassian MCP">
+
+In this example, we'll add the Atlassian MCP server to our `config.yaml`
+
+```yaml title="config.yaml" showLineNumbers
+atlassian_mcp:
+  server_id: atlassian_mcp_id
+  url: "https://mcp.atlassian.com/v1/sse"
+  transport: "sse"
+  auth_type: oauth2
+  authorization_url: https://mcp.atlassian.com/v1/authorize
+  token_url: https://cf.mcp.atlassian.com/v1/token
+  registration_url: https://cf.mcp.atlassian.com/v1/register
+```
+
+</TabItem>
+</Tabs>
+
+2. Start LiteLLM Proxy
+
+```bash
+litellm --config /path/to/config.yaml
+
+# RUNNING on http://0.0.0.0:4000
+```
+
+3. Use the MCP server in Claude Code
+
+```bash
+claude mcp add --transport http litellm_proxy http://0.0.0.0:4000/github_mcp/mcp --header "Authorization: Bearer sk-LITELLM_VIRTUAL_KEY"
+```
+
+For MCP servers that require dynamic client registration (such as Atlassian), please set `x-litellm-api-key: Bearer sk-LITELLM_VIRTUAL_KEY` instead of using `Authorization: Bearer LITELLM_VIRTUAL_KEY`.
+
+4. Authenticate via Claude Code
+
+a. Start Claude Code
+
+```bash
+claude
+```
+
+b. Authenticate via Claude Code
+
+```bash
+/mcp
+```
+
+c. Select the MCP server
+
+```bash
+> litellm_proxy
+```
+
+d. Start Oauth flow via Claude Code
+
+```bash
+> 1. Authenticate
+ 2. Reconnect
+ 3. Disable             
+```
+
+e. Once completed, you should see this success message:
+
+<Image img={require('../../img/oauth_2_success.png')} style={{ width: '500px', height: 'auto' }} />
 

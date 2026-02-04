@@ -28,6 +28,7 @@ from litellm.types.files import (
     get_file_type_from_extension,
     is_gemini_1_5_accepted_file_type,
 )
+from litellm.types.utils import LlmProviders
 from litellm.types.llms.openai import (
     AllMessageValues,
     ChatCompletionAssistantMessage,
@@ -429,7 +430,7 @@ def _gemini_convert_messages_with_history(  # noqa: PLR0915
                     thought_signatures = None
                     if provider_specific_fields and isinstance(provider_specific_fields, dict):
                         thought_signatures = provider_specific_fields.get("thought_signatures")
-                    
+
                     # If we have thought signatures, add them to the part
                     if thought_signatures and isinstance(thought_signatures, list) and len(thought_signatures) > 0:
                         # Use the first signature for the text part (Gemini expects one signature per part)
@@ -760,3 +761,5 @@ def _transform_system_message(
         return SystemInstructions(parts=system_content_blocks), messages
 
     return None, messages
+
+

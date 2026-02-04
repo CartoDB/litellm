@@ -17,17 +17,15 @@ interface SelectionOptions {
 export const columns = (
   possibleUIRoles: Record<string, Record<string, string>>,
   handleEdit: (user: UserInfo) => void,
-  handleDelete: (user: UserInfo) => void,
+  handleDelete: (userId: string) => void,
   handleResetPassword: (userId: string) => void,
   handleUserClick: (userId: string, openInEditMode?: boolean) => void,
   selectionOptions?: SelectionOptions,
 ): ColumnDef<UserInfo>[] => {
-  // Backend sortable columns: user_id, user_email, created_at, spend, user_alias, user_role
   const baseColumns: ColumnDef<UserInfo>[] = [
     {
       header: "User ID",
       accessorKey: "user_id",
-      enableSorting: true,
       cell: ({ row }) => (
         <Tooltip title={row.original.user_id}>
           <span className="text-xs">{row.original.user_id ? `${row.original.user_id.slice(0, 7)}...` : "-"}</span>
@@ -37,25 +35,16 @@ export const columns = (
     {
       header: "Email",
       accessorKey: "user_email",
-      enableSorting: true,
       cell: ({ row }) => <span className="text-xs">{row.original.user_email || "-"}</span>,
     },
     {
       header: "Global Proxy Role",
       accessorKey: "user_role",
-      enableSorting: true,
       cell: ({ row }) => <span className="text-xs">{possibleUIRoles?.[row.original.user_role]?.ui_label || "-"}</span>,
-    },
-    {
-      header: "User Alias",
-      accessorKey: "user_alias",
-      enableSorting: false,
-      cell: ({ row }) => <span className="text-xs">{row.original.user_alias || "-"}</span>,
     },
     {
       header: "Spend (USD)",
       accessorKey: "spend",
-      enableSorting: true,
       cell: ({ row }) => (
         <span className="text-xs">{row.original.spend ? formatNumberWithCommas(row.original.spend, 4) : "-"}</span>
       ),
@@ -63,7 +52,6 @@ export const columns = (
     {
       header: "Budget (USD)",
       accessorKey: "max_budget",
-      enableSorting: false,
       cell: ({ row }) => (
         <span className="text-xs">{row.original.max_budget !== null ? row.original.max_budget : "Unlimited"}</span>
       ),
@@ -78,20 +66,18 @@ export const columns = (
         </div>
       ),
       accessorKey: "sso_user_id",
-      enableSorting: false,
       cell: ({ row }) => (
         <span className="text-xs">{row.original.sso_user_id !== null ? row.original.sso_user_id : "-"}</span>
       ),
     },
     {
-      header: "Virtual Keys",
+      header: "API Keys",
       accessorKey: "key_count",
-      enableSorting: false,
       cell: ({ row }) => (
         <Grid numItems={2}>
           {row.original.key_count > 0 ? (
             <Badge size="xs" color="indigo">
-              {row.original.key_count} {row.original.key_count === 1 ? "Key" : "Keys"}
+              {row.original.key_count} Keys
             </Badge>
           ) : (
             <Badge size="xs" color="gray">
@@ -104,7 +90,7 @@ export const columns = (
     {
       header: "Created At",
       accessorKey: "created_at",
-      enableSorting: true,
+      sortingFn: "datetime",
       cell: ({ row }) => (
         <span className="text-xs">
           {row.original.created_at ? new Date(row.original.created_at).toLocaleDateString() : "-"}
@@ -114,7 +100,7 @@ export const columns = (
     {
       header: "Updated At",
       accessorKey: "updated_at",
-      enableSorting: false,
+      sortingFn: "datetime",
       cell: ({ row }) => (
         <span className="text-xs">
           {row.original.updated_at ? new Date(row.original.updated_at).toLocaleDateString() : "-"}
@@ -123,33 +109,17 @@ export const columns = (
     },
     {
       id: "actions",
-      header: "Actions",
-      enableSorting: false,
+      header: "",
       cell: ({ row }) => (
         <div className="flex gap-2">
-          <Tooltip title="Edit user details">
-            <Icon
-              icon={PencilAltIcon}
-              size="sm"
-              onClick={() => handleUserClick(row.original.user_id, true)}
-              className="cursor-pointer hover:text-blue-600"
-            />
+          <Tooltip title="Edit user details" zIndex={9999}>
+            <Icon icon={PencilAltIcon} size="sm" onClick={() => handleUserClick(row.original.user_id, true)} />
           </Tooltip>
-          <Tooltip title="Delete user">
-            <Icon
-              icon={TrashIcon}
-              size="sm"
-              onClick={() => handleDelete(row.original)}
-              className="cursor-pointer hover:text-red-600"
-            />
+          <Tooltip title="Delete user" zIndex={9999}>
+            <Icon icon={TrashIcon} size="sm" onClick={() => handleDelete(row.original.user_id)} />
           </Tooltip>
-          <Tooltip title="Reset Password">
-            <Icon
-              icon={RefreshIcon}
-              size="sm"
-              onClick={() => handleResetPassword(row.original.user_id)}
-              className="cursor-pointer hover:text-green-600"
-            />
+          <Tooltip title="Reset Password" zIndex={9999}>
+            <Icon icon={RefreshIcon} size="sm" onClick={() => handleResetPassword(row.original.user_id)} />
           </Tooltip>
         </div>
       ),
@@ -163,7 +133,6 @@ export const columns = (
     return [
       {
         id: "select",
-        enableSorting: false,
         header: () => (
           <Checkbox
             indeterminate={isIndeterminate}

@@ -12,10 +12,6 @@ SEARCH_PROVIDERS = [
     "google_pse",
     "parallel_ai",
     "exa_ai",
-    "brave",
-    "firecrawl",
-    "searxng",
-    "linkup",
 ]
 
 ALLOWED_FILES_IN_LLMS_FOLDER = [
@@ -25,7 +21,6 @@ ALLOWED_FILES_IN_LLMS_FOLDER = [
     "custom_httpx",
     "custom_llm",
     "deprecated_providers",
-    "pass_through"
 ] + SEARCH_PROVIDERS
 
 

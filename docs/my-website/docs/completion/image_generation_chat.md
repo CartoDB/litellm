@@ -15,22 +15,16 @@ Supported Providers:
 - Google AI Studio (`gemini`)
 - Vertex AI (`vertex_ai/`)
 
-LiteLLM will standardize the `images` response in the assistant message for models that support image generation during chat completions.
+LiteLLM will standardize the `image` response in the assistant message for models that support image generation during chat completions.
 
 ```python title="Example response from litellm"
 "message": {
     ...
     "content": "Here's the image you requested:",
-    "images": [
-        {
-            "image_url": {
-                "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...",
-                "detail": "auto"
-            },
-            "index": 0,
-            "type": "image_url"
-        }
-    ]
+    "image": {
+        "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...",
+        "detail": "auto"
+    }
 }
 ```
 
@@ -53,7 +47,7 @@ response = completion(
 )
 
 print(response.choices[0].message.content)  # Text response
-print(response.choices[0].message.images)   # List of image objects
+print(response.choices[0].message.image)    # Image data
 ```
 
 </TabItem>
@@ -109,16 +103,10 @@ curl http://0.0.0.0:4000/v1/chat/completions \
             "message": {
                 "content": "Here's the image you requested:",
                 "role": "assistant",
-                "images": [
-                    {
-                        "image_url": {
-                            "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...",
-                            "detail": "auto"
-                        },
-                        "index": 0,
-                        "type": "image_url"
-                    }
-                ]
+                "image": {
+                    "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...",
+                    "detail": "auto"
+                }
             }
         }
     ],
@@ -153,8 +141,8 @@ response = completion(
 )
 
 for chunk in response:
-    if hasattr(chunk.choices[0].delta, "images") and chunk.choices[0].delta.images is not None:
-        print("Generated image:", chunk.choices[0].delta.images[0]["image_url"]["url"])
+    if hasattr(chunk.choices[0].delta, "image") and chunk.choices[0].delta.image is not None:
+        print("Generated image:", chunk.choices[0].delta.image["url"])
         break
 ```
 
@@ -187,7 +175,7 @@ data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1723323084
 
 data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1723323084,"model":"gemini/gemini-2.5-flash-image-preview","choices":[{"index":0,"delta":{"content":"Here's the image you requested:"},"finish_reason":null}]}
 
-data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1723323084,"model":"gemini/gemini-2.5-flash-image-preview","choices":[{"index":0,"delta":{"images":[{"image_url":{"url":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...","detail":"auto"},"index":0,"type":"image_url"}]},"finish_reason":null}]}
+data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1723323084,"model":"gemini/gemini-2.5-flash-image-preview","choices":[{"index":0,"delta":{"image":{"url":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...","detail":"auto"}},"finish_reason":null}]}
 
 data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1723323084,"model":"gemini/gemini-2.5-flash-image-preview","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
 
@@ -212,8 +200,8 @@ async def generate_image():
     )
     
     print(response.choices[0].message.content)  # Text response
-    print(response.choices[0].message.images)   # List of image objects
-
+    print(response.choices[0].message.image)    # Image data
+    
     return response
 
 # Run the async function
@@ -224,31 +212,21 @@ asyncio.run(generate_image())
 
 | Provider | Model | 
 |----------|--------|
-| Google AI Studio | `gemini/gemini-2.0-flash-preview-image-generation`, `gemini/gemini-2.5-flash-image-preview`, `gemini/gemini-3-pro-image-preview` |
-| Vertex AI | `vertex_ai/gemini-2.0-flash-preview-image-generation`, `vertex_ai/gemini-2.5-flash-image-preview`, `vertex_ai/gemini-3-pro-image-preview` |
+| Google AI Studio | `gemini/gemini-2.5-flash-image-preview` |
+| Vertex AI | `vertex_ai/gemini-2.5-flash-image-preview` |
 
-## Spec
+## Spec 
 
-The `images` field in the response follows this structure:
+The `image` field in the response follows this structure:
 
 ```python
-"images": [
-    {
-        "image_url": {
-            "url": "data:image/png;base64,<base64_encoded_image>",
-            "detail": "auto"
-        },
-        "index": 0,
-        "type": "image_url"
-    }
-]
+"image": {
+    "url": "data:image/png;base64,<base64_encoded_image>",
+    "detail": "auto"
+}
 ```
 
-- `images` - List[ImageURLListItem]: Array of generated images
-  - `image_url` - ImageURLObject: Container for image data
-    - `url` - str: Base64 encoded image data in data URI format
-    - `detail` - str: Image detail level (always "auto" for generated images)
-  - `index` - int: Index of the image in the response
-  - `type` - str: Type identifier (always "image_url")
+- `url` - str: Base64 encoded image data in data URI format
+- `detail` - str: Image detail level (always "auto" for generated images)
 
-The images are returned as base64-encoded data URIs that can be directly used in HTML `<img>` tags or saved to files.
+The image is returned as a base64-encoded data URI that can be directly used in HTML `<img>` tags or saved to a file.

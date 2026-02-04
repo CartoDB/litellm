@@ -1,48 +1,46 @@
-import { useTeams } from "@/app/(dashboard)/hooks/teams/useTeams";
-import { formatNumberWithCommas, copyToClipboard as utilCopyToClipboard } from "@/utils/dataUtils";
-import { createTeamAliasMap } from "@/utils/teamUtils";
-import { ArrowLeftIcon, PencilAltIcon, TrashIcon } from "@heroicons/react/outline";
+import React, { useState, useEffect } from "react";
 import {
-  Badge,
   Card,
-  Grid,
-  Icon,
-  Tab,
-  TabGroup,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeaderCell,
-  TableRow,
-  TabList,
-  TabPanel,
-  TabPanels,
+  Title,
   Text,
   TextInput,
-  Title,
+  Tab,
+  TabList,
+  TabGroup,
+  TabPanel,
+  TabPanels,
+  Grid,
+  Badge,
+  Table,
+  TableHead,
+  TableRow,
+  TableHeaderCell,
+  TableBody,
+  TableCell,
   Button as TremorButton,
+  Icon,
 } from "@tremor/react";
+import NumericalInput from "../shared/numerical_input";
 import { Button, Form, Input, Select } from "antd";
-import { CheckIcon, CopyIcon } from "lucide-react";
-import React, { useEffect, useMemo, useState } from "react";
-import UserSearchModal from "../common_components/user_search_modal";
-import MCPServerSelector from "../mcp_server_management/MCPServerSelector";
-import { ModelSelect } from "../ModelSelect/ModelSelect";
-import NotificationsManager from "../molecules/notifications_manager";
+import { ArrowLeftIcon, PencilAltIcon, TrashIcon } from "@heroicons/react/outline";
+import { getModelDisplayName } from "../key_team_helpers/fetch_available_models_team_key";
 import {
   Member,
   Organization,
   organizationInfoCall,
   organizationMemberAddCall,
-  organizationMemberDeleteCall,
   organizationMemberUpdateCall,
+  organizationMemberDeleteCall,
   organizationUpdateCall,
 } from "../networking";
+import UserSearchModal from "../common_components/user_search_modal";
+import MemberModal from "../team/edit_membership";
 import ObjectPermissionsView from "../object_permissions_view";
-import NumericalInput from "../shared/numerical_input";
-import MemberModal from "../team/EditMembership";
 import VectorStoreSelector from "../vector_store_management/VectorStoreSelector";
+import MCPServerSelector from "../mcp_server_management/MCPServerSelector";
+import { copyToClipboard as utilCopyToClipboard, formatNumberWithCommas } from "@/utils/dataUtils";
+import { CheckIcon, CopyIcon } from "lucide-react";
+import NotificationsManager from "../molecules/notifications_manager";
 
 interface OrganizationInfoProps {
   organizationId: string;
@@ -71,11 +69,7 @@ const OrganizationInfoView: React.FC<OrganizationInfoProps> = ({
   const [isEditMemberModalVisible, setIsEditMemberModalVisible] = useState(false);
   const [selectedEditMember, setSelectedEditMember] = useState<Member | null>(null);
   const [copiedStates, setCopiedStates] = useState<Record<string, boolean>>({});
-  const [isOrgSaving, setIsOrgSaving] = useState(false);
   const canEditOrg = is_org_admin || is_proxy_admin;
-  const { data: teams } = useTeams();
-
-  const teamAliasMap = useMemo(() => createTeamAliasMap(teams), [teams]);
 
   const fetchOrgInfo = async () => {
     try {
@@ -157,7 +151,6 @@ const OrganizationInfoView: React.FC<OrganizationInfoProps> = ({
   const handleOrgUpdate = async (values: any) => {
     try {
       if (!accessToken) return;
-      setIsOrgSaving(true);
 
       const updateData: any = {
         organization_id: organizationId,
@@ -201,8 +194,6 @@ const OrganizationInfoView: React.FC<OrganizationInfoProps> = ({
     } catch (error) {
       NotificationsManager.fromBackend("Failed to update organization settings");
       console.error("Error updating organization:", error);
-    } finally {
-      setIsOrgSaving(false);
     }
   };
 
@@ -239,10 +230,11 @@ const OrganizationInfoView: React.FC<OrganizationInfoProps> = ({
               size="small"
               icon={copiedStates["org-id"] ? <CheckIcon size={12} /> : <CopyIcon size={12} />}
               onClick={() => copyToClipboard(orgData.organization_id, "org-id")}
-              className={`left-2 z-10 transition-all duration-200 ${copiedStates["org-id"]
-                ? "text-green-600 bg-green-50 border-green-200"
-                : "text-gray-500 hover:text-gray-700 hover:bg-gray-100"
-                }`}
+              className={`left-2 z-10 transition-all duration-200 ${
+                copiedStates["org-id"]
+                  ? "text-green-600 bg-green-50 border-green-200"
+                  : "text-gray-500 hover:text-gray-700 hover:bg-gray-100"
+              }`}
             />
           </div>
         </div>
@@ -314,7 +306,7 @@ const OrganizationInfoView: React.FC<OrganizationInfoProps> = ({
                 <div className="mt-2 flex flex-wrap gap-2">
                   {orgData.teams?.map((team, index) => (
                     <Badge key={index} color="red">
-                      {teamAliasMap[team.team_id] || team.team_id}
+                      {team.team_id}
                     </Badge>
                   ))}
                 </div>
@@ -328,6 +320,7 @@ const OrganizationInfoView: React.FC<OrganizationInfoProps> = ({
             </Grid>
           </TabPanel>
 
+          {/* Budget Panel */}
           <TabPanel>
             <div className="space-y-4">
               <Card className="w-full mx-auto flex-auto overflow-y-auto max-h-[75vh]">
@@ -343,55 +336,47 @@ const OrganizationInfoView: React.FC<OrganizationInfoProps> = ({
                   </TableHead>
 
                   <TableBody>
-                    {orgData.members && orgData.members.length > 0 ? (
-                      orgData.members.map((member, index) => (
-                        <TableRow key={index}>
-                          <TableCell>
-                            <Text className="font-mono">{member.user_id}</Text>
-                          </TableCell>
-                          <TableCell>
-                            <Text className="font-mono">{member.user_role}</Text>
-                          </TableCell>
-                          <TableCell>
-                            <Text>${formatNumberWithCommas(member.spend, 4)}</Text>
-                          </TableCell>
-                          <TableCell>
-                            <Text>{new Date(member.created_at).toLocaleString()}</Text>
-                          </TableCell>
-                          <TableCell>
-                            {canEditOrg && (
-                              <>
-                                <Icon
-                                  icon={PencilAltIcon}
-                                  size="sm"
-                                  onClick={() => {
-                                    setSelectedEditMember({
-                                      role: member.user_role,
-                                      user_email: member.user_email,
-                                      user_id: member.user_id,
-                                    });
-                                    setIsEditMemberModalVisible(true);
-                                  }}
-                                />
-                                <Icon
-                                  icon={TrashIcon}
-                                  size="sm"
-                                  onClick={() => {
-                                    handleMemberDelete(member);
-                                  }}
-                                />
-                              </>
-                            )}
-                          </TableCell>
-                        </TableRow>
-                      ))
-                    ) : (
-                      <TableRow>
-                        <TableCell colSpan={5} className="text-center py-8">
-                          <Text className="text-gray-500">No members found</Text>
+                    {orgData.members?.map((member, index) => (
+                      <TableRow key={index}>
+                        <TableCell>
+                          <Text className="font-mono">{member.user_id}</Text>
+                        </TableCell>
+                        <TableCell>
+                          <Text className="font-mono">{member.user_role}</Text>
+                        </TableCell>
+                        <TableCell>
+                          <Text>${formatNumberWithCommas(member.spend, 4)}</Text>
+                        </TableCell>
+                        <TableCell>
+                          <Text>{new Date(member.created_at).toLocaleString()}</Text>
+                        </TableCell>
+                        <TableCell>
+                          {canEditOrg && (
+                            <>
+                              <Icon
+                                icon={PencilAltIcon}
+                                size="sm"
+                                onClick={() => {
+                                  setSelectedEditMember({
+                                    role: member.user_role,
+                                    user_email: member.user_email,
+                                    user_id: member.user_id,
+                                  });
+                                  setIsEditMemberModalVisible(true);
+                                }}
+                              />
+                              <Icon
+                                icon={TrashIcon}
+                                size="sm"
+                                onClick={() => {
+                                  handleMemberDelete(member);
+                                }}
+                              />
+                            </>
+                          )}
                         </TableCell>
                       </TableRow>
-                    )}
+                    ))}
                   </TableBody>
                 </Table>
               </Card>
@@ -451,15 +436,16 @@ const OrganizationInfoView: React.FC<OrganizationInfoProps> = ({
                   </Form.Item>
 
                   <Form.Item label="Models" name="models">
-                    <ModelSelect
-                      value={form.getFieldValue("models")}
-                      onChange={(values) => form.setFieldValue("models", values)}
-                      context="organization"
-                      options={{
-                        includeSpecialOptions: true,
-                        showAllProxyModelsOverride: true,
-                      }}
-                    />
+                    <Select mode="multiple" placeholder="Select models">
+                      <Select.Option key="all-proxy-models" value="all-proxy-models">
+                        All Proxy Models
+                      </Select.Option>
+                      {userModels.map((model) => (
+                        <Select.Option key={model} value={model}>
+                          {getModelDisplayName(model)}
+                        </Select.Option>
+                      ))}
+                    </Select>
                   </Form.Item>
 
                   <Form.Item label="Max Budget (USD)" name="max_budget">
@@ -506,12 +492,8 @@ const OrganizationInfoView: React.FC<OrganizationInfoProps> = ({
 
                   <div className="sticky z-10 bg-white p-4 border-t border-gray-200 bottom-[-1.5rem] inset-x-[-1.5rem]">
                     <div className="flex justify-end items-center gap-2">
-                      <TremorButton variant="secondary" onClick={() => setIsEditing(false)} disabled={isOrgSaving}>
-                        Cancel
-                      </TremorButton>
-                      <TremorButton type="submit" loading={isOrgSaving}>
-                        Save Changes
-                      </TremorButton>
+                      <Button onClick={() => setIsEditing(false)}>Cancel</Button>
+                      <TremorButton type="submit">Save Changes</TremorButton>
                     </div>
                   </div>
                 </Form>

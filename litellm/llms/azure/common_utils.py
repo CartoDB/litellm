@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from typing import Any, Callable, Dict, Literal, Optional, Union, cast
 
 import httpx
@@ -255,12 +256,33 @@ def get_azure_ad_token_from_oidc(
 
 
 def select_azure_base_url_or_endpoint(azure_client_params: dict):
+    """
+    Determines whether to use azure_endpoint or base_url for the Azure OpenAI client.
+
+    When api_base contains deployment-specific paths (e.g., /openai/deployments/gpt-4o/chat/completions),
+    it should be used as base_url. However, operation-specific suffixes like /chat/completions must be
+    stripped because the Azure SDK will append them again when making requests.
+
+    Args:
+        azure_client_params: Dictionary containing azure_endpoint and other client parameters.
+
+    Returns:
+        Updated azure_client_params with either azure_endpoint or base_url set correctly.
+    """
     azure_endpoint = azure_client_params.get("azure_endpoint", None)
     if azure_endpoint is not None:
         # see : https://github.com/openai/openai-python/blob/3d61ed42aba652b547029095a7eb269ad4e1e957/src/openai/lib/azure.py#L192
         if "/openai/deployments" in azure_endpoint:
             # this is base_url, not an azure_endpoint
-            azure_client_params["base_url"] = azure_endpoint
+            # Strip operation-specific suffixes that the SDK will append again
+            # e.g., /chat/completions, /completions, /embeddings, etc.
+            base_url = re.sub(
+                r"/(chat/completions|completions|embeddings|audio/speech|audio/transcriptions|images/generations)/?$",
+                "",
+                azure_endpoint,
+            )
+            base_url = base_url.rstrip("/")
+            azure_client_params["base_url"] = base_url
             azure_client_params.pop("azure_endpoint")
 
     return azure_client_params
@@ -779,7 +801,7 @@ class BaseAzureLLM(BaseOpenAILLM):
 
     def _resolve_env_var(self, litellm_params: Dict[str, Any], param_key: str, env_var_key: str) -> Optional[str]:
         """Resolve the environment variable for a given parameter key.
-        
+
         The logic here is different from `params.get(key, os.getenv(env_var))` because
         litellm_params may contain the key with a None value, in which case we want
         to fallback to the environment variable.
@@ -788,4 +810,3 @@ class BaseAzureLLM(BaseOpenAILLM):
         if param_value is not None:
             return param_value
         return os.getenv(env_var_key)
-

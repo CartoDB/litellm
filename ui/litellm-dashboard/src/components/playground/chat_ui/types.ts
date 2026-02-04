@@ -70,42 +70,26 @@ export interface VectorStoreSearchResponse {
   data: VectorStoreSearchResult[];
 }
 
-export interface A2ATaskMetadata {
-  taskId?: string;
-  contextId?: string;
-  status?: {
-    state?: string;
-    timestamp?: string;
-    message?: string;
-  };
-  metadata?: Record<string, any>;
-}
-
 export interface MessageType {
   role: string;
   content: string | MultimodalContent[];
   model?: string;
   isImage?: boolean;
-  isAudio?: boolean;
-  isEmbeddings?: boolean;
   reasoningContent?: string;
   timeToFirstToken?: number;
-  totalLatency?: number;
   usage?: {
     completionTokens?: number;
     promptTokens?: number;
     totalTokens?: number;
     reasoningTokens?: number;
-    cost?: number;
   };
   toolName?: string;
-  imagePreviewUrl?: string;
+  imagePreviewUrl?: string; // For storing image preview URL in chat history
   image?: {
     url: string;
     detail: string;
   };
   searchResults?: VectorStoreSearchResponse[];
-  a2aMetadata?: A2ATaskMetadata;
 }
 
 export interface MultimodalContent {

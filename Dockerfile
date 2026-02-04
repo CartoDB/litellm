@@ -14,7 +14,8 @@ USER root
 # Install build dependencies
 RUN apk add --no-cache bash gcc py3-pip python3 python3-dev openssl openssl-dev
 
-RUN python -m pip install build
+RUN pip install --upgrade pip>=24.3.1 && \
+    pip install build
 
 # Copy the current directory contents into the container at /app
 COPY . .
@@ -50,6 +51,9 @@ USER root
 RUN apk add --no-cache bash openssl tzdata nodejs npm python3 py3-pip libsndfile && \
     npm install -g npm@latest tar@latest
 
+# Upgrade pip to fix CVE-2025-8869
+RUN pip install --upgrade pip>=24.3.1
+
 WORKDIR /app
 # Copy the current directory contents into the container at /app
 COPY . .
@@ -70,8 +74,9 @@ RUN find /usr/lib -type f -path "*/tornado/test/*" -delete && \
 # Convert Windows line endings to Unix and make executable
 RUN sed -i 's/\r$//' docker/install_auto_router.sh && chmod +x docker/install_auto_router.sh && ./docker/install_auto_router.sh
 
-# Generate prisma client using the correct schema
-RUN prisma generate --schema=./litellm/proxy/schema.prisma
+# Generate prisma client with explicit binary target to avoid wolfi warning
+ENV PRISMA_CLI_BINARY_TARGETS="debian-openssl-3.0.x"
+RUN prisma generate
 # Convert Windows line endings to Unix for entrypoint scripts
 RUN sed -i 's/\r$//' docker/entrypoint.sh && chmod +x docker/entrypoint.sh
 RUN sed -i 's/\r$//' docker/prod_entrypoint.sh && chmod +x docker/prod_entrypoint.sh

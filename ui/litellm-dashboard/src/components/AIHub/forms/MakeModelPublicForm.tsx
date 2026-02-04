@@ -1,9 +1,9 @@
 import React, { useState, useCallback, useEffect } from "react";
 import { Modal, Form, Steps, Button, Checkbox } from "antd";
 import { Text, Title, Badge } from "@tremor/react";
-import { makeModelGroupPublic } from "../../networking";
-import ModelFilters from "../../model_filters";
-import NotificationsManager from "../../molecules/notifications_manager";
+import { makeModelGroupPublic } from "./networking";
+import ModelFilters from "./model_filters";
+import NotificationsManager from "./molecules/notifications_manager";
 
 const { Step } = Steps;
 
@@ -152,8 +152,8 @@ const MakeModelPublicForm: React.FC<MakeModelPublicFormProps> = ({
         </div>
 
         <Text className="text-sm text-gray-600">
-          Select the models you want to be visible on the public model hub. Users will still require a valid Virtual Key
-          to use these models.
+          Select the models you want to be visible on the public model hub. Users will still require a valid API key to
+          use these models.
         </Text>
 
         {/* Filters */}

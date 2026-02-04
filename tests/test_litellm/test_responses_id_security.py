@@ -42,11 +42,8 @@ class TestIsEncryptedResponseId:
 
     def test_is_encrypted_response_id_valid(self, responses_id_security):
         """Test that a properly encrypted response ID is identified correctly"""
-        # Patch at the module level where it's imported
-        import litellm.proxy.hooks.responses_id_security as responses_module
-        
-        with patch.object(
-            responses_module, "decrypt_value_helper"
+        with patch(
+            "litellm.proxy.hooks.responses_id_security.decrypt_value_helper"
         ) as mock_decrypt:
             mock_decrypt.return_value = f"{SpecialEnums.LITELM_MANAGED_FILE_ID_PREFIX.value}response_id:resp_123;user_id:user-456"
 
@@ -59,11 +56,8 @@ class TestIsEncryptedResponseId:
 
     def test_is_encrypted_response_id_invalid(self, responses_id_security):
         """Test that an unencrypted response ID returns False"""
-        # Patch at the module level where it's imported
-        import litellm.proxy.hooks.responses_id_security as responses_module
-        
-        with patch.object(
-            responses_module, "decrypt_value_helper"
+        with patch(
+            "litellm.proxy.hooks.responses_id_security.decrypt_value_helper"
         ) as mock_decrypt:
             mock_decrypt.return_value = None
 
@@ -77,11 +71,8 @@ class TestDecryptResponseId:
 
     def test_decrypt_response_id_valid(self, responses_id_security):
         """Test decrypting a valid encrypted response ID"""
-        # Patch at the module level where it's imported
-        import litellm.proxy.hooks.responses_id_security as responses_module
-        
-        with patch.object(
-            responses_module, "decrypt_value_helper"
+        with patch(
+            "litellm.proxy.hooks.responses_id_security.decrypt_value_helper"
         ) as mock_decrypt:
             mock_decrypt.return_value = f"{SpecialEnums.LITELM_MANAGED_FILE_ID_PREFIX.value}response_id:resp_original_123;user_id:user-456;team_id:team-789"
 
@@ -95,11 +86,8 @@ class TestDecryptResponseId:
 
     def test_decrypt_response_id_no_encryption(self, responses_id_security):
         """Test decrypting a non-encrypted response ID"""
-        # Patch at the module level where it's imported
-        import litellm.proxy.hooks.responses_id_security as responses_module
-        
-        with patch.object(
-            responses_module, "decrypt_value_helper"
+        with patch(
+            "litellm.proxy.hooks.responses_id_security.decrypt_value_helper"
         ) as mock_decrypt:
             mock_decrypt.return_value = None
 
@@ -115,7 +103,6 @@ class TestDecryptResponseId:
 class TestEncryptResponseId:
     """Test _encrypt_response_id function"""
 
-    @pytest.mark.skip(reason="Flaky on CI; disabling temporarily until responses_id_security is fixed")
     def test_encrypt_response_id_success(
         self, responses_id_security, mock_user_api_key_dict
     ):
@@ -128,19 +115,15 @@ class TestEncryptResponseId:
             "litellm.proxy.hooks.responses_id_security.encrypt_value_helper"
         ) as mock_encrypt:
             mock_encrypt.return_value = "encrypted_base64_value"
-            
-            with patch.object(
-                responses_id_security, "_get_signing_key", return_value="test-key"
-            ):
-                result = responses_id_security._encrypt_response_id(
-                    mock_response, mock_user_api_key_dict
-                )
 
-                assert result.id == "resp_encrypted_base64_value"
-                assert result.id.startswith("resp_")
-                mock_encrypt.assert_called_once()
+            result = responses_id_security._encrypt_response_id(
+                mock_response, mock_user_api_key_dict
+            )
 
-    @pytest.mark.skip(reason="Flaky on CI; disabling temporarily until responses_id_security is fixed")
+            assert result.id == "resp_encrypted_base64_value"
+            assert result.id.startswith("resp_")
+            mock_encrypt.assert_called_once()
+
     def test_encrypt_response_id_maintains_prefix(
         self, responses_id_security, mock_user_api_key_dict
     ):
@@ -150,19 +133,15 @@ class TestEncryptResponseId:
         )
 
         with patch(
-            "litellm.proxy.common_utils.encrypt_decrypt_utils._get_salt_key",
-            return_value="test-salt-key"
-        ):
-            with patch.object(
-                responses_id_security, "_get_signing_key", return_value="test-key"
-            ):
-                result = responses_id_security._encrypt_response_id(
-                    mock_response, mock_user_api_key_dict
-                )
+            "litellm.proxy.hooks.responses_id_security.encrypt_value_helper"
+        ) as mock_encrypt:
+            mock_encrypt.return_value = "encrypted_value_456"
 
-                assert result.id.startswith("resp_")
-                # The encrypted ID should be different from the original
-                assert result.id != "resp_456"
+            result = responses_id_security._encrypt_response_id(
+                mock_response, mock_user_api_key_dict
+            )
+
+            assert result.id.startswith("resp_")
 
 
 class TestCheckUserAccessToResponseId:

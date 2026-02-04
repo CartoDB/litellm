@@ -30,10 +30,6 @@ class GoogleAIStudioTokenCounter:
 
         from google.genai.types import FunctionResponse
 
-        # Handle None or empty contents
-        if not contents:
-            return contents
-
         cleaned_contents = copy.deepcopy(contents)
 
         for content in cleaned_contents:

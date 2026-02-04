@@ -7,16 +7,7 @@
 
 import os
 from datetime import datetime
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    AsyncGenerator,
-    Dict,
-    List,
-    Literal,
-    Optional,
-    Union,
-)
+from typing import Any, AsyncGenerator, Dict, List, Literal, Optional, Union
 
 import httpx
 
@@ -29,20 +20,12 @@ from litellm.llms.custom_httpx.http_handler import (
     httpxSpecialProvider,
 )
 from litellm.proxy._types import UserAPIKeyAuth
-from litellm.types.guardrails import GuardrailEventHooks
+from litellm.types.guardrails import GuardrailEventHooks, PiiEntityType
 from litellm.types.proxy.guardrails.guardrail_hooks.enkryptai import (
     EnkryptAIProcessedResult,
     EnkryptAIResponse,
 )
-from litellm.types.utils import (
-    CallTypesLiteral,
-    GenericGuardrailAPIInputs,
-    GuardrailStatus,
-    ModelResponseStream,
-)
-
-if TYPE_CHECKING:
-    from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
+from litellm.types.utils import GuardrailStatus, ModelResponseStream
 
 GUARDRAIL_NAME = "enkryptai"
 
@@ -301,7 +284,18 @@ class EnkryptAIGuardrails(CustomGuardrail):
         user_api_key_dict: UserAPIKeyAuth,
         cache: DualCache,
         data: dict,
-        call_type: CallTypesLiteral,
+        call_type: Literal[
+            "completion",
+            "text_completion",
+            "embeddings",
+            "image_generation",
+            "moderation",
+            "audio_transcription",
+            "pass_through_endpoint",
+            "rerank",
+            "mcp_call",
+            "anthropic_messages",
+        ],
     ) -> Union[Exception, str, dict, None]:
         """
         Runs before the LLM API call
@@ -354,7 +348,16 @@ class EnkryptAIGuardrails(CustomGuardrail):
         self,
         data: dict,
         user_api_key_dict: UserAPIKeyAuth,
-        call_type: CallTypesLiteral,
+        call_type: Literal[
+            "completion",
+            "embeddings",
+            "image_generation",
+            "moderation",
+            "audio_transcription",
+            "responses",
+            "mcp_call",
+            "anthropic_messages",
+        ],
     ):
         """
         Runs in parallel to LLM API call
@@ -485,44 +488,24 @@ class EnkryptAIGuardrails(CustomGuardrail):
 
     async def apply_guardrail(
         self,
-        inputs: "GenericGuardrailAPIInputs",
-        request_data: dict,
-        input_type: Literal["request", "response"],
-        logging_obj: Optional["LiteLLMLoggingObj"] = None,
-    ) -> "GenericGuardrailAPIInputs":
-        """
-        Apply EnkryptAI guardrail to a batch of texts.
+        text: str,
+        language: Optional[str] = None,
+        entities: Optional[List[PiiEntityType]] = None,
+    ) -> str:
+        result = await self._call_enkryptai_guardrails(
+            prompt=text,
+            request_data={},
+        )
+        # Process the guardrails response
+        processed_result = self._process_enkryptai_guardrails_response(result)
+        attacks_detected = processed_result["attacks_detected"]
 
-        Args:
-            inputs: Dictionary containing texts and optional images
-            request_data: Request data dictionary containing metadata
-            input_type: Whether this is a "request" or "response"
-            logging_obj: Optional logging object
+        # If any attacks are detected, raise an error
+        if attacks_detected:
+            error_message = self._create_error_message(processed_result)
+            raise ValueError(error_message)
 
-        Returns:
-            GenericGuardrailAPIInputs - texts unchanged if passed, images unchanged
-
-        Raises:
-            ValueError: If any attacks are detected
-        """
-        texts = inputs.get("texts", [])
-
-        # Check each text for attacks
-        for text in texts:
-            result = await self._call_enkryptai_guardrails(
-                prompt=text,
-                request_data=request_data,
-            )
-            # Process the guardrails response
-            processed_result = self._process_enkryptai_guardrails_response(result)
-            attacks_detected = processed_result["attacks_detected"]
-
-            # If any attacks are detected, raise an error
-            if attacks_detected:
-                error_message = self._create_error_message(processed_result)
-                raise ValueError(error_message)
-
-        return inputs
+        return text
 
     async def async_post_call_streaming_iterator_hook(
         self,

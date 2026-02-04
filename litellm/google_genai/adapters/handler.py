@@ -37,14 +37,9 @@ class GenerateContentToCompletionHandler:
 
         completion_kwargs: Dict[str, Any] = dict(completion_request)
 
-        # Forward extra_kwargs that should be passed to completion call
-        if extra_kwargs is not None:
-            # Forward metadata for custom callback
-            if "metadata" in extra_kwargs:
-                completion_kwargs["metadata"] = extra_kwargs["metadata"]
-            # Forward extra_headers for providers that require custom headers (e.g., github_copilot)
-            if "extra_headers" in extra_kwargs:
-                completion_kwargs["extra_headers"] = extra_kwargs["extra_headers"]
+        # feed metadata for custom callback
+        if extra_kwargs is not None and "metadata" in extra_kwargs:
+            completion_kwargs["metadata"] = extra_kwargs["metadata"]
 
         if stream:
             completion_kwargs["stream"] = stream

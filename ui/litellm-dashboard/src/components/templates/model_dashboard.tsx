@@ -1,74 +1,65 @@
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import {
   Card,
-  Col,
-  Grid,
+  Title,
   Subtitle,
   Table,
-  TableBody,
-  TableCell,
   TableHead,
-  TableHeaderCell,
   TableRow,
+  TableHeaderCell,
+  TableCell,
+  TableBody,
   Text,
-  Title,
+  Grid,
+  Col,
 } from "@tremor/react";
-import React, { useEffect, useMemo, useRef, useState } from "react";
 import { CredentialItem, credentialListCall, CredentialsResponse } from "../networking";
 
 import { handleAddModelSubmit } from "../add_model/handle_add_model_submit";
 
 import CredentialsPanel from "@/components/model_add/credentials";
-import { InfoCircleOutlined } from "@ant-design/icons";
-import { FilterIcon, RefreshIcon } from "@heroicons/react/outline";
+import { getDisplayModelName } from "../view_model/model_name_display";
+import { TabPanel, TabPanels, TabGroup, TabList, Tab, Icon } from "@tremor/react";
+import { Select, SelectItem, DateRangePickerValue } from "@tremor/react";
+import UsageDatePicker from "../shared/usage_date_picker";
 import {
-  AreaChart,
-  BarChart,
-  Button,
-  DateRangePickerValue,
-  Icon,
-  Select,
-  SelectItem,
-  Tab,
-  TabGroup,
-  TabList,
-  TabPanel,
-  TabPanels,
-} from "@tremor/react";
-import type { UploadProps } from "antd";
-import { Form, InputNumber, Popover, Typography } from "antd";
-import AddModelTab from "../add_model/add_model_tab";
-import { Team } from "../key_team_helpers/key_list";
-import ModelInfoView from "../model_info_view";
-import TimeToFirstToken from "../model_metrics/time_to_first_token";
-import {
+  modelInfoCall,
+  modelCostMap,
+  healthCheckCall,
+  modelMetricsCall,
+  streamingModelMetricsCall,
+  modelExceptionsCall,
+  modelMetricsSlowResponsesCall,
+  getCallbacksCall,
+  setCallbacksCall,
+  modelSettingsCall,
   adminGlobalActivityExceptions,
   adminGlobalActivityExceptionsPerDeployment,
   allEndUsersCall,
-  getCallbacksCall,
-  healthCheckCall,
-  modelCostMap,
-  modelExceptionsCall,
-  modelInfoCall,
-  modelMetricsCall,
-  modelMetricsSlowResponsesCall,
-  modelSettingsCall,
-  setCallbacksCall,
-  streamingModelMetricsCall,
 } from "../networking";
-import { getPlaceholder, getProviderModels, provider_map, Providers } from "../provider_info_helpers";
-import UsageDatePicker from "../shared/usage_date_picker";
+import { BarChart, AreaChart } from "@tremor/react";
+import { Popover, Form, InputNumber } from "antd";
+import { Button } from "@tremor/react";
+import { Typography } from "antd";
+import { RefreshIcon, FilterIcon } from "@heroicons/react/outline";
+import { InfoCircleOutlined } from "@ant-design/icons";
+import type { UploadProps } from "antd";
+import TimeToFirstToken from "../model_metrics/time_to_first_token";
+import { Team } from "../key_team_helpers/key_list";
 import TeamInfoView from "../team/team_info";
-import { getDisplayModelName } from "../view_model/model_name_display";
+import { Providers, provider_map, getPlaceholder, getProviderModels } from "../provider_info_helpers";
+import ModelInfoView from "../model_info_view";
+import AddModelTab from "../add_model/add_model_tab";
 
-import { all_admin_roles } from "@/utils/roles";
-import { PaginationState } from "@tanstack/react-table";
-import HealthCheckComponent from "../model_dashboard/HealthCheckComponent";
 import { ModelDataTable } from "../model_dashboard/table";
-import ModelGroupAliasSettings from "../model_group_alias_settings";
 import { columns } from "../molecules/models/columns";
-import NotificationsManager from "../molecules/notifications_manager";
-import PassThroughSettings from "../pass_through_settings";
 import PriceDataReload from "../price_data_reload";
+import HealthCheckComponent from "../model_dashboard/HealthCheckComponent";
+import PassThroughSettings from "../pass_through_settings";
+import ModelGroupAliasSettings from "../model_group_alias_settings";
+import { all_admin_roles } from "@/utils/roles";
+import { Table as TableInstance, PaginationState } from "@tanstack/react-table";
+import NotificationsManager from "../molecules/notifications_manager";
 
 interface ModelDashboardProps {
   accessToken: string | null;
@@ -205,6 +196,7 @@ const OldModelDashboard: React.FC<ModelDashboardProps> = ({
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const tableRef = useRef<TableInstance<any>>(null);
 
   // Pagination state
   const [pagination, setPagination] = useState<PaginationState>({
@@ -668,7 +660,7 @@ const OldModelDashboard: React.FC<ModelDashboardProps> = ({
     }
 
     const fetchModelMap = async () => {
-      const data = await modelCostMap();
+      const data = await modelCostMap(accessToken);
       console.log(`received model cost map data: ${Object.keys(data)}`);
       setModelMap(data);
     };
@@ -950,7 +942,7 @@ const OldModelDashboard: React.FC<ModelDashboardProps> = ({
     );
   };
 
-  const handleOk = async () => {
+  const handleOk = () => {
     console.log("🚀 handleOk called from model dashboard!");
     console.log("Current form values:", addModelForm.getFieldsValue());
 
@@ -1021,13 +1013,17 @@ const OldModelDashboard: React.FC<ModelDashboardProps> = ({
           {selectedModelId ? (
             <ModelInfoView
               modelId={selectedModelId}
+              editModel={true}
               onClose={() => {
                 setSelectedModelId(null);
                 setEditModel(false);
               }}
+              modelData={modelData.data.find((model: any) => model.model_info.id === selectedModelId)}
               accessToken={accessToken}
               userID={userID}
               userRole={userRole}
+              setEditModalVisible={setEditModalVisible}
+              setSelectedModel={setSelectedModel}
               onModelUpdate={(updatedModel) => {
                 // Update the model in the modelData.data array
                 const updatedModelData = {
@@ -1269,9 +1265,9 @@ const OldModelDashboard: React.FC<ModelDashboardProps> = ({
                               <span className="text-sm text-gray-700">
                                 {filteredData.length > 0
                                   ? `Showing ${pagination.pageIndex * pagination.pageSize + 1} - ${Math.min(
-                                    (pagination.pageIndex + 1) * pagination.pageSize,
-                                    filteredData.length,
-                                  )} of ${filteredData.length} results`
+                                      (pagination.pageIndex + 1) * pagination.pageSize,
+                                      filteredData.length,
+                                    )} of ${filteredData.length} results`
                                   : "Showing 0 results"}
                               </span>
 
@@ -1283,10 +1279,11 @@ const OldModelDashboard: React.FC<ModelDashboardProps> = ({
                                       setPagination((prev) => ({ ...prev, pageIndex: prev.pageIndex - 1 }))
                                     }
                                     disabled={pagination.pageIndex === 0}
-                                    className={`px-3 py-1 text-sm border rounded-md ${pagination.pageIndex === 0
-                                      ? "bg-gray-100 text-gray-400 cursor-not-allowed"
-                                      : "hover:bg-gray-50"
-                                      }`}
+                                    className={`px-3 py-1 text-sm border rounded-md ${
+                                      pagination.pageIndex === 0
+                                        ? "bg-gray-100 text-gray-400 cursor-not-allowed"
+                                        : "hover:bg-gray-50"
+                                    }`}
                                   >
                                     Previous
                                   </button>
@@ -1298,10 +1295,11 @@ const OldModelDashboard: React.FC<ModelDashboardProps> = ({
                                     disabled={
                                       pagination.pageIndex >= Math.ceil(filteredData.length / pagination.pageSize) - 1
                                     }
-                                    className={`px-3 py-1 text-sm border rounded-md ${pagination.pageIndex >= Math.ceil(filteredData.length / pagination.pageSize) - 1
-                                      ? "bg-gray-100 text-gray-400 cursor-not-allowed"
-                                      : "hover:bg-gray-50"
-                                      }`}
+                                    className={`px-3 py-1 text-sm border rounded-md ${
+                                      pagination.pageIndex >= Math.ceil(filteredData.length / pagination.pageSize) - 1
+                                        ? "bg-gray-100 text-gray-400 cursor-not-allowed"
+                                        : "hover:bg-gray-50"
+                                    }`}
                                   >
                                     Next
                                   </button>
@@ -1321,11 +1319,13 @@ const OldModelDashboard: React.FC<ModelDashboardProps> = ({
                             getDisplayModelName,
                             handleEditClick,
                             handleRefreshClick,
+                            setEditModel,
                             expandedRows,
                             setExpandedRows,
                           )}
                           data={paginatedData}
                           isLoading={false}
+                          table={tableRef}
                         />
                       </div>
                     </div>
@@ -1347,10 +1347,16 @@ const OldModelDashboard: React.FC<ModelDashboardProps> = ({
                     credentials={credentialsList}
                     accessToken={accessToken}
                     userRole={userRole}
+                    premiumUser={premiumUser}
                   />
                 </TabPanel>
                 <TabPanel>
-                  <CredentialsPanel uploadProps={uploadProps} />
+                  <CredentialsPanel
+                    accessToken={accessToken}
+                    uploadProps={uploadProps}
+                    credentialList={credentialsList}
+                    fetchCredentials={fetchCredentials}
+                  />
                 </TabPanel>
                 <TabPanel>
                   <PassThroughSettings
@@ -1728,7 +1734,7 @@ const OldModelDashboard: React.FC<ModelDashboardProps> = ({
                       onReloadSuccess={() => {
                         // Refresh the model map after successful reload
                         const fetchModelMap = async () => {
-                          const data = await modelCostMap();
+                          const data = await modelCostMap(accessToken);
                           setModelMap(data);
                         };
                         fetchModelMap();

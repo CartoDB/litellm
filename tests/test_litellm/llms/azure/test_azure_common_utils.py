@@ -438,9 +438,6 @@ def test_select_azure_base_url_called(setup_mocks):
             "allm_passthrough_route",
             "llm_passthrough_route",
             "asearch",
-            "avector_store_create",
-            "avector_store_search",
-            "acreate_skill",
         ]
     ],
 )
@@ -483,7 +480,6 @@ async def test_ensure_initialize_azure_sdk_client_always_used(call_type):
             "input_file_id": "123",
         },
         "aretrieve_batch": {"batch_id": "123"},
-        "acancel_batch": {"batch_id": "123"},
         "aget_assistants": {"custom_llm_provider": "azure"},
         "acreate_assistants": {"custom_llm_provider": "azure"},
         "adelete_assistant": {"custom_llm_provider": "azure", "assistant_id": "123"},
@@ -538,7 +534,7 @@ async def test_ensure_initialize_azure_sdk_client_always_used(call_type):
         patch_target = (
             "litellm.rerank_api.main.azure_rerank.initialize_azure_sdk_client"
         )
-    elif call_type == CallTypes.acreate_batch or call_type == CallTypes.aretrieve_batch or call_type == CallTypes.acancel_batch:
+    elif call_type == CallTypes.acreate_batch or call_type == CallTypes.aretrieve_batch:
         patch_target = (
             "litellm.batches.main.azure_batches_instance.initialize_azure_sdk_client"
         )
@@ -566,22 +562,7 @@ async def test_ensure_initialize_azure_sdk_client_always_used(call_type):
     ):
         # Skip video call types as they don't use Azure SDK client initialization
         pytest.skip(f"Skipping {call_type.value} because Azure video calls don't use initialize_azure_sdk_client")
-    elif (
-        call_type == CallTypes.alist_containers
-        or call_type == CallTypes.aretrieve_container
-        or call_type == CallTypes.acreate_container
-        or call_type == CallTypes.adelete_container
-        or call_type == CallTypes.alist_container_files
-        or call_type == CallTypes.aupload_container_file
-    ):
-        # Skip container call types as they're not supported for Azure (only OpenAI)
-        pytest.skip(f"Skipping {call_type.value} because Azure doesn't support container operations")
-    elif call_type == CallTypes.avector_store_file_create or call_type == CallTypes.avector_store_file_list or call_type == CallTypes.avector_store_file_retrieve or call_type == CallTypes.avector_store_file_content or call_type == CallTypes.avector_store_file_update or call_type == CallTypes.avector_store_file_delete:
-        # Skip vector store file call types as they're not supported for Azure (only OpenAI)
-        pytest.skip(f"Skipping {call_type.value} because Azure doesn't support vector store file operations")
-    elif call_type == CallTypes.aocr or call_type == CallTypes.ocr:
-        # Skip OCR call types as they don't use Azure SDK client initialization
-        pytest.skip(f"Skipping {call_type.value} because OCR calls don't use initialize_azure_sdk_client")
+
     # Mock the initialize_azure_sdk_client function
     with patch(patch_target) as mock_init_azure:
         # Also mock async_function_with_fallbacks to prevent actual API calls
@@ -1545,117 +1526,167 @@ def test_is_azure_v1_api_version(api_version, expected):
     assert result == expected
 
 
-@pytest.mark.parametrize("api_version", ["v1", "latest", "preview"])
-def test_azure_v1_api_uses_openai_client(api_version):
-    """
-    Test that Azure v1 API versions use OpenAI client instead of AzureOpenAI.
+# Tests for select_azure_base_url_or_endpoint URL sanitization
+from litellm.llms.azure.common_utils import select_azure_base_url_or_endpoint
 
-    When api_version is 'v1', 'latest', or 'preview', the client should be
-    instantiated as OpenAI/AsyncOpenAI with base_url pointing to /openai/v1/
-    instead of the traditional AzureOpenAI client with /deployments/ URL pattern.
 
-    See: https://learn.microsoft.com/en-us/azure/ai-services/openai/reference#api-specs
-    """
-    from openai import AsyncOpenAI, OpenAI
+class TestSelectAzureBaseUrlOrEndpoint:
+    """Tests for select_azure_base_url_or_endpoint URL sanitization."""
 
-    base_llm = BaseAzureLLM()
-    api_base = "https://test.openai.azure.com"
+    def test_strips_chat_completions_suffix(self):
+        """
+        Test that /chat/completions is stripped from deployment URLs.
 
-    # Test sync client
-    with patch.object(base_llm, "initialize_azure_sdk_client") as mock_init:
-        mock_init.return_value = {
-            "api_key": "test-key",
-            "azure_endpoint": api_base,
-            "api_version": api_version,
-            "azure_ad_token": None,
-            "azure_ad_token_provider": None,
+        When api_base is configured as:
+        https://xxx.openai.azure.com/openai/deployments/gpt-4o/chat/completions
+
+        The Azure SDK will append /chat/completions again, causing:
+        https://xxx.openai.azure.com/openai/deployments/gpt-4o/chat/completions/chat/completions
+
+        This results in a 404 error from Azure.
+        """
+        azure_client_params = {
+            "azure_endpoint": "https://ai-azure-product-dev.openai.azure.com/openai/deployments/gpt-4o/chat/completions"
         }
+        result = select_azure_base_url_or_endpoint(azure_client_params)
 
-        client = base_llm.get_azure_openai_client(
-            api_key="test-key",
-            api_base=api_base,
-            api_version=api_version,
-            _is_async=False,
+        expected_base_url = (
+            "https://ai-azure-product-dev.openai.azure.com/openai/deployments/gpt-4o"
+        )
+        assert "base_url" in result, "Should have base_url when deployment path detected"
+        assert "azure_endpoint" not in result, "Should remove azure_endpoint"
+        assert (
+            result["base_url"] == expected_base_url
+        ), f"Expected {expected_base_url}, got {result['base_url']}"
+
+    def test_strips_completions_suffix(self):
+        """Test that /completions suffix is stripped for text completion endpoints."""
+        azure_client_params = {
+            "azure_endpoint": "https://ai-azure-product-dev.openai.azure.com/openai/deployments/gpt-4o/completions"
+        }
+        result = select_azure_base_url_or_endpoint(azure_client_params)
+
+        expected_base_url = (
+            "https://ai-azure-product-dev.openai.azure.com/openai/deployments/gpt-4o"
+        )
+        assert result["base_url"] == expected_base_url
+
+    def test_strips_embeddings_suffix(self):
+        """Test that /embeddings suffix is stripped for embedding endpoints."""
+        azure_client_params = {
+            "azure_endpoint": "https://ai-azure-product-dev.openai.azure.com/openai/deployments/text-embedding-ada-002/embeddings"
+        }
+        result = select_azure_base_url_or_endpoint(azure_client_params)
+
+        expected_base_url = "https://ai-azure-product-dev.openai.azure.com/openai/deployments/text-embedding-ada-002"
+        assert result["base_url"] == expected_base_url
+
+    def test_strips_audio_speech_suffix(self):
+        """Test that /audio/speech suffix is stripped for TTS endpoints."""
+        azure_client_params = {
+            "azure_endpoint": "https://ai-azure-product-dev.openai.azure.com/openai/deployments/tts-1/audio/speech"
+        }
+        result = select_azure_base_url_or_endpoint(azure_client_params)
+
+        expected_base_url = (
+            "https://ai-azure-product-dev.openai.azure.com/openai/deployments/tts-1"
+        )
+        assert result["base_url"] == expected_base_url
+
+    def test_strips_audio_transcriptions_suffix(self):
+        """Test that /audio/transcriptions suffix is stripped for transcription endpoints."""
+        azure_client_params = {
+            "azure_endpoint": "https://ai-azure-product-dev.openai.azure.com/openai/deployments/whisper-1/audio/transcriptions"
+        }
+        result = select_azure_base_url_or_endpoint(azure_client_params)
+
+        expected_base_url = (
+            "https://ai-azure-product-dev.openai.azure.com/openai/deployments/whisper-1"
+        )
+        assert result["base_url"] == expected_base_url
+
+    def test_strips_images_generations_suffix(self):
+        """Test that /images/generations suffix is stripped for image generation endpoints."""
+        azure_client_params = {
+            "azure_endpoint": "https://ai-azure-product-dev.openai.azure.com/openai/deployments/dall-e-3/images/generations"
+        }
+        result = select_azure_base_url_or_endpoint(azure_client_params)
+
+        expected_base_url = (
+            "https://ai-azure-product-dev.openai.azure.com/openai/deployments/dall-e-3"
+        )
+        assert result["base_url"] == expected_base_url
+
+    def test_preserves_deployment_path_without_suffix(self):
+        """Test that deployment paths without operation suffixes are preserved."""
+        azure_client_params = {
+            "azure_endpoint": "https://ai-azure-product-dev.openai.azure.com/openai/deployments/gpt-4o"
+        }
+        result = select_azure_base_url_or_endpoint(azure_client_params)
+
+        expected_base_url = (
+            "https://ai-azure-product-dev.openai.azure.com/openai/deployments/gpt-4o"
+        )
+        assert result["base_url"] == expected_base_url
+
+    def test_no_deployment_path_keeps_azure_endpoint(self):
+        """Test that URLs without deployment paths keep azure_endpoint."""
+        azure_client_params = {
+            "azure_endpoint": "https://ai-azure-product-dev.openai.azure.com"
+        }
+        result = select_azure_base_url_or_endpoint(azure_client_params)
+
+        # Should keep azure_endpoint since there's no deployment path
+        assert "azure_endpoint" in result
+        assert "base_url" not in result
+        assert (
+            result["azure_endpoint"]
+            == "https://ai-azure-product-dev.openai.azure.com"
         )
 
-        # Should be OpenAI client, not AzureOpenAI
-        assert isinstance(client, OpenAI), f"Expected OpenAI client for api_version={api_version}"
-        # base_url should be /openai/v1/ (not /deployments/)
-        assert "/openai/v1/" in str(client.base_url), f"base_url should contain /openai/v1/, got {client.base_url}"
-
-    # Test async client
-    with patch.object(base_llm, "initialize_azure_sdk_client") as mock_init:
-        mock_init.return_value = {
-            "api_key": "test-key",
-            "azure_endpoint": api_base,
-            "api_version": api_version,
-            "azure_ad_token": None,
-            "azure_ad_token_provider": None,
+    def test_handles_trailing_slash(self):
+        """Test that trailing slashes are handled correctly."""
+        azure_client_params = {
+            "azure_endpoint": "https://ai-azure-product-dev.openai.azure.com/openai/deployments/gpt-4o/chat/completions/"
         }
+        result = select_azure_base_url_or_endpoint(azure_client_params)
 
-        async_client = base_llm.get_azure_openai_client(
-            api_key="test-key",
-            api_base=api_base,
-            api_version=api_version,
-            _is_async=True,
+        expected_base_url = (
+            "https://ai-azure-product-dev.openai.azure.com/openai/deployments/gpt-4o"
         )
+        assert result["base_url"] == expected_base_url
 
-        # Should be AsyncOpenAI client, not AsyncAzureOpenAI
-        assert isinstance(async_client, AsyncOpenAI), f"Expected AsyncOpenAI client for api_version={api_version}"
-        # base_url should be /openai/v1/
-        assert "/openai/v1/" in str(async_client.base_url), f"base_url should contain /openai/v1/, got {async_client.base_url}"
-
-
-def test_azure_traditional_api_uses_azure_openai_client():
-    """
-    Test that traditional Azure API versions still use AzureOpenAI client.
-
-    When api_version is a dated version like '2023-05-15', the client should
-    be instantiated as AzureOpenAI/AsyncAzureOpenAI with the traditional
-    /deployments/ URL pattern.
-    """
-    from openai import AsyncAzureOpenAI, AzureOpenAI
-
-    base_llm = BaseAzureLLM()
-    api_base = "https://test.openai.azure.com"
-    api_version = "2023-05-15"
-
-    # Test sync client
-    with patch.object(base_llm, "initialize_azure_sdk_client") as mock_init:
-        mock_init.return_value = {
+    def test_preserves_other_params(self):
+        """Test that other parameters in the dict are preserved."""
+        azure_client_params = {
+            "azure_endpoint": "https://ai-azure-product-dev.openai.azure.com/openai/deployments/gpt-4o/chat/completions",
             "api_key": "test-key",
-            "azure_endpoint": api_base,
-            "api_version": api_version,
-            "azure_ad_token": None,
-            "azure_ad_token_provider": None,
+            "api_version": "2023-05-15",
+            "azure_ad_token": "test-token",
         }
+        result = select_azure_base_url_or_endpoint(azure_client_params)
 
-        client = base_llm.get_azure_openai_client(
-            api_key="test-key",
-            api_base=api_base,
-            api_version=api_version,
-            _is_async=False,
-        )
+        assert result["api_key"] == "test-key"
+        assert result["api_version"] == "2023-05-15"
+        assert result["azure_ad_token"] == "test-token"
+        assert "base_url" in result
+        assert "azure_endpoint" not in result
 
-        # Should be AzureOpenAI client
-        assert isinstance(client, AzureOpenAI), f"Expected AzureOpenAI client for api_version={api_version}"
+    def test_none_azure_endpoint(self):
+        """Test that None azure_endpoint is handled gracefully."""
+        azure_client_params = {"azure_endpoint": None, "api_key": "test-key"}
+        result = select_azure_base_url_or_endpoint(azure_client_params)
 
-    # Test async client
-    with patch.object(base_llm, "initialize_azure_sdk_client") as mock_init:
-        mock_init.return_value = {
-            "api_key": "test-key",
-            "azure_endpoint": api_base,
-            "api_version": api_version,
-            "azure_ad_token": None,
-            "azure_ad_token_provider": None,
-        }
+        # Should return params unchanged
+        assert result["azure_endpoint"] is None
+        assert result["api_key"] == "test-key"
+        assert "base_url" not in result
 
-        async_client = base_llm.get_azure_openai_client(
-            api_key="test-key",
-            api_base=api_base,
-            api_version=api_version,
-            _is_async=True,
-        )
+    def test_missing_azure_endpoint(self):
+        """Test that missing azure_endpoint is handled gracefully."""
+        azure_client_params = {"api_key": "test-key"}
+        result = select_azure_base_url_or_endpoint(azure_client_params)
 
-        # Should be AsyncAzureOpenAI client
-        assert isinstance(async_client, AsyncAzureOpenAI), f"Expected AsyncAzureOpenAI client for api_version={api_version}"
+        # Should return params unchanged
+        assert result["api_key"] == "test-key"
+        assert "base_url" not in result

@@ -8,7 +8,7 @@ import { getModelDisplayName } from "./key_team_helpers/fetch_available_models_t
 import { formatNumberWithCommas } from "@/utils/dataUtils";
 import NotificationManager from "./molecules/notifications_manager";
 
-interface DefaultUserSettingsProps {
+interface SSOSettingsProps {
   accessToken: string | null;
   possibleUIRoles?: Record<string, Record<string, string>> | null;
   userID: string;
@@ -21,12 +21,7 @@ interface TeamEntry {
   user_role: "user" | "admin";
 }
 
-const DefaultUserSettings: React.FC<DefaultUserSettingsProps> = ({
-  accessToken,
-  possibleUIRoles,
-  userID,
-  userRole,
-}) => {
+const SSOSettings: React.FC<SSOSettingsProps> = ({ accessToken, possibleUIRoles, userID, userRole }) => {
   const [loading, setLoading] = useState<boolean>(true);
   const [settings, setSettings] = useState<any>(null);
   const [isEditing, setIsEditing] = useState<boolean>(false);
@@ -279,12 +274,7 @@ const DefaultUserSettings: React.FC<DefaultUserSettingsProps> = ({
           onChange={(value) => handleTextInputChange(key, value)}
           className="mt-2"
         >
-          <Option key="no-default-models" value="no-default-models">
-            No Default Models
-          </Option>
-          <Option key="all-proxy-models" value="all-proxy-models">
-            All Proxy Models
-          </Option>
+          <Option value="no-default-models">No Default Models</Option>
           {availableModels.map((model: string) => (
             <Option key={model} value={model}>
               {getModelDisplayName(model)}
@@ -490,4 +480,4 @@ const DefaultUserSettings: React.FC<DefaultUserSettingsProps> = ({
   );
 };
 
-export default DefaultUserSettings;
+export default SSOSettings;

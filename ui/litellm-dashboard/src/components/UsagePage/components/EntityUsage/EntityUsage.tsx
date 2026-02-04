@@ -1,44 +1,34 @@
-import useTeams from "@/app/(dashboard)/hooks/useTeams";
-import { formatNumberWithCommas } from "@/utils/dataUtils";
+import React, { useState, useEffect } from "react";
 import {
   BarChart,
   Card,
+  Title,
+  Text,
+  Grid,
   Col,
   DateRangePickerValue,
-  DonutChart,
-  Grid,
-  Subtitle,
-  Tab,
-  TabGroup,
   Table,
+  TableHead,
+  TableRow,
+  TableHeaderCell,
   TableBody,
   TableCell,
-  TableHead,
-  TableHeaderCell,
-  TableRow,
-  TabList,
+  DonutChart,
   TabPanel,
+  TabGroup,
+  TabList,
+  Tab,
   TabPanels,
-  Text,
-  Title,
+  Subtitle,
 } from "@tremor/react";
-import React, { useEffect, useState } from "react";
-import { ActivityMetrics, processActivityData } from "../../../activity_metrics";
-import { UsageExportHeader } from "../../../EntityUsageExport";
-import type { EntityType } from "../../../EntityUsageExport/types";
-import {
-  agentDailyActivityCall,
-  customerDailyActivityCall,
-  organizationDailyActivityCall,
-  tagDailyActivityCall,
-  teamDailyActivityCall,
-} from "../../../networking";
-import { getProviderLogoAndName } from "../../../provider_info_helpers";
-import { BreakdownMetrics, DailyData, EntityMetricWithMetadata, KeyMetricWithMetadata, TagUsage } from "../../types";
-import { valueFormatterSpend } from "../../utils/value_formatters";
-import EndpointUsage from "../EndpointUsage/EndpointUsage";
-import TopKeyView from "./TopKeyView";
-import TopModelView from "./TopModelView";
+import { ActivityMetrics, processActivityData } from "./activity_metrics";
+import { DailyData, BreakdownMetrics, KeyMetricWithMetadata, EntityMetricWithMetadata, TagUsage } from "./usage/types";
+import { tagDailyActivityCall, teamDailyActivityCall } from "./networking";
+import TopKeyView from "./top_key_view";
+import { formatNumberWithCommas } from "@/utils/dataUtils";
+import { valueFormatterSpend } from "./usage/utils/value_formatters";
+import { getProviderLogoAndName } from "./provider_info_helpers";
+import { UsageExportHeader } from "./EntityUsageExport";
 
 interface EntityMetrics {
   metrics: {
@@ -77,16 +67,23 @@ export interface EntityList {
 
 interface EntityUsageProps {
   accessToken: string | null;
-  entityType: EntityType;
+  entityType: "tag" | "team";
   entityId?: string | null;
   userID: string | null;
   userRole: string | null;
   entityList: EntityList[] | null;
   premiumUser: boolean;
-  dateValue: DateRangePickerValue;
 }
 
-const EntityUsage: React.FC<EntityUsageProps> = ({ accessToken, entityType, entityId, entityList, dateValue }) => {
+const EntityUsage: React.FC<EntityUsageProps> = ({
+  accessToken,
+  entityType,
+  entityId,
+  userID,
+  userRole,
+  entityList,
+  premiumUser,
+}) => {
   const [spendData, setSpendData] = useState<EntitySpendData>({
     results: [],
     metadata: {
@@ -97,13 +94,14 @@ const EntityUsage: React.FC<EntityUsageProps> = ({ accessToken, entityType, enti
       total_tokens: 0,
     },
   });
-  const { teams } = useTeams();
 
-  const modelMetrics = processActivityData(spendData, "models", teams || []);
-  const keyMetrics = processActivityData(spendData, "api_keys", teams || []);
+  const modelMetrics = processActivityData(spendData, "models");
+  const keyMetrics = processActivityData(spendData, "api_keys");
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
-  const [topKeysLimit, setTopKeysLimit] = useState<number>(5);
-  const [topModelsLimit, setTopModelsLimit] = useState<number>(5);
+  const [dateValue, setDateValue] = useState<DateRangePickerValue>({
+    from: new Date(Date.now() - 28 * 24 * 60 * 60 * 1000),
+    to: new Date(),
+  });
 
   const fetchSpendData = async () => {
     if (!accessToken || !dateValue.from || !dateValue.to) return;
@@ -122,33 +120,6 @@ const EntityUsage: React.FC<EntityUsageProps> = ({ accessToken, entityType, enti
       setSpendData(data);
     } else if (entityType === "team") {
       const data = await teamDailyActivityCall(
-        accessToken,
-        startTime,
-        endTime,
-        1,
-        selectedTags.length > 0 ? selectedTags : null,
-      );
-      setSpendData(data);
-    } else if (entityType === "organization") {
-      const data = await organizationDailyActivityCall(
-        accessToken,
-        startTime,
-        endTime,
-        1,
-        selectedTags.length > 0 ? selectedTags : null,
-      );
-      setSpendData(data);
-    } else if (entityType === "customer") {
-      const data = await customerDailyActivityCall(
-        accessToken,
-        startTime,
-        endTime,
-        1,
-        selectedTags.length > 0 ? selectedTags : null,
-      );
-      setSpendData(data);
-    } else if (entityType === "agent") {
-      const data = await agentDailyActivityCall(
         accessToken,
         startTime,
         endTime,
@@ -196,7 +167,7 @@ const EntityUsage: React.FC<EntityUsageProps> = ({ accessToken, entityType, enti
         ...metrics,
       }))
       .sort((a, b) => b.spend - a.spend)
-      .slice(0, topModelsLimit);
+      .slice(0, 5);
   };
 
   const getTopAPIKeys = () => {
@@ -261,7 +232,7 @@ const EntityUsage: React.FC<EntityUsageProps> = ({ accessToken, entityType, enti
         spend: metrics.metrics.spend,
       }))
       .sort((a, b) => b.spend - a.spend)
-      .slice(0, topKeysLimit);
+      .slice(0, 5);
   };
 
   const getProviderSpend = () => {
@@ -301,20 +272,6 @@ const EntityUsage: React.FC<EntityUsageProps> = ({ accessToken, entityType, enti
     }
   };
 
-  const getEntityLabel = (entity: string, metadata?: Record<string, any>): string => {
-    if (entityList) {
-      const entityItem = entityList.find((item) => item.value === entity);
-      if (entityItem) {
-        return entityItem.label;
-      }
-    }
-    // Fallback to team_alias for backward compatibility
-    if (metadata?.team_alias) {
-      return metadata.team_alias;
-    }
-    return entity;
-  };
-
   const filterDataByTags = (data: EntityMetricWithMetadata[]) => {
     if (selectedTags.length === 0) return data;
     return data.filter((item) => selectedTags.includes(item.metadata.id));
@@ -338,7 +295,7 @@ const EntityUsage: React.FC<EntityUsageProps> = ({ accessToken, entityType, enti
               cache_creation_input_tokens: 0,
             },
             metadata: {
-              alias: getEntityLabel(entity, data.metadata as any),
+              alias: (data.metadata as any).team_alias || entity,
               id: entity,
             },
           };
@@ -369,36 +326,25 @@ const EntityUsage: React.FC<EntityUsageProps> = ({ accessToken, entityType, enti
     }));
   };
 
-  const getFilterLabel = (entityType: string) => {
-    return `Filter by ${entityType}`;
-  };
-
-  const getFilterPlaceholder = (entityType: string) => {
-    return `Select ${entityType} to filter...`;
-  };
-
-  const capitalizedEntityLabel = entityType.charAt(0).toUpperCase() + entityType.slice(1);
-
   return (
     <div style={{ width: "100%" }} className="relative">
       <UsageExportHeader
         dateValue={dateValue}
+        onDateChange={setDateValue}
         entityType={entityType}
         spendData={spendData}
         showFilters={entityList !== null && entityList.length > 0}
-        filterLabel={getFilterLabel(entityType)}
-        filterPlaceholder={getFilterPlaceholder(entityType)}
+        filterLabel={`Filter by ${entityType === "tag" ? "Tags" : "Teams"}`}
+        filterPlaceholder={`Select ${entityType === "tag" ? "tags" : "teams"} to filter...`}
         selectedFilters={selectedTags}
         onFiltersChange={setSelectedTags}
         filterOptions={getAllTags() || undefined}
-        teams={teams || []}
       />
       <TabGroup>
         <TabList variant="solid" className="mt-1">
           <Tab>Cost</Tab>
-          <Tab>{entityType === "agent" ? "Request / Token Consumption" : "Model Activity"}</Tab>
+          <Tab>Model Activity</Tab>
           <Tab>Key Activity</Tab>
-          <Tab>Endpoint Activity</Tab>
         </TabList>
         <TabPanels>
           <TabPanel>
@@ -406,7 +352,7 @@ const EntityUsage: React.FC<EntityUsageProps> = ({ accessToken, entityType, enti
               {/* Total Spend Card */}
               <Col numColSpan={2}>
                 <Card>
-                  <Title>{capitalizedEntityLabel} Spend Overview</Title>
+                  <Title>{entityType === "tag" ? "Tag" : "Team"} Spend Overview</Title>
                   <Grid numItems={5} className="gap-4 mt-4">
                     <Card>
                       <Title>Total Spend</Title>
@@ -469,10 +415,10 @@ const EntityUsage: React.FC<EntityUsageProps> = ({ accessToken, entityType, enti
                           <p className="text-gray-600">Failed: {data.metrics.failed_requests}</p>
                           <p className="text-gray-600">Total Tokens: {data.metrics.total_tokens}</p>
                           <p className="text-gray-600">
-                            Total {capitalizedEntityLabel}s: {entityCount}
+                            {entityType === "tag" ? "Total Tags" : "Total Teams"}: {entityCount}
                           </p>
                           <div className="mt-2 border-t pt-2">
-                            <p className="font-semibold">Spend by {capitalizedEntityLabel}:</p>
+                            <p className="font-semibold">Spend by {entityType === "tag" ? "Tag" : "Team"}:</p>
                             {Object.entries(data.breakdown.entities || {})
                               .sort(([, a], [, b]) => {
                                 const spendA = (a as EntityMetrics).metrics.spend;
@@ -484,7 +430,7 @@ const EntityUsage: React.FC<EntityUsageProps> = ({ accessToken, entityType, enti
                                 const metrics = entityData as EntityMetrics;
                                 return (
                                   <p key={entity} className="text-sm text-gray-600">
-                                    {getEntityLabel(entity, metrics.metadata)}: $
+                                    {metrics.metadata.team_alias || entity}: $
                                     {formatNumberWithCommas(metrics.metrics.spend, 2)}
                                   </p>
                                 );
@@ -505,10 +451,10 @@ const EntityUsage: React.FC<EntityUsageProps> = ({ accessToken, entityType, enti
                 <Card>
                   <div className="flex flex-col space-y-4">
                     <div className="flex flex-col space-y-2">
-                      <Title>Spend Per {capitalizedEntityLabel}</Title>
+                      <Title>Spend Per {entityType === "tag" ? "Tag" : "Team"}</Title>
                       <Subtitle className="text-xs">Showing Top 5 by Spend</Subtitle>
                       <div className="flex items-center text-sm text-gray-500">
-                        <span>Get Started by Tracking cost per {capitalizedEntityLabel} </span>
+                        <span>Get Started by Tracking cost per {entityType} </span>
                         <a
                           href="https://docs.litellm.ai/docs/proxy/enterprise#spend-tracking"
                           className="text-blue-500 hover:text-blue-700 ml-1"
@@ -552,7 +498,7 @@ const EntityUsage: React.FC<EntityUsageProps> = ({ accessToken, entityType, enti
                           <Table>
                             <TableHead>
                               <TableRow>
-                                <TableHeaderCell>{capitalizedEntityLabel}</TableHeaderCell>
+                                <TableHeaderCell>{entityType === "tag" ? "Tag" : "Team"}</TableHeaderCell>
                                 <TableHeaderCell>Spend</TableHeaderCell>
                                 <TableHeaderCell className="text-green-600">Successful</TableHeaderCell>
                                 <TableHeaderCell className="text-red-600">Failed</TableHeaderCell>
@@ -587,13 +533,15 @@ const EntityUsage: React.FC<EntityUsageProps> = ({ accessToken, entityType, enti
               {/* Top API Keys */}
               <Col numColSpan={1}>
                 <Card>
-                  <Title>Top Virtual Keys</Title>
+                  <Title>Top API Keys</Title>
                   <TopKeyView
                     topKeys={getTopAPIKeys()}
+                    accessToken={accessToken}
+                    userID={userID}
+                    userRole={userRole}
                     teams={null}
+                    premiumUser={premiumUser}
                     showTags={entityType === "tag"}
-                    topKeysLimit={topKeysLimit}
-                    setTopKeysLimit={setTopKeysLimit}
                   />
                 </Card>
               </Col>
@@ -601,11 +549,17 @@ const EntityUsage: React.FC<EntityUsageProps> = ({ accessToken, entityType, enti
               {/* Top Models */}
               <Col numColSpan={1}>
                 <Card>
-                  <Title>{entityType === "agent" ? "Top Agents" : "Top Models"}</Title>
-                  <TopModelView
-                    topModels={getTopModels()}
-                    topModelsLimit={topModelsLimit}
-                    setTopModelsLimit={setTopModelsLimit}
+                  <Title>Top Models</Title>
+                  <BarChart
+                    className="mt-4 h-40"
+                    data={getTopModels()}
+                    index="display_key"
+                    categories={["spend"]}
+                    colors={["cyan"]}
+                    valueFormatter={(value) => `$${formatNumberWithCommas(value, 2)}`}
+                    layout="vertical"
+                    yAxisWidth={200}
+                    showLegend={false}
                   />
                 </Card>
               </Col>
@@ -683,13 +637,10 @@ const EntityUsage: React.FC<EntityUsageProps> = ({ accessToken, entityType, enti
             </Grid>
           </TabPanel>
           <TabPanel>
-            <ActivityMetrics modelMetrics={modelMetrics} hidePromptCachingMetrics={entityType === "agent"} />
+            <ActivityMetrics modelMetrics={modelMetrics} />
           </TabPanel>
           <TabPanel>
-            <ActivityMetrics modelMetrics={keyMetrics} hidePromptCachingMetrics={entityType === "agent"} />
-          </TabPanel>
-          <TabPanel>
-            <EndpointUsage userSpendData={spendData} />
+            <ActivityMetrics modelMetrics={keyMetrics} />
           </TabPanel>
         </TabPanels>
       </TabGroup>
