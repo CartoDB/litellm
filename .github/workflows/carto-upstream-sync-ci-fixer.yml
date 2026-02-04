@@ -377,6 +377,32 @@ jobs:
 
             ---
 
+            ## 🧠 STOP AND THINK: CHECK FOR FIX LOOPS
+
+            **BEFORE fixing anything, check the PR comments to see previous fix attempts:**
+
+            ```bash
+            gh pr view ${{ needs.check-ci-status.outputs.pr-number }} --repo ${{ github.repository }} --comments | grep -A 5 "Errors Fixed\|Fix Applied"
+            ```
+
+            **If you see the SAME FILE mentioned in multiple previous fixes, you are in a FIX LOOP.**
+
+            **Example of a fix loop:**
+            - Attempt #1: Added `function_a` to `common_utils.py`
+            - Attempt #2: Added `function_b` to `common_utils.py`
+            - Attempt #3: Added `function_c` to `common_utils.py`  ← THIS IS A LOOP!
+
+            **SOLUTION: Sync the ENTIRE file from upstream instead of patching:**
+
+            ```bash
+            git fetch upstream main
+            git show upstream/main:path/to/problematic_file.py > path/to/problematic_file.py
+            ```
+
+            **This fixes ALL missing functions/classes at once and breaks the loop.**
+
+            ---
+
             ## 📋 CARTO-MODIFIED FILES REFERENCE
 
             **Check if failing files are CARTO-modified:**
@@ -413,7 +439,7 @@ jobs:
 
             echo ""
             echo "--- DOCKER BUILD LOG (last 50 lines - actual errors) ---"
-            tail -50 /tmp/docker_full_log.txt
+            tail -500 /tmp/docker_full_log.txt
 
             echo ""
             echo "--- MOCK TESTS LOG (Python errors) ---"
