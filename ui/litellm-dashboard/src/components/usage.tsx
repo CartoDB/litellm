@@ -49,7 +49,7 @@ import {
   adminGlobalActivityPerModel,
   getProxyUISettings,
 } from "./networking";
-import TopKeyView from "./top_key_view";
+import TopKeyView from "./UsagePage/components/EntityUsage/TopKeyView";
 import { formatNumberWithCommas } from "@/utils/dataUtils";
 console.log("process.env.NODE_ENV", process.env.NODE_ENV);
 
@@ -616,14 +616,7 @@ const UsagePage: React.FC<UsagePageProps> = ({ accessToken, token, userRole, use
                     <Col numColSpan={1}>
                       <Card className="h-full">
                         <Title>Top API Keys</Title>
-                        <TopKeyView
-                          topKeys={topKeys}
-                          accessToken={accessToken}
-                          userID={userID}
-                          userRole={userRole}
-                          teams={null}
-                          premiumUser={premiumUser}
-                        />
+                        <TopKeyView topKeys={topKeys} teams={null} topKeysLimit={5} setTopKeysLimit={() => {}} />
                       </Card>
                     </Col>
                     <Col numColSpan={1}>
