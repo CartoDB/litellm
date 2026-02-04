@@ -23,19 +23,16 @@ const TagSelector: React.FC<TagSelectorProps> = ({ onChange, value, className, a
         setTags(Object.values(response));
       } catch (error) {
         console.error("Error fetching tags:", error);
-      } finally {
-        setLoading(false);
       }
     };
 
     fetchTags();
-  }, [accessToken]);
+  }, []);
 
   return (
     <Select
-      mode="tags"
-      showSearch
-      placeholder="Select or create tags"
+      mode="multiple"
+      placeholder="Select tags"
       onChange={onChange}
       value={value}
       loading={loading}
@@ -46,9 +43,7 @@ const TagSelector: React.FC<TagSelectorProps> = ({ onChange, value, className, a
         title: tag.description || tag.name,
       }))}
       optionFilterProp="label"
-      tokenSeparators={[","]}
-      maxTagCount="responsive"
-      allowClear
+      showSearch
       style={{ width: "100%" }}
     />
   );

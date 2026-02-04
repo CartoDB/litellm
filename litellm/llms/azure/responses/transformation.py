@@ -1,5 +1,4 @@
 from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Tuple, Union
-from copy import deepcopy
 
 import httpx
 from openai.types.responses import ResponseReasoningItem
@@ -44,7 +43,7 @@ class AzureOpenAIResponsesAPIConfig(OpenAIResponsesAPIConfig):
         """
         Handle reasoning items to filter out the status field.
         Issue: https://github.com/BerriAI/litellm/issues/13484
-
+        
         Azure OpenAI API does not accept 'status' field in reasoning input items.
         """
         if item.get("type") == "reasoning":
@@ -79,7 +78,7 @@ class AzureOpenAIResponsesAPIConfig(OpenAIResponsesAPIConfig):
                 }
                 return filtered_item
         return item
-
+    
     def _validate_input_param(
         self, input: Union[str, ResponseInputParam]
     ) -> Union[str, ResponseInputParam]:
@@ -91,7 +90,7 @@ class AzureOpenAIResponsesAPIConfig(OpenAIResponsesAPIConfig):
 
         # First call parent's validation
         validated_input = super()._validate_input_param(input)
-
+        
         # Then filter out status from message items
         if isinstance(validated_input, list):
             filtered_input: List[Any] = []
@@ -103,7 +102,7 @@ class AzureOpenAIResponsesAPIConfig(OpenAIResponsesAPIConfig):
                 else:
                     filtered_input.append(item)
             return cast(ResponseInputParam, filtered_input)
-
+        
         return validated_input
 
     def transform_responses_api_request(
@@ -116,21 +115,6 @@ class AzureOpenAIResponsesAPIConfig(OpenAIResponsesAPIConfig):
     ) -> Dict:
         """No transform applied since inputs are in OpenAI spec already"""
         stripped_model_name = self.get_stripped_model_name(model)
-
-        # Azure Responses API requires flattened tools (params at top level, not nested in 'function')
-        if "tools" in response_api_optional_request_params and isinstance(
-            response_api_optional_request_params["tools"], list
-        ):
-            new_tools: List[Dict[str, Any]] = []
-            for tool in response_api_optional_request_params["tools"]:
-                if isinstance(tool, dict) and "function" in tool:
-                    new_tool: Dict[str, Any] = deepcopy(tool)
-                    function_data = new_tool.pop("function")
-                    new_tool.update(function_data)
-                    new_tools.append(new_tool)
-                else:
-                    new_tools.append(tool)
-            response_api_optional_request_params["tools"] = new_tools
 
         return super().transform_responses_api_request(
             model=stripped_model_name,
@@ -153,15 +137,30 @@ class AzureOpenAIResponsesAPIConfig(OpenAIResponsesAPIConfig):
             "https://litellm8397336933.openai.azure.com"
             OR
             "https://litellm8397336933.openai.azure.com/openai/responses?api-version=2024-05-01-preview"
-        - model: Model name.
-        - optional_params: Additional query parameters, including "api_version".
-        - stream: If streaming is required (optional).
+            OR (configured for Chat Completions - will be sanitized)
+            "https://litellm8397336933.openai.azure.com/openai/deployments/gpt-4o/chat/completions"
+        - litellm_params: LiteLLM parameters including api_version.
 
         Returns:
         - A complete URL string, e.g.,
         "https://litellm8397336933.openai.azure.com/openai/responses?api-version=2024-05-01-preview"
+
+        Note: Unlike Chat Completions API which uses /openai/deployments/{deployment-id}/chat/completions,
+        the Responses API uses /openai/responses and the model is specified in the request body.
+        This method strips any deployment-specific paths from api_base.
         """
+        import re
+
         from litellm.constants import AZURE_DEFAULT_RESPONSES_API_VERSION
+
+        # Sanitize api_base: strip deployment-specific paths
+        # The Responses API uses /openai/responses, not /openai/deployments/{name}/...
+        # The model is specified in the request body, not in the URL path
+        if api_base:
+            # Pattern matches /openai/deployments/{name} with optional suffix
+            # e.g., /openai/deployments/gpt-4o or /openai/deployments/gpt-4o/chat/completions
+            api_base = re.sub(r"/openai/deployments/[^/]+(/.*)?$", "", api_base)
+            api_base = api_base.rstrip("/")
 
         return BaseAzureLLM._get_base_azure_url(
             api_base=api_base,

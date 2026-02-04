@@ -1,4 +1,7 @@
-import { ChevronDownIcon, ChevronUpIcon, SwitchVerticalIcon } from "@heroicons/react/outline";
+import React from "react";
+import { Table, TableBody, TableCell, TableHead, TableHeaderCell, TableRow, Icon } from "@tremor/react";
+import { TrashIcon, PencilAltIcon, SwitchVerticalIcon, ChevronUpIcon, ChevronDownIcon } from "@heroicons/react/outline";
+import { Tooltip } from "antd";
 import {
   ColumnDef,
   flexRender,
@@ -7,12 +10,8 @@ import {
   SortingState,
   useReactTable,
 } from "@tanstack/react-table";
-import { Table, TableBody, TableCell, TableHead, TableHeaderCell, TableRow } from "@tremor/react";
-import { Tooltip } from "antd";
-import React from "react";
-import TableIconActionButton from "../common_components/IconActionButton/TableIconActionButtons/TableIconActionButton";
-import { getProviderLogoAndName } from "../provider_info_helpers";
 import { VectorStore } from "./types";
+import { getProviderLogoAndName } from "../provider_info_helpers";
 
 interface VectorStoreTableProps {
   data: VectorStore[];
@@ -67,32 +66,6 @@ const VectorStoreTable: React.FC<VectorStoreTableProps> = ({ data, onView, onEdi
       },
     },
     {
-      header: "Files",
-      accessorKey: "vector_store_metadata",
-      cell: ({ row }) => {
-        const vectorStore = row.original;
-        const ingestedFiles = vectorStore.vector_store_metadata?.ingested_files || [];
-        
-        if (ingestedFiles.length === 0) {
-          return <span className="text-xs text-gray-400">-</span>;
-        }
-        
-        const filenames = ingestedFiles
-          .map((file) => file.filename || file.file_url || "Unknown")
-          .join(", ");
-        
-        const displayText = ingestedFiles.length === 1 
-          ? ingestedFiles[0].filename || ingestedFiles[0].file_url || "1 file"
-          : `${ingestedFiles.length} files`;
-        
-        return (
-          <Tooltip title={filenames}>
-            <span className="text-xs text-blue-600">{displayText}</span>
-          </Tooltip>
-        );
-      },
-    },
-    {
       header: "Provider",
       accessorKey: "custom_llm_provider",
       cell: ({ row }) => {
@@ -131,15 +104,17 @@ const VectorStoreTable: React.FC<VectorStoreTableProps> = ({ data, onView, onEdi
         const vectorStore = row.original;
         return (
           <div className="flex space-x-2">
-            <TableIconActionButton
-              variant="Edit"
-              tooltipText="Edit vector store"
+            <Icon
+              icon={PencilAltIcon}
+              size="sm"
               onClick={() => onEdit(vectorStore.vector_store_id)}
+              className="cursor-pointer"
             />
-            <TableIconActionButton
-              variant="Delete"
-              tooltipText="Delete vector store"
+            <Icon
+              icon={TrashIcon}
+              size="sm"
               onClick={() => onDelete(vectorStore.vector_store_id)}
+              className="cursor-pointer"
             />
           </div>
         );

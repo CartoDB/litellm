@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.abspath("../.."))
 from litellm.proxy.guardrails.guardrail_hooks.dynamoai import DynamoAIGuardrails
 from litellm.proxy._types import UserAPIKeyAuth
 from litellm.caching.caching import DualCache
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 
 @pytest.mark.asyncio
@@ -48,25 +48,26 @@ async def test_dynamoai_blocks_content_with_block_action():
         ]
     }
     mock_response.raise_for_status = MagicMock()
-    with patch.object(guardrail.async_handler, "post", AsyncMock(return_value=mock_response)):
-        request_data = {
-            "model": "gpt-4",
-            "messages": [
-                {"role": "user", "content": "This is harmful content"}
-            ],
-        }
+    guardrail.async_handler.post = AsyncMock(return_value=mock_response)
 
-        # Mock should_run_guardrail to return True
-        guardrail.should_run_guardrail = MagicMock(return_value=True)
+    request_data = {
+        "model": "gpt-4",
+        "messages": [
+            {"role": "user", "content": "This is harmful content"}
+        ],
+    }
 
-        # Test that the guardrail raises ValueError for blocked content
-        with pytest.raises(ValueError) as exc_info:
-            await guardrail.async_pre_call_hook(
-                data=request_data,
-                user_api_key_dict=UserAPIKeyAuth(),
-                call_type="completion",
-                cache=MagicMock(spec=DualCache),
-            )
+    # Mock should_run_guardrail to return True
+    guardrail.should_run_guardrail = MagicMock(return_value=True)
+
+    # Test that the guardrail raises ValueError for blocked content
+    with pytest.raises(ValueError) as exc_info:
+        await guardrail.async_pre_call_hook(
+            data=request_data,
+            user_api_key_dict=UserAPIKeyAuth(),
+            call_type="completion",
+            cache=MagicMock(spec=DualCache),
+        )
     
     # Verify the error message contains policy information
     error_message = str(exc_info.value)
@@ -97,24 +98,25 @@ async def test_dynamoai_allows_content_with_none_action():
         "appliedPolicies": []
     }
     mock_response.raise_for_status = MagicMock()
-    with patch.object(guardrail.async_handler, "post", AsyncMock(return_value=mock_response)):
-        request_data = {
-            "model": "gpt-4",
-            "messages": [
-                {"role": "user", "content": "Hello, how are you?"}
-            ],
-        }
+    guardrail.async_handler.post = AsyncMock(return_value=mock_response)
 
-        # Mock should_run_guardrail to return True
-        guardrail.should_run_guardrail = MagicMock(return_value=True)
+    request_data = {
+        "model": "gpt-4",
+        "messages": [
+            {"role": "user", "content": "Hello, how are you?"}
+        ],
+    }
 
-        # Test that the guardrail allows the content (no exception raised)
-        result = await guardrail.async_pre_call_hook(
-            data=request_data,
-            user_api_key_dict=UserAPIKeyAuth(),
-            call_type="completion",
-            cache=MagicMock(spec=DualCache),
-        )
+    # Mock should_run_guardrail to return True
+    guardrail.should_run_guardrail = MagicMock(return_value=True)
+
+    # Test that the guardrail allows the content (no exception raised)
+    result = await guardrail.async_pre_call_hook(
+        data=request_data,
+        user_api_key_dict=UserAPIKeyAuth(),
+        call_type="completion",
+        cache=MagicMock(spec=DualCache),
+    )
     
     # Should return the request data unchanged
     assert result == request_data

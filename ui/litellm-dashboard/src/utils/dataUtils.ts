@@ -16,9 +16,8 @@ export const formatNumberWithCommas = (
   value: number | null | undefined,
   decimals: number = 0,
   abbreviate: boolean = false,
-  showZero: boolean = true,
 ): string => {
-  if (value === null || value === undefined || !Number.isFinite(value) || (value === 0 && !showZero)) {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
     return "-";
   }
 
@@ -45,22 +44,6 @@ export const formatNumberWithCommas = (
   }
 
   return `${sign}${scaled.toLocaleString("en-US", opts)}${suffix}`;
-};
-
-export const getSpendString = (value: number | null | undefined, decimals: number = 6): string => {
-  if (value === null || value === undefined || !Number.isFinite(value) || value === 0) {
-    return "-";
-  }
-
-  const formatted = formatNumberWithCommas(value, decimals, false, false);
-  const numericFormatted = Number(formatted.replace(/,/g, ""));
-
-  if (numericFormatted === 0) {
-    const threshold = (1 / 10 ** decimals).toFixed(decimals);
-    return `< $${threshold}`;
-  }
-
-  return `$${formatted}`;
 };
 
 export const copyToClipboard = async (

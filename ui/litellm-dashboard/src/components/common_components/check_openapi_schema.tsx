@@ -4,7 +4,6 @@ import { TextInput } from "@tremor/react";
 import { InfoCircleOutlined } from "@ant-design/icons";
 import { Tooltip } from "antd";
 import { getOpenAPISchema } from "../networking";
-import { formatLabel } from "@/utils/textUtils";
 
 interface SchemaProperty {
   type?: string;
@@ -153,7 +152,7 @@ const SchemaFormFields: React.FC<SchemaFormFieldsProps> = ({
     const type = getPropertyType(property);
     const isRequired = schemaProperties?.required?.includes(key);
 
-    const label = overrideLabels[key] || property.title || formatLabel(key);
+    const label = overrideLabels[key] || property.title || key;
     const tooltip = overrideTooltips[key] || property.description;
 
     const rules = [];

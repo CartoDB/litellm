@@ -1,4 +1,18 @@
-import { ChevronDownIcon, ChevronUpIcon, PencilAltIcon, SwitchVerticalIcon, TrashIcon } from "@heroicons/react/outline";
+import React from "react";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeaderCell,
+  TableRow,
+  Icon,
+  Button,
+  Badge,
+  Text,
+} from "@tremor/react";
+import { PencilAltIcon, TrashIcon, SwitchVerticalIcon, ChevronUpIcon, ChevronDownIcon } from "@heroicons/react/outline";
+import { Tooltip } from "antd";
 import {
   ColumnDef,
   flexRender,
@@ -7,20 +21,6 @@ import {
   SortingState,
   useReactTable,
 } from "@tanstack/react-table";
-import {
-  Badge,
-  Button,
-  Icon,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeaderCell,
-  TableRow,
-  Text,
-} from "@tremor/react";
-import { Tooltip } from "antd";
-import React from "react";
 import { Tag } from "./types";
 
 interface TagTableProps {
@@ -29,9 +29,6 @@ interface TagTableProps {
   onDelete: (tagName: string) => void;
   onSelectTag: (tagName: string) => void;
 }
-
-const DYNAMIC_SPEND_TAG_DESCRIPTION =
-  "This is just a spend tag that was passed dynamically in a request. It does not control any LLM models.";
 
 const TagTable: React.FC<TagTableProps> = ({ data, onEdit, onDelete, onSelectTag }) => {
   const [sorting, setSorting] = React.useState<SortingState>([{ id: "created_at", desc: true }]);
@@ -42,20 +39,14 @@ const TagTable: React.FC<TagTableProps> = ({ data, onEdit, onDelete, onSelectTag
       accessorKey: "name",
       cell: ({ row }) => {
         const tag = row.original;
-        const isDynamicSpendTag = tag.description === DYNAMIC_SPEND_TAG_DESCRIPTION;
         return (
           <div className="overflow-hidden">
-            <Tooltip
-              title={
-                isDynamicSpendTag ? "You cannot view the information of a dynamically generated spend tag" : tag.name
-              }
-            >
+            <Tooltip title={tag.name}>
               <Button
                 size="xs"
                 variant="light"
                 className="font-mono text-blue-500 bg-blue-50 hover:bg-blue-100 text-xs font-normal px-2 py-0.5"
                 onClick={() => onSelectTag(tag.name)}
-                disabled={isDynamicSpendTag}
               >
                 {tag.name}
               </Button>
@@ -77,7 +68,7 @@ const TagTable: React.FC<TagTableProps> = ({ data, onEdit, onDelete, onSelectTag
       },
     },
     {
-      header: "Allowed Models",
+      header: "Allowed LLMs",
       accessorKey: "models",
       cell: ({ row }) => {
         const tag = row.original;
@@ -111,50 +102,13 @@ const TagTable: React.FC<TagTableProps> = ({ data, onEdit, onDelete, onSelectTag
     },
     {
       id: "actions",
-      header: "Actions",
+      header: "",
       cell: ({ row }) => {
         const tag = row.original;
-        const isDynamicSpendTag = tag.description === DYNAMIC_SPEND_TAG_DESCRIPTION;
         return (
           <div className="flex space-x-2">
-            {isDynamicSpendTag ? (
-              <Tooltip title="Dynamically generated spend tags cannot be edited">
-                <Icon
-                  icon={PencilAltIcon}
-                  size="sm"
-                  className="opacity-50 cursor-not-allowed"
-                  aria-label="Edit tag (disabled)"
-                />
-              </Tooltip>
-            ) : (
-              <Tooltip title="Edit tag">
-                <Icon
-                  icon={PencilAltIcon}
-                  size="sm"
-                  onClick={() => onEdit(tag)}
-                  className="cursor-pointer hover:text-blue-500"
-                />
-              </Tooltip>
-            )}
-            {isDynamicSpendTag ? (
-              <Tooltip title="Dynamically generated spend tags cannot be deleted">
-                <Icon
-                  icon={TrashIcon}
-                  size="sm"
-                  className="opacity-50 cursor-not-allowed"
-                  aria-label="Delete tag (disabled)"
-                />
-              </Tooltip>
-            ) : (
-              <Tooltip title="Delete tag">
-                <Icon
-                  icon={TrashIcon}
-                  size="sm"
-                  onClick={() => onDelete(tag.name)}
-                  className="cursor-pointer hover:text-red-500"
-                />
-              </Tooltip>
-            )}
+            <Icon icon={PencilAltIcon} size="sm" onClick={() => onEdit(tag)} className="cursor-pointer" />
+            <Icon icon={TrashIcon} size="sm" onClick={() => onDelete(tag.name)} className="cursor-pointer" />
           </div>
         );
       },

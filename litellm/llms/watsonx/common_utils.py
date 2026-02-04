@@ -42,7 +42,6 @@ def generate_iam_token(api_key=None, **params) -> str:
                 get_secret_str("WX_API_KEY")
                 or get_secret_str("WATSONX_API_KEY")
                 or get_secret_str("WATSONX_APIKEY")
-                or get_secret_str("WATSONX_ZENAPIKEY")
             )
         if api_key is None:
             raise ValueError("API key is required")
@@ -81,7 +80,9 @@ def _generate_watsonx_token(api_key: Optional[str], token: Optional[str]) -> str
     return token
 
 
-def _get_api_params(params: dict, model: Optional[str] = None) -> WatsonXAPIParams:
+def _get_api_params(
+    params: dict,
+) -> WatsonXAPIParams:
     """
     Find watsonx.ai credentials in the params or environment variables and return the headers for authentication.
     """
@@ -117,15 +118,10 @@ def _get_api_params(params: dict, model: Optional[str] = None) -> WatsonXAPIPara
             or get_secret_str("SPACE_ID")
         )
 
-    if (
-        project_id is None
-        and space_id is None
-        and model is not None
-        and not model.startswith("deployment/")
-    ):
+    if project_id is None:
         raise WatsonXAIError(
             status_code=401,
-            message="Error: Watsonx project_id and space_id not set. Set WX_PROJECT_ID or WX_SPACE_ID in environment variables or pass in as a parameter.",
+            message="Error: Watsonx project_id not set. Set WX_PROJECT_ID in environment variables or pass in as a parameter.",
         )
 
     return WatsonXAPIParams(
@@ -150,9 +146,7 @@ async def _aconvert_watsonx_messages_core(
         model_prompt_dict = custom_prompt_dict[model]
         return ptf.custom_prompt(
             messages=messages,
-            role_dict=model_prompt_dict.get(
-                "role_dict", model_prompt_dict.get("roles")
-            ),
+            role_dict=model_prompt_dict.get("role_dict", model_prompt_dict.get("roles")),
             initial_prompt_value=model_prompt_dict.get("initial_prompt_value", ""),
             final_prompt_value=model_prompt_dict.get("final_prompt_value", ""),
             bos_token=model_prompt_dict.get("bos_token", ""),
@@ -186,9 +180,7 @@ def _convert_watsonx_messages_core(
         model_prompt_dict = custom_prompt_dict[model]
         return ptf.custom_prompt(
             messages=messages,
-            role_dict=model_prompt_dict.get(
-                "role_dict", model_prompt_dict.get("roles")
-            ),
+            role_dict=model_prompt_dict.get("role_dict", model_prompt_dict.get("roles")),
             initial_prompt_value=model_prompt_dict.get("initial_prompt_value", ""),
             final_prompt_value=model_prompt_dict.get("final_prompt_value", ""),
             bos_token=model_prompt_dict.get("bos_token", ""),
@@ -208,10 +200,7 @@ def _convert_watsonx_messages_core(
 
 
 async def aconvert_watsonx_messages_to_prompt(
-    model: str,
-    messages: List[AllMessageValues],
-    provider: str,
-    custom_prompt_dict: Dict,
+    model: str, messages: List[AllMessageValues], provider: str, custom_prompt_dict: Dict
 ) -> str:
     """Async version of convert_watsonx_messages_to_prompt"""
     from litellm.llms.watsonx.chat.transformation import IBMWatsonXChatConfig
@@ -226,10 +215,7 @@ async def aconvert_watsonx_messages_to_prompt(
 
 
 def convert_watsonx_messages_to_prompt(
-    model: str,
-    messages: List[AllMessageValues],
-    provider: str,
-    custom_prompt_dict: Dict,
+    model: str, messages: List[AllMessageValues], provider: str, custom_prompt_dict: Dict
 ) -> str:
     """Sync version of convert_watsonx_messages_to_prompt"""
     from litellm.llms.watsonx.chat.transformation import IBMWatsonXChatConfig
@@ -266,14 +252,9 @@ class IBMWatsonXMixin:
             Optional[str],
             optional_params.get("token") or get_secret_str("WATSONX_TOKEN"),
         )
-        zen_api_key = cast(
-            Optional[str],
-            optional_params.pop("zen_api_key", None)
-            or get_secret_str("WATSONX_ZENAPIKEY"),
-        )
         if token:
             headers["Authorization"] = f"Bearer {token}"
-        elif zen_api_key:
+        elif zen_api_key := get_secret_str("WATSONX_ZENAPIKEY"):
             headers["Authorization"] = f"ZenApiKey {zen_api_key}"
         else:
             token = _generate_watsonx_token(api_key=api_key, token=token)
@@ -320,7 +301,6 @@ class IBMWatsonXMixin:
             or get_secret_str("WATSONX_APIKEY")
             or get_secret_str("WATSONX_API_KEY")
             or get_secret_str("WX_API_KEY")
-            or get_secret_str("WATSONX_ZENAPIKEY")
         )
 
         api_base = (
@@ -376,8 +356,5 @@ class IBMWatsonXMixin:
                 {}
             )  # Deployment models do not support 'space_id' or 'project_id' in their payload
         payload["model_id"] = model
-        if api_params["project_id"] is not None:
-            payload["project_id"] = api_params["project_id"]
-        else:
-            payload["space_id"] = api_params["space_id"]
+        payload["project_id"] = api_params["project_id"]
         return payload

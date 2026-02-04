@@ -39,8 +39,6 @@ ignored_keys = [
     "metadata.model_map_information",
     "metadata.usage_object",
     "metadata.cold_storage_object_key",
-    "metadata.litellm_overhead_time_ms",
-    "metadata.cost_breakdown",
 ]
 
 

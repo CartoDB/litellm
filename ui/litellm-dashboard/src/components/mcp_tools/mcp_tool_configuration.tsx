@@ -6,7 +6,6 @@ import { useTestMCPConnection } from "../../hooks/useTestMCPConnection";
 
 interface MCPToolConfigurationProps {
   accessToken: string | null;
-  oauthAccessToken?: string | null;
   formValues: Record<string, any>;
   allowedTools: string[];
   existingAllowedTools: string[] | null;
@@ -15,7 +14,6 @@ interface MCPToolConfigurationProps {
 
 const MCPToolConfiguration: React.FC<MCPToolConfigurationProps> = ({
   accessToken,
-  oauthAccessToken,
   formValues,
   allowedTools,
   existingAllowedTools,
@@ -25,7 +23,6 @@ const MCPToolConfiguration: React.FC<MCPToolConfigurationProps> = ({
 
   const { tools, isLoadingTools, toolsError, canFetchTools } = useTestMCPConnection({
     accessToken,
-    oauthAccessToken,
     formValues,
     enabled: true,
   });

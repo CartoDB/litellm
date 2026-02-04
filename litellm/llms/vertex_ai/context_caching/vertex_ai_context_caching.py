@@ -64,17 +64,11 @@ class ContextCachingEndpoints(VertexBase):
         elif custom_llm_provider == "vertex_ai":
             auth_header = vertex_auth_header
             endpoint = "cachedContents"
-            if vertex_location == "global":
-                url = f"https://aiplatform.googleapis.com/v1/projects/{vertex_project}/locations/{vertex_location}/{endpoint}"
-            else:
-                url = f"https://{vertex_location}-aiplatform.googleapis.com/v1/projects/{vertex_project}/locations/{vertex_location}/{endpoint}"
+            url = f"https://{vertex_location}-aiplatform.googleapis.com/v1/projects/{vertex_project}/locations/{vertex_location}/{endpoint}"
         else:
             auth_header = vertex_auth_header
             endpoint = "cachedContents"
-            if vertex_location == "global":
-                url = f"https://aiplatform.googleapis.com/v1beta1/projects/{vertex_project}/locations/{vertex_location}/{endpoint}"
-            else:
-                url = f"https://{vertex_location}-aiplatform.googleapis.com/v1beta1/projects/{vertex_project}/locations/{vertex_location}/{endpoint}"
+            url = f"https://{vertex_location}-aiplatform.googleapis.com/v1beta1/projects/{vertex_project}/locations/{vertex_location}/{endpoint}"
 
 
         return self._check_custom_proxy(
@@ -85,10 +79,6 @@ class ContextCachingEndpoints(VertexBase):
             stream=None,
             auth_header=auth_header,
             url=url,
-            model=None,
-            vertex_project=vertex_project,
-            vertex_location=vertex_location,
-            vertex_api_version="v1beta1" if custom_llm_provider == "vertex_ai_beta" else "v1",
         )
 
     def check_cache(
@@ -304,7 +294,7 @@ class ContextCachingEndpoints(VertexBase):
 
         ## CHECK IF CACHED ALREADY
         generated_cache_key = local_cache_obj.get_cache_key(
-            messages=cached_messages, tools=tools, model=model
+            messages=cached_messages, tools=tools
         )
         google_cache_name = self.check_cache(
             cache_key=generated_cache_key,
@@ -433,7 +423,7 @@ class ContextCachingEndpoints(VertexBase):
 
         ## CHECK IF CACHED ALREADY
         generated_cache_key = local_cache_obj.get_cache_key(
-            messages=cached_messages, tools=tools, model=model
+            messages=cached_messages, tools=tools
         )
         google_cache_name = await self.async_check_cache(
             cache_key=generated_cache_key,

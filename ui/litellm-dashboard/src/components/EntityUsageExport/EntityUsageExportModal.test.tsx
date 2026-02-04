@@ -1,6 +1,6 @@
 /**
  * Tests for EntityUsageExportModal component
- *
+ * 
  * Validates core export functionality:
  * - Renders modal with correct default state (CSV format, daily scope)
  * - User can select export type (daily vs daily_with_models)
@@ -10,15 +10,13 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { renderWithProviders } from "../../../tests/test-utils";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import EntityUsageExportModal from "./EntityUsageExportModal";
 
 // Mock utilities that format/export data so tests stay fast and deterministic
 vi.mock("./utils", () => {
   return {
-    handleExportCSV: vi.fn(),
-    handleExportJSON: vi.fn(),
     generateExportData: vi.fn(() => [{ Date: "2025-10-01" }]),
     generateMetadata: vi.fn(() => ({ meta: true })),
   };
@@ -34,16 +32,6 @@ vi.mock("../molecules/notifications_manager", () => {
     },
   };
 });
-
-// Mock useTeams hook
-vi.mock("@/app/(dashboard)/hooks/teams/useTeams", () => ({
-  useTeams: vi.fn(() => ({
-    data: [],
-    isLoading: false,
-    error: null,
-    refetch: vi.fn(),
-  })),
-}));
 
 // JSDOM stubs for download flow used by the modal
 // @ts-ignore
@@ -78,22 +66,24 @@ describe("EntityUsageExportModal", () => {
   it("renders default state and exports CSV (daily) successfully", async () => {
     /**
      * Tests the happy path: user opens modal and exports with defaults.
-     * Verifies that handleExportCSV is called with correct parameters
+     * Verifies that generateExportData is called with 'daily' scope
      * and modal closes after export completes.
      */
     const user = userEvent.setup();
-    const { handleExportCSV } = await import("./utils");
+    const { generateExportData } = await import("./utils");
 
-    const { getByRole } = renderWithProviders(<EntityUsageExportModal {...baseProps} />);
+    render(<EntityUsageExportModal {...baseProps} />);
 
     // Default primary action reflects CSV export
-    expect(getByRole("button", { name: /Export CSV/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Export CSV/i })).toBeInTheDocument();
 
     // Click export
-    await user.click(getByRole("button", { name: /Export CSV/i }));
+    await user.click(screen.getByRole("button", { name: /Export CSV/i }));
 
-    // Verifies export function was invoked with correct parameters
-    expect(handleExportCSV).toHaveBeenCalledWith(baseProps.spendData, "daily", "Tag", "tag", {});
+    // Verifies export pipeline was invoked with default scope 'daily'
+    expect(generateExportData).toHaveBeenCalled();
+    const callArgs = (generateExportData as any).mock.calls[0];
+    expect(callArgs[1]).toBe("daily");
 
     // Modal closes after export
     expect(baseProps.onClose).toHaveBeenCalled();
@@ -102,26 +92,30 @@ describe("EntityUsageExportModal", () => {
   it("exports with 'day-by-day by tag and model' scope when selected", async () => {
     /**
      * Tests that user can change export type (scope).
-     * Verifies handleExportCSV receives 'daily_with_models' scope
+     * Verifies generateExportData receives 'daily_with_models' scope
      * when the second radio option is selected.
      */
     const user = userEvent.setup();
-    const { handleExportCSV } = await import("./utils");
+    const { generateExportData } = await import("./utils");
 
-    const { getByText, getByRole } = renderWithProviders(<EntityUsageExportModal {...baseProps} />);
+    render(<EntityUsageExportModal {...baseProps} />);
 
     // Choose the alternate export type - click the label to trigger radio
-    const dailyModelLabel = getByText(/Day-by-day by tag and model/i);
+    const dailyModelLabel = screen.getByText(/Day-by-day by tag and model/i);
     await user.click(dailyModelLabel);
 
     // Export with default CSV format
-    const exportBtn = getByRole("button", { name: /Export CSV/i });
+    const exportBtn = screen.getByRole("button", { name: /Export CSV/i });
     await user.click(exportBtn);
 
     // Ensure the selected scope flowed through
-    expect(handleExportCSV).toHaveBeenCalledWith(baseProps.spendData, "daily_with_models", "Tag", "tag", {});
+    expect(generateExportData).toHaveBeenCalled();
+    const callArgs = (generateExportData as any).mock.calls.at(-1);
+    expect(callArgs[1]).toBe("daily_with_models");
 
     // Modal closes after export
     expect(baseProps.onClose).toHaveBeenCalled();
   });
 });
+
+
