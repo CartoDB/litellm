@@ -1,22 +1,24 @@
 name: CARTO PR Analysis
 
-# This workflow analyzes PRs merged to carto/main and generates artifacts
-# that identify which files have been modified by CARTO (CartoDB org members).
+# This workflow provides a standalone way to run CARTO PR analysis.
+# The primary analysis is done by the composite action at:
+#   .github/actions/carto-pr-analysis/action.yml
 #
-# Other workflows (resolver, ci-fixer) download these artifacts to quickly
-# classify files as CARTO-modified vs upstream-only without making many API calls.
+# This workflow is useful for:
+# - Manual debugging and testing
+# - Generating downloadable artifacts for inspection
+# - Pre-warming analysis before resolver runs
 #
-# Benefits over commit-based analysis:
-# - Single paginated API call vs many parallel commit lookups
-# - Full PR context (title, description, discussion) available
-# - Works correctly with squash merges
-# - Much faster classification
+# The resolver and ci-fixer workflows call the action directly,
+# so this workflow is not required for normal operation.
 
 on:
-  push:
-    branches:
-      - carto/main
   workflow_dispatch:
+    inputs:
+      debug:
+        description: "Show detailed output"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -28,82 +30,21 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Fetch CartoDB org members
-        id: org-members
-        env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
-        run: |
-          echo "::group::Fetching CartoDB org members"
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-          ORG_MEMBERS=$(gh api "orgs/CartoDB/members" --paginate --jq '.[].login' | tr '\n' '|' | sed 's/|$//')
+      - name: Run CARTO PR analysis
+        id: analysis
+        uses: ./.github/actions/carto-pr-analysis
+        with:
+          github_token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          output_path: ./carto-analysis
 
-          if [ -z "$ORG_MEMBERS" ]; then
-            echo "Warning: Could not fetch org members, using fallback"
-            ORG_MEMBERS="Cartofante|mateo-di"
-          fi
-
-          # Count members
-          MEMBER_COUNT=$(echo "$ORG_MEMBERS" | tr '|' '\n' | wc -l | tr -d ' ')
-          echo "Found ${MEMBER_COUNT} org members"
-          echo "Pattern preview: ${ORG_MEMBERS:0:100}..."
-
-          echo "pattern=${ORG_MEMBERS}" >> $GITHUB_OUTPUT
-
-          echo "::endgroup::"
-
-      - name: Analyze PRs merged to carto/main
-        id: analyze
-        env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
-          ORG_PATTERN: ${{ steps.org-members.outputs.pattern }}
-        run: |
-          echo "::group::Fetching PRs merged to carto/main"
-
-          # Fetch all merged PRs to carto/main with file lists
-          # This is the key optimization: one paginated call instead of many commit lookups
-          gh pr list \
-            --repo ${{ github.repository }} \
-            --base carto/main \
-            --state merged \
-            --limit 1000 \
-            --json number,title,author,body,mergedAt,additions,deletions,files \
-            > all_prs.json 2>/dev/null || echo "[]" > all_prs.json
-
-          TOTAL_PRS=$(jq 'length' all_prs.json)
-          echo "Found ${TOTAL_PRS} total PRs merged to carto/main"
-
-          # Filter to CARTO org member authors only
-          # This excludes upstream sync PRs (bot-authored) and external contributor PRs
-          jq --arg pattern "$ORG_PATTERN" '
-            [.[] | select(.author.login | test("^(" + $pattern + ")$"; "i"))]
-          ' all_prs.json > carto_prs.json
-
-          CARTO_PRS=$(jq 'length' carto_prs.json)
-          echo "Found ${CARTO_PRS} PRs by CARTO org members"
-
-          # Extract unique file paths from CARTO PRs
-          # This is the list used to classify conflicted files
-          jq -r '[.[] | .files[].path] | unique | .[]' carto_prs.json > carto_files.txt
-
-          FILE_COUNT=$(wc -l < carto_files.txt | tr -d ' ')
-          echo "Found ${FILE_COUNT} unique CARTO-modified files"
-
-          # Show sample of files
-          echo "Sample files:"
-          head -20 carto_files.txt | sed 's/^/  /'
-
-          echo "total-prs=${TOTAL_PRS}" >> $GITHUB_OUTPUT
-          echo "carto-prs=${CARTO_PRS}" >> $GITHUB_OUTPUT
-          echo "file-count=${FILE_COUNT}" >> $GITHUB_OUTPUT
-
-          echo "::endgroup::"
-
-      - name: Generate analysis summary
+      - name: Generate summary report
         run: |
           echo "::group::Generating summary"
 
-          # Create human-readable summary
-          cat > carto_analysis.md << EOF
+          cat > ./carto-analysis/carto_analysis.md << EOF
           # CARTO PR Analysis
 
           **Generated:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")
@@ -113,9 +54,8 @@ jobs:
 
           | Metric | Count |
           |--------|-------|
-          | Total PRs to carto/main | ${{ steps.analyze.outputs.total-prs }} |
-          | PRs by CARTO org members | ${{ steps.analyze.outputs.carto-prs }} |
-          | Files touched by CARTO PRs | ${{ steps.analyze.outputs.file-count }} |
+          | PRs by CARTO org members | ${{ steps.analysis.outputs.pr_count }} |
+          | Files touched by CARTO PRs | ${{ steps.analysis.outputs.file_count }} |
 
           ## How This Data Is Used
 
@@ -133,15 +73,21 @@ jobs:
           $(jq -r '
             sort_by(.mergedAt) | reverse | .[0:20] |
             .[] | "- PR #\(.number): \(.title) (@\(.author.login), \(.mergedAt | split("T")[0]))"
-          ' carto_prs.json)
+          ' ./carto-analysis/carto_prs.json 2>/dev/null || echo "No PRs found")
 
           ## File Categories
 
           **Top directories with CARTO modifications:**
-          $(cat carto_files.txt | xargs -I {} dirname {} | sort | uniq -c | sort -rn | head -10 | awk '{print "- " $2 " (" $1 " files)"}')
+          $(cat ./carto-analysis/carto_files.txt 2>/dev/null | xargs -I {} dirname {} | sort | uniq -c | sort -rn | head -10 | awk '{print "- " $2 " (" $1 " files)"}' || echo "No files found")
           EOF
 
-          cat carto_analysis.md
+          if [ "${{ inputs.debug }}" == "true" ]; then
+            echo "=== CARTO Files ==="
+            cat ./carto-analysis/carto_files.txt
+            echo ""
+            echo "=== CARTO PRs (first 10) ==="
+            jq '.[0:10]' ./carto-analysis/carto_prs.json
+          fi
 
           echo "::endgroup::"
 
@@ -150,9 +96,9 @@ jobs:
         with:
           name: carto-pr-analysis
           path: |
-            carto_prs.json
-            carto_files.txt
-            carto_analysis.md
+            ./carto-analysis/carto_prs.json
+            ./carto-analysis/carto_files.txt
+            ./carto-analysis/carto_analysis.md
           retention-days: 30
 
       - name: Summary
@@ -162,17 +108,15 @@ jobs:
 
           | Metric | Count |
           |--------|-------|
-          | Total PRs to carto/main | ${{ steps.analyze.outputs.total-prs }} |
-          | PRs by CARTO org members | ${{ steps.analyze.outputs.carto-prs }} |
-          | Files touched by CARTO PRs | ${{ steps.analyze.outputs.file-count }} |
+          | PRs by CARTO org members | ${{ steps.analysis.outputs.pr_count }} |
+          | Files touched by CARTO PRs | ${{ steps.analysis.outputs.file_count }} |
 
           ### Artifacts Generated
 
-          - \`carto_prs.json\` - Full PR data with file lists (for context)
-          - \`carto_files.txt\` - Simple list of CARTO-modified files (for classification)
+          - \`carto_prs.json\` - Full PR data with file lists
+          - \`carto_files.txt\` - Simple list of CARTO-modified files
           - \`carto_analysis.md\` - Human-readable summary
 
-          These artifacts are used by:
-          - **Resolver workflow** - Classify conflicted files
-          - **CI Fixer workflow** - Identify CARTO customizations in failing files
+          > **Note:** The resolver and ci-fixer workflows call the action directly.
+          > This workflow is for manual debugging and artifact generation.
           EOF
