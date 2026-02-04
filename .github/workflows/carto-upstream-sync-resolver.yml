@@ -37,6 +37,10 @@ on:
         description: "Enable debug logging"
         type: boolean
         default: false
+      verify-only:
+        description: "Only verify CARTO features (skip conflict resolution)"
+        type: boolean
+        default: false
 
 # Prevent duplicate runs on the same PR
 # IMPORTANT: Uses shared concurrency group with CI Fixer to prevent both running simultaneously
@@ -168,6 +172,7 @@ jobs:
       pr-number: ${{ steps.check.outputs.pr-number }}
       has-conflicts: ${{ steps.check.outputs.has-conflicts }}
       is-sync-pr: ${{ steps.check.outputs.is-sync-pr }}
+      verify-only: ${{ steps.check.outputs.verify-only }}
 
     steps:
       - name: Check PR criteria
@@ -223,6 +228,19 @@ jobs:
           fi
           echo "is-sync-pr=true" >> $GITHUB_OUTPUT
 
+          # Check for verify-only mode (workflow_dispatch only)
+          VERIFY_ONLY="${{ github.event.inputs.verify-only }}"
+          if [[ "${VERIFY_ONLY}" == "true" ]]; then
+            echo "[Resolver] 🔍 VERIFY-ONLY MODE - will only check CARTO features"
+            echo "verify-only=true" >> $GITHUB_OUTPUT
+            echo "has-conflicts=false" >> $GITHUB_OUTPUT
+            echo "eligible=true" >> $GITHUB_OUTPUT
+            echo "pr-number=${PR_NUMBER}" >> $GITHUB_OUTPUT
+            echo "::endgroup::"
+            exit 0
+          fi
+          echo "verify-only=false" >> $GITHUB_OUTPUT
+
           # Check 3: Must have conflicts (or manual trigger)
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             # Manual trigger: skip conflict check (user knows there are conflicts)
@@ -257,7 +275,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90  # Job timeout is the real limit (not max-turns)
     needs: [security-check, check-eligibility]
-    if: needs.security-check.outputs.authorized == 'true' && needs.check-eligibility.outputs.eligible == 'true'
+    if: needs.security-check.outputs.authorized == 'true' && needs.check-eligibility.outputs.eligible == 'true' && needs.check-eligibility.outputs.verify-only != 'true'
 
     steps:
       - name: Get PR branch info
@@ -547,6 +565,39 @@ jobs:
           echo "conflict-count=${CONFLICT_COUNT}" >> $GITHUB_OUTPUT
           echo "::endgroup::"
 
+      - name: Extract CARTO key patterns from carto/main
+        run: |
+          echo "::group::Extracting key patterns from CARTO files"
+
+          > /tmp/carto_patterns.md
+          echo "# CARTO Key Patterns (function/class definitions from carto/main)" >> /tmp/carto_patterns.md
+          echo "" >> /tmp/carto_patterns.md
+          echo "These patterns MUST exist in the resolved files (or be re-implemented)." >> /tmp/carto_patterns.md
+          echo "" >> /tmp/carto_patterns.md
+
+          # Only extract patterns for files that are in the file-to-PR mapping (conflicted + CARTO)
+          # Read files from carto_file_mapping.md
+          MAPPED_FILES=$(grep -oE '`[^`]+`' /tmp/carto_file_mapping.md 2>/dev/null | tr -d '`' | sort -u || echo "")
+
+          for FILE in $MAPPED_FILES; do
+            if git show origin/carto/main:"$FILE" &>/dev/null; then
+              PATTERNS=$(git show origin/carto/main:"$FILE" 2>/dev/null | grep -E "^\s*(def |class |async def )" | sed 's/(.*//;s/^\s*//' | head -15)
+              if [ -n "$PATTERNS" ]; then
+                echo "### \`$FILE\`" >> /tmp/carto_patterns.md
+                echo '```' >> /tmp/carto_patterns.md
+                echo "$PATTERNS" >> /tmp/carto_patterns.md
+                echo '```' >> /tmp/carto_patterns.md
+                echo "" >> /tmp/carto_patterns.md
+              fi
+            fi
+          done
+
+          PATTERN_COUNT=$(grep -c "^### " /tmp/carto_patterns.md 2>/dev/null || echo "0")
+          echo "[Resolver] Extracted key patterns from ${PATTERN_COUNT} files to /tmp/carto_patterns.md"
+          cat /tmp/carto_patterns.md
+
+          echo "::endgroup::"
+
       - name: Fetch PR comments for context
         env:
           GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
@@ -748,6 +799,72 @@ jobs:
             # Quick lint check
             make lint-ruff || true
             ```
+
+            ---
+
+            ## CARTO FEATURE VERIFICATION (Critical - Before Saying Done)
+
+            After resolving conflicts, verify CARTO features are preserved.
+
+            ### Step 1: Read the key patterns that should exist
+
+            ```bash
+            cat /tmp/carto_patterns.md   # Function/class definitions from carto/main
+            cat /tmp/carto_file_mapping.md  # Which files have CARTO history
+            ```
+
+            ### Step 2: For each file with CARTO history, check patterns
+
+            ```bash
+            # For each file in the mapping, verify key functions/classes exist
+            for FILE in $(grep -oE '\`[^\`]+\`' /tmp/carto_file_mapping.md 2>/dev/null | tr -d '\`' | head -20); do
+              echo "=== Checking $FILE ==="
+              if [ -f "$FILE" ]; then
+                # Check if key CARTO patterns are present
+                PATTERNS=$(grep -E "^\s*(def |class |async def )" "$FILE" | head -10)
+                echo "$PATTERNS"
+              else
+                echo "⚠️ FILE MISSING!"
+              fi
+            done
+            ```
+
+            ### Step 3: If a CARTO pattern is MISSING, analyze and implement
+
+            **DO NOT blindly copy from carto/main.** Instead:
+
+            1. **Read the carto/main version:**
+               ```bash
+               git show origin/carto/main:path/to/file.py > /tmp/carto_version.py
+               cat /tmp/carto_version.py | grep -A 30 "def missing_function"
+               ```
+
+            2. **Understand what the CARTO feature does** - Read the function, understand its purpose
+
+            3. **Read the current (upstream) version:**
+               ```bash
+               cat path/to/file.py | head -100
+               ```
+
+            4. **Plan how to integrate the CARTO feature** into the new upstream structure:
+               - Where should this functionality go in the new code?
+               - Does upstream already have similar functionality?
+               - How to add CARTO feature without breaking upstream behavior?
+
+            5. **Implement the CARTO feature** in the new upstream code structure
+
+            6. **Verify** both CARTO feature AND upstream functionality work:
+               ```bash
+               docker build -f docker/Dockerfile.non_root . 2>&1 | tail -100
+               ```
+
+            ### Step 4: Complete verification checklist
+
+            Before saying "RESOLUTION COMPLETE":
+            - [ ] All files in carto_file_mapping.md exist
+            - [ ] Key CARTO patterns are present (or intelligently re-implemented)
+            - [ ] Docker build passes
+            - [ ] No conflict markers remain
 
             ---
 
@@ -1076,3 +1193,274 @@ jobs:
           >
           > _Squashing destroys upstream history and breaks future syncs (see PR #26)._"
           echo "[Resolver] ✅ Merge warning comment added"
+
+  # Job 4: Verify-only mode - Check CARTO features without conflict resolution
+  verify-carto-features:
+    name: Verify CARTO Features Only
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [security-check, check-eligibility]
+    if: needs.security-check.outputs.authorized == 'true' && needs.check-eligibility.outputs.verify-only == 'true'
+
+    steps:
+      - name: Get PR branch info
+        id: pr-info
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          PR_NUMBER="${{ needs.check-eligibility.outputs.pr-number }}"
+          PR_JSON=$(gh pr view ${PR_NUMBER} --repo ${{ github.repository }} --json headRefName,baseRefName)
+          HEAD_REF=$(echo "${PR_JSON}" | jq -r '.headRefName')
+          BASE_REF=$(echo "${PR_JSON}" | jq -r '.baseRefName')
+
+          echo "head-ref=${HEAD_REF}" >> $GITHUB_OUTPUT
+          echo "base-ref=${BASE_REF}" >> $GITHUB_OUTPUT
+          echo "[Verify] PR #${PR_NUMBER}: ${HEAD_REF} → ${BASE_REF}"
+
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr-info.outputs.head-ref }}
+          fetch-depth: 0
+          token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+
+      - name: Comment on PR - Starting verification
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          gh pr comment ${{ needs.check-eligibility.outputs.pr-number }} \
+            --repo ${{ github.repository }} \
+            --body "## 🔍 CARTO Feature Verification Started
+
+          **Mode:** Verify-only (no conflict resolution)
+
+          Checking if CARTO features are preserved in the current PR state.
+
+          [View workflow run →](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+
+      - name: Analyze CARTO PRs for feature context
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          echo "::group::Analyzing CARTO PRs for feature context"
+
+          OUTPUT_PATH="/tmp/carto-analysis"
+          mkdir -p "${OUTPUT_PATH}"
+
+          # Fetch CartoDB org members
+          ORG_MEMBERS=$(gh api "orgs/CartoDB/members" --paginate --jq '.[].login' 2>/dev/null | tr '\n' '|' | sed 's/|$//')
+          if [ -z "$ORG_MEMBERS" ]; then
+            ORG_MEMBERS="Cartofante|mateo-di"
+          fi
+
+          # Fetch merged PRs to carto/main, filter by org members
+          gh pr list \
+            --repo ${{ github.repository }} \
+            --base carto/main \
+            --state merged \
+            --limit 1000 \
+            --json number,title,author,mergedAt,files,labels \
+            > "${OUTPUT_PATH}/all_prs.json" 2>/dev/null || echo "[]" > "${OUTPUT_PATH}/all_prs.json"
+
+          # Filter to CARTO org members, excluding upstream-sync PRs
+          jq --arg pattern "$ORG_MEMBERS" '
+            [.[] |
+              select(.author.login | test("^(" + $pattern + ")$"; "i")) |
+              select(([(.labels // [])[].name] | any(. == "upstream-sync")) | not) |
+              select(.title | test("^(sync:|upstream sync:|fix: resolve.*upstream|fix: resolve conflicts|fix\\(ci\\):|merge:)"; "i") | not) |
+              select(.title | test("Upstream Sync:"; "i") | not)
+            ]
+          ' "${OUTPUT_PATH}/all_prs.json" > "${OUTPUT_PATH}/carto_prs.json"
+
+          CARTO_PRS=$(jq 'length' "${OUTPUT_PATH}/carto_prs.json")
+          echo "[Verify] Found ${CARTO_PRS} CARTO feature PRs"
+
+          # Generate feature summaries
+          jq -r '
+            sort_by(.mergedAt) | reverse | .[0:20] |
+            .[] |
+            "### PR #\(.number): \(.title)\n" +
+            "- **Files:** \(.files[:3] | map(.path) | join(", "))\(if (.files | length) > 3 then " (+\(.files | length - 3) more)" else "" end)\n"
+          ' "${OUTPUT_PATH}/carto_prs.json" > /tmp/carto_features.md
+
+          # Create file-to-PR mapping for all CARTO files
+          echo "## CARTO Files with Feature History" > /tmp/carto_file_mapping.md
+          echo "" >> /tmp/carto_file_mapping.md
+
+          for FILE in $(jq -r '[.[] | .files[].path] | unique | .[]' "${OUTPUT_PATH}/carto_prs.json" | head -50); do
+            FILE_PRS=$(jq -r --arg f "$FILE" '
+              [.[] | select(.files | map(.path) | any(. == $f))] |
+              if length > 0 then
+                "- `" + $f + "` ← " + ([.[] | "PR #\(.number)"] | join(", "))
+              else
+                empty
+              end
+            ' "${OUTPUT_PATH}/carto_prs.json")
+
+            if [ -n "$FILE_PRS" ]; then
+              echo "$FILE_PRS" >> /tmp/carto_file_mapping.md
+            fi
+          done
+
+          rm -f "${OUTPUT_PATH}/all_prs.json"
+          echo "::endgroup::"
+
+      - name: Extract CARTO key patterns from carto/main
+        run: |
+          echo "::group::Extracting key patterns from CARTO files"
+
+          > /tmp/carto_patterns.md
+          echo "# CARTO Key Patterns (function/class definitions from carto/main)" >> /tmp/carto_patterns.md
+          echo "" >> /tmp/carto_patterns.md
+
+          # Extract patterns for CARTO-modified files
+          for FILE in $(grep -oE '`[^`]+`' /tmp/carto_file_mapping.md 2>/dev/null | tr -d '`' | sort -u | head -30); do
+            if git show origin/carto/main:"$FILE" &>/dev/null; then
+              PATTERNS=$(git show origin/carto/main:"$FILE" 2>/dev/null | grep -E "^\s*(def |class |async def )" | sed 's/(.*//;s/^\s*//' | head -15)
+              if [ -n "$PATTERNS" ]; then
+                echo "### \`$FILE\`" >> /tmp/carto_patterns.md
+                echo '```' >> /tmp/carto_patterns.md
+                echo "$PATTERNS" >> /tmp/carto_patterns.md
+                echo '```' >> /tmp/carto_patterns.md
+                echo "" >> /tmp/carto_patterns.md
+              fi
+            fi
+          done
+
+          PATTERN_COUNT=$(grep -c "^### " /tmp/carto_patterns.md 2>/dev/null || echo "0")
+          echo "[Verify] Extracted key patterns from ${PATTERN_COUNT} files"
+          cat /tmp/carto_patterns.md
+
+          echo "::endgroup::"
+
+      - name: Setup GCP credentials for Vertex AI
+        run: |
+          echo '${{ secrets.CI_RESOURCES_SERVICE_ACCOUNT }}' > /tmp/gcp-sa.json
+          echo "GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-sa.json" >> $GITHUB_ENV
+
+      - name: Run Claude Code to verify CARTO features
+        id: claude-verify
+        uses: anthropics/claude-code-action@v1
+        with:
+          use_vertex: "true"
+          github_token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          show_full_output: true
+          claude_args: "--model claude-opus-4-5@20251101 --max-turns 100 --allowedTools Read,Bash,Grep,Glob ${{ github.event.inputs.debug == 'true' && '--debug' || '' }}"
+          prompt: |
+            # CARTO Feature Verification
+
+            ## YOUR GOAL
+
+            Verify that CARTO features are preserved in the current PR branch.
+            **DO NOT MAKE ANY CHANGES** - this is a verification-only run.
+
+            ---
+
+            ## CONTEXT
+
+            **PR:** #${{ needs.check-eligibility.outputs.pr-number }}
+            **Branch:** `${{ steps.pr-info.outputs.head-ref }}`
+
+            ---
+
+            ## STEP 1: Read CARTO context files
+
+            ```bash
+            echo "=== CARTO Features ===" && cat /tmp/carto_features.md
+            echo ""
+            echo "=== File Mapping ===" && cat /tmp/carto_file_mapping.md
+            echo ""
+            echo "=== Key Patterns ===" && cat /tmp/carto_patterns.md
+            ```
+
+            ---
+
+            ## STEP 2: Verify patterns exist in current files
+
+            For each file in `/tmp/carto_patterns.md`:
+
+            1. Check if file exists
+            2. Check if key functions/classes are present
+            3. Note any MISSING patterns
+
+            ```bash
+            for FILE in $(grep -oE '\`[^\`]+\`' /tmp/carto_file_mapping.md 2>/dev/null | tr -d '\`' | head -30); do
+              if [ -f "$FILE" ]; then
+                echo "✅ EXISTS: $FILE"
+                # Show current patterns
+                grep -E "^\s*(def |class |async def )" "$FILE" | head -10
+              else
+                echo "❌ MISSING: $FILE"
+              fi
+              echo "---"
+            done
+            ```
+
+            ---
+
+            ## STEP 3: Compare patterns
+
+            For each file with CARTO history, compare:
+            - **Expected** patterns (from /tmp/carto_patterns.md)
+            - **Actual** patterns (from current file)
+
+            Note any MISSING functionality.
+
+            ---
+
+            ## STEP 4: Generate verification report
+
+            Create a summary with:
+
+            | Status | File | Notes |
+            |--------|------|-------|
+            | ✅ / ⚠️ / ❌ | file path | what's present/missing |
+
+            ---
+
+            ## SAY "VERIFICATION COMPLETE" WHEN DONE
+
+            End with a summary:
+            - Total files checked
+            - Files with all patterns present
+            - Files with missing patterns (list them)
+            - Overall assessment: PASS / NEEDS ATTENTION
+
+        env:
+          ANTHROPIC_VERTEX_PROJECT_ID: carto-ci-resources
+          CLOUD_ML_REGION: global
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GITHUB_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+
+      - name: Cleanup GCP credentials
+        if: always()
+        run: rm -f /tmp/gcp-sa.json
+
+      - name: Comment on PR - Results
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          PR_NUMBER="${{ needs.check-eligibility.outputs.pr-number }}"
+
+          if [ "${{ steps.claude-verify.outcome }}" == "success" ]; then
+            gh pr comment ${PR_NUMBER} \
+              --repo ${{ github.repository }} \
+              --body "## ✅ CARTO Feature Verification Complete
+
+          Claude has analyzed the PR for CARTO feature preservation.
+
+          **Check the workflow logs for the detailed report:**
+          [View verification results →](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+          > [!NOTE]
+          > This was a **verification-only** run. No changes were made to the PR."
+          else
+            gh pr comment ${PR_NUMBER} \
+              --repo ${{ github.repository }} \
+              --body "## ❌ CARTO Feature Verification Failed
+
+          The verification encountered an error.
+
+          [View workflow logs →](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+          fi

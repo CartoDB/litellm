@@ -362,6 +362,35 @@ jobs:
           rm -f "${OUTPUT_PATH}/all_prs.json"
           echo "::endgroup::"
 
+      - name: Extract CARTO key patterns from carto/main
+        run: |
+          echo "::group::Extracting key patterns from CARTO files"
+
+          > /tmp/carto_patterns.md
+          echo "# CARTO Key Patterns (function/class definitions from carto/main)" >> /tmp/carto_patterns.md
+          echo "" >> /tmp/carto_patterns.md
+          echo "These patterns MUST exist in CARTO-modified files." >> /tmp/carto_patterns.md
+          echo "" >> /tmp/carto_patterns.md
+
+          # Extract patterns for CARTO-modified files
+          for FILE in $(cat /tmp/carto-analysis/carto_files.txt 2>/dev/null | head -30); do
+            if git show origin/carto/main:"$FILE" &>/dev/null; then
+              PATTERNS=$(git show origin/carto/main:"$FILE" 2>/dev/null | grep -E "^\s*(def |class |async def )" | sed 's/(.*//;s/^\s*//' | head -10)
+              if [ -n "$PATTERNS" ]; then
+                echo "### \`$FILE\`" >> /tmp/carto_patterns.md
+                echo '```' >> /tmp/carto_patterns.md
+                echo "$PATTERNS" >> /tmp/carto_patterns.md
+                echo '```' >> /tmp/carto_patterns.md
+                echo "" >> /tmp/carto_patterns.md
+              fi
+            fi
+          done
+
+          PATTERN_COUNT=$(grep -c "^### " /tmp/carto_patterns.md 2>/dev/null || echo "0")
+          echo "[CI Fixer] Extracted key patterns from ${PATTERN_COUNT} files to /tmp/carto_patterns.md"
+
+          echo "::endgroup::"
+
       - name: Run Claude Code to fix failures
         id: claude-fix
         uses: anthropics/claude-code-action@v1
@@ -491,6 +520,37 @@ jobs:
             **Decision:**
             - File in CARTO list? → Preserve CARTO code, fix around it
             - File NOT in CARTO list? → Safe to sync from ORIG_HEAD
+
+            ---
+
+            ## CARTO FEATURE CHECK (Before Syncing Files)
+
+            Before syncing a file from upstream, verify CARTO features are preserved:
+
+            ```bash
+            cat /tmp/carto_patterns.md
+            ```
+
+            **If the file you're fixing has CARTO patterns:**
+            1. Read the current file
+            2. Note which CARTO patterns exist (functions, classes)
+            3. After syncing from upstream, **re-implement the CARTO patterns**
+            4. Don't blindly sync - understand what CARTO functionality needs to stay
+
+            **Example workflow for CARTO file:**
+            ```bash
+            # 1. Check if file has CARTO patterns
+            grep "path/to/file.py" /tmp/carto_patterns.md
+
+            # 2. If yes, save CARTO version first
+            cp path/to/file.py /tmp/carto_backup.py
+
+            # 3. Sync from upstream
+            git show ORIG_HEAD:path/to/file.py > path/to/file.py
+
+            # 4. Re-add CARTO functionality to the upstream version
+            # (read /tmp/carto_backup.py and integrate needed functions)
+            ```
 
             ---
 
