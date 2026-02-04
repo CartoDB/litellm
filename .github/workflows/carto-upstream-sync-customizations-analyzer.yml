@@ -302,36 +302,16 @@ jobs:
             ORG_MEMBERS="Cartofante|mateo-di"
           fi
 
-          # Fetch merged PRs to carto/main
-          echo "[Analyzer] Fetching PRs merged to carto/main..."
+          # Fetch ALL merged PRs (any branch) to capture all CARTO customizations
+          echo "[Analyzer] Fetching all merged PRs..."
           gh pr list \
             --repo ${{ github.repository }} \
-            --base carto/main \
             --state merged \
             --limit 1000 \
             --json number,title,author,mergedAt,files,body,labels \
             > "${OUTPUT_PATH}/all_prs.json" 2>/dev/null || echo "[]" > "${OUTPUT_PATH}/all_prs.json"
 
-          # Add legacy PRs that were merged to 'main' before branch rename
-          # These are hardcoded because they predate carto/main convention
-          echo "[Analyzer] Fetching legacy PRs merged to main (hardcoded: #4, #5, #7, #11)..."
-          LEGACY_PRS="[]"
-          for PR_NUM in 4 5 7 11; do
-            PR_DATA=$(gh pr view ${PR_NUM} --repo ${{ github.repository }} \
-              --json number,title,author,mergedAt,files,body,labels 2>/dev/null || echo "null")
-            if [[ "${PR_DATA}" != "null" ]]; then
-              LEGACY_PRS=$(echo "${LEGACY_PRS}" | jq --argjson pr "${PR_DATA}" '. + [$pr]')
-            fi
-          done
-
-          # Merge carto/main PRs with legacy PRs
-          echo "${LEGACY_PRS}" > "${OUTPUT_PATH}/legacy_prs.json"
-          jq -s 'add | unique_by(.number)' \
-            "${OUTPUT_PATH}/all_prs.json" \
-            "${OUTPUT_PATH}/legacy_prs.json" \
-            > "${OUTPUT_PATH}/merged_prs.json"
-
-          echo "[Analyzer] Total PRs (including legacy): $(jq 'length' "${OUTPUT_PATH}/merged_prs.json")"
+          echo "[Analyzer] Total merged PRs: $(jq 'length' "${OUTPUT_PATH}/all_prs.json")"
 
           # Filter to CARTO org members, excluding upstream-sync PRs
           jq --arg pattern "$ORG_MEMBERS" '
@@ -341,12 +321,12 @@ jobs:
               select(.title | test("^(sync:|upstream sync:|fix: resolve.*upstream|fix: resolve conflicts|fix\\(ci\\):|merge:)"; "i") | not) |
               select(.title | test("Upstream Sync:"; "i") | not)
             ]
-          ' "${OUTPUT_PATH}/merged_prs.json" > "${OUTPUT_PATH}/carto_prs.json"
+          ' "${OUTPUT_PATH}/all_prs.json" > "${OUTPUT_PATH}/carto_prs.json"
 
           CARTO_PRS=$(jq 'length' "${OUTPUT_PATH}/carto_prs.json")
           echo "[Analyzer] Found ${CARTO_PRS} CARTO feature PRs"
 
-          rm -f "${OUTPUT_PATH}/all_prs.json" "${OUTPUT_PATH}/legacy_prs.json" "${OUTPUT_PATH}/merged_prs.json"
+          rm -f "${OUTPUT_PATH}/all_prs.json"
           echo "::endgroup::"
 
       - name: Build CARTO features inventory with code snapshots

@@ -327,15 +327,16 @@ jobs:
             ORG_MEMBERS="Cartofante|mateo-di"
           fi
 
-          # Fetch merged PRs to carto/main, filter by org members
+          # Fetch ALL merged PRs (any branch) to capture all CARTO customizations
           # IMPORTANT: Also fetch labels for exclusion filtering
           gh pr list \
             --repo ${{ github.repository }} \
-            --base carto/main \
             --state merged \
             --limit 1000 \
             --json number,title,author,files,labels \
             > "${OUTPUT_PATH}/all_prs.json" 2>/dev/null || echo "[]" > "${OUTPUT_PATH}/all_prs.json"
+
+          echo "[CI Fixer] Total merged PRs: $(jq 'length' "${OUTPUT_PATH}/all_prs.json")"
 
           # Filter to CARTO org members, excluding upstream-sync PRs
           # IMPORTANT: Exclude upstream-sync PRs (they sync upstream code, not CARTO customizations)

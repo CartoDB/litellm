@@ -487,15 +487,17 @@ jobs:
             ORG_MEMBERS="Cartofante|mateo-di"
           fi
 
-          # Step 2: Fetch all merged PRs to carto/main
-          echo "[Resolver] Fetching PRs merged to carto/main..."
+          # Step 2: Fetch ALL merged PRs (any branch) to capture all CARTO customizations
+          echo "[Resolver] Fetching all merged PRs..."
           gh pr list \
             --repo ${{ github.repository }} \
-            --base carto/main \
             --state merged \
             --limit 1000 \
-            --json number,title,author,mergedAt,additions,deletions,files \
+            --json number,title,author,mergedAt,additions,deletions,files,labels \
             > "${OUTPUT_PATH}/all_prs.json" 2>/dev/null || echo "[]" > "${OUTPUT_PATH}/all_prs.json"
+
+          TOTAL_PRS=$(jq 'length' "${OUTPUT_PATH}/all_prs.json")
+          echo "[Resolver] Total merged PRs: ${TOTAL_PRS}"
 
           # Step 3: Filter to CARTO org member authors only (exclude upstream-sync PRs)
           jq --arg pattern "$ORG_MEMBERS" '
@@ -1421,14 +1423,15 @@ jobs:
             ORG_MEMBERS="Cartofante|mateo-di"
           fi
 
-          # Fetch merged PRs to carto/main, filter by org members
+          # Fetch ALL merged PRs (any branch) to capture all CARTO customizations
           gh pr list \
             --repo ${{ github.repository }} \
-            --base carto/main \
             --state merged \
             --limit 1000 \
             --json number,title,author,mergedAt,files,labels \
             > "${OUTPUT_PATH}/all_prs.json" 2>/dev/null || echo "[]" > "${OUTPUT_PATH}/all_prs.json"
+
+          echo "[Verify] Total merged PRs: $(jq 'length' "${OUTPUT_PATH}/all_prs.json")"
 
           # Filter to CARTO org members, excluding upstream-sync PRs
           # Also filter to only include PRs that touch litellm/ or tests/ directories (LiteLLM code)
@@ -1444,6 +1447,8 @@ jobs:
               select(.files | length > 0)
             ]
           ' "${OUTPUT_PATH}/all_prs.json" > "${OUTPUT_PATH}/carto_prs.json"
+
+          rm -f "${OUTPUT_PATH}/all_prs.json"
 
           CARTO_PRS=$(jq 'length' "${OUTPUT_PATH}/carto_prs.json")
           echo "[Verify] Found ${CARTO_PRS} CARTO feature PRs with litellm/tests changes"
