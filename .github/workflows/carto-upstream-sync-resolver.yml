@@ -561,92 +561,78 @@ jobs:
           echo "::endgroup::"
 
       # =========================================================================
-      # Auto-resolve UPSTREAM-ONLY files - these should accept upstream version
-      # This is done BEFORE Claude runs to reduce Claude's workload and prevent
-      # mistakes in files that don't have CARTO customizations
+      # NOTE: Auto-resolve step REMOVED per goal-driven redesign
+      # Rationale: Blindly accepting upstream breaks dependency chains when
+      # CARTO code imports from files classified as UPSTREAM-ONLY.
+      # Claude now sees ALL conflicts and decides intelligently.
       # =========================================================================
-      - name: Auto-resolve UPSTREAM-ONLY files
-        id: auto-resolve-upstream
-        run: |
-          echo "::group::Auto-resolving UPSTREAM-ONLY files"
 
-          UPSTREAM_FILES="${{ steps.carto-files.outputs.upstream-files }}"
-          AUTO_RESOLVED=0
-          FAILED=0
-
-          for FILE in $UPSTREAM_FILES; do
-            if [ -n "$FILE" ] && [ -f "$FILE" ]; then
-              echo "[Auto-resolve] Accepting upstream: $FILE"
-              if git checkout --theirs "$FILE" 2>/dev/null; then
-                git add "$FILE" 2>/dev/null || true
-                AUTO_RESOLVED=$((AUTO_RESOLVED + 1))
-              else
-                echo "[Auto-resolve] Warning: Could not resolve $FILE"
-                FAILED=$((FAILED + 1))
-              fi
-            fi
-          done
-
-          echo ""
-          echo "[Auto-resolve] Summary:"
-          echo "  Successfully resolved: ${AUTO_RESOLVED} files"
-          echo "  Failed to resolve: ${FAILED} files"
-          echo "auto-resolved=${AUTO_RESOLVED}" >> $GITHUB_OUTPUT
-          echo "failed=${FAILED}" >> $GITHUB_OUTPUT
-
-          # Show remaining conflicts after auto-resolution
-          REMAINING=$(git diff --name-only --diff-filter=U 2>/dev/null | wc -l | tr -d ' ')
-          echo "  Remaining conflicts for Claude: ${REMAINING} files"
-          echo "remaining=${REMAINING}" >> $GITHUB_OUTPUT
-
-          echo "::endgroup::"
-
-      - name: Build CARTO context from PR analysis
+      - name: Build CARTO feature context from PR analysis
         id: carto-context
         run: |
-          echo "::group::Building CARTO context for Claude"
+          echo "::group::Building CARTO feature context for Claude"
 
-          CARTO_FILES="${{ steps.carto-files.outputs.carto-files }}"
+          CONFLICTS="${{ steps.start-merge.outputs.conflicts }}"
+          CONFLICT_COUNT="${{ steps.start-merge.outputs.conflict-count }}"
 
           if [ -f /tmp/carto-analysis/carto_prs.json ]; then
-            echo "[Resolver] Building context from PR analysis"
+            echo "[Resolver] Building feature-based context from PR analysis"
 
             TOTAL_PRS=$(jq 'length' /tmp/carto-analysis/carto_prs.json)
             echo "[Resolver] Found ${TOTAL_PRS} CARTO PRs"
 
-            # Build context for each CARTO-modified conflicted file
-            > /tmp/carto_pr_context.md
+            # Generate feature summaries (not file lists) - goal-driven approach
+            # This tells Claude WHAT features to preserve, not WHICH files to keep
+            jq -r '
+              sort_by(.mergedAt) | reverse | .[0:30] |
+              .[] |
+              "### PR #\(.number): \(.title)\n" +
+              "- **Author:** @\(.author.login)\n" +
+              "- **Files:** \(.files | length) files (\(.files[:3] | map(.path) | join(", "))\(if (.files | length) > 3 then "..." else "" end))\n" +
+              "- **Changes:** +\(.additions)/-\(.deletions) lines\n"
+            ' /tmp/carto-analysis/carto_prs.json > /tmp/carto_features.md
 
-            for FILE in $CARTO_FILES; do
+            # Count unique files touched by CARTO PRs
+            UNIQUE_FILES=$(jq -r '[.[] | .files[].path] | unique | length' /tmp/carto-analysis/carto_prs.json)
+            echo "" >> /tmp/carto_features.md
+            echo "**Summary:** ${TOTAL_PRS} PRs touching ${UNIQUE_FILES} unique files" >> /tmp/carto_features.md
+
+            # Also create a simple file-to-PR mapping for reference
+            > /tmp/carto_file_mapping.md
+            echo "## File → PR Mapping (for reference)" >> /tmp/carto_file_mapping.md
+            echo "" >> /tmp/carto_file_mapping.md
+            for FILE in $CONFLICTS; do
               FILE_PRS=$(jq -r --arg f "$FILE" '
                 [.[] | select(.files | map(.path) | any(. == $f))] |
-                .[] | "- PR #\(.number): \(.title) (@\(.author.login))"
+                if length > 0 then
+                  "- `" + $f + "`: " + ([.[] | "#\(.number)"] | join(", "))
+                else
+                  empty
+                end
               ' /tmp/carto-analysis/carto_prs.json)
 
               if [ -n "$FILE_PRS" ]; then
-                echo "### \`$FILE\`" >> /tmp/carto_pr_context.md
-                echo "$FILE_PRS" >> /tmp/carto_pr_context.md
-                echo "" >> /tmp/carto_pr_context.md
+                echo "$FILE_PRS" >> /tmp/carto_file_mapping.md
               fi
             done
 
-            # Create PR summary table
-            jq -r '
-              sort_by(.mergedAt) | reverse | .[0:50] |
-              .[] | "| #\(.number) | \(.title | .[0:40])... | @\(.author.login) | \(.files | length) files |"
-            ' /tmp/carto-analysis/carto_prs.json > /tmp/carto_pr_table.md
-
             echo "total-prs=${TOTAL_PRS}" >> $GITHUB_OUTPUT
+            echo "unique-files=${UNIQUE_FILES}" >> $GITHUB_OUTPUT
           else
             echo "[Resolver] No PR artifact - context will be minimal"
-            echo "No cached PR context available" > /tmp/carto_pr_context.md
-            echo "No cached PR table available" > /tmp/carto_pr_table.md
+            echo "No cached PR context available" > /tmp/carto_features.md
+            echo "No file mapping available" > /tmp/carto_file_mapping.md
             echo "total-prs=0" >> $GITHUB_OUTPUT
+            echo "unique-files=0" >> $GITHUB_OUTPUT
           fi
 
-          echo "[Resolver] Context written to /tmp/carto_pr_context.md"
-          echo "context-file=/tmp/carto_pr_context.md" >> $GITHUB_OUTPUT
-          echo "table-file=/tmp/carto_pr_table.md" >> $GITHUB_OUTPUT
+          # Store conflict count for the prompt
+          echo "conflict-count=${CONFLICT_COUNT}" >> $GITHUB_OUTPUT
+
+          echo "[Resolver] Feature context written to /tmp/carto_features.md"
+          echo "[Resolver] File mapping written to /tmp/carto_file_mapping.md"
+          echo "features-file=/tmp/carto_features.md" >> $GITHUB_OUTPUT
+          echo "mapping-file=/tmp/carto_file_mapping.md" >> $GITHUB_OUTPUT
 
           echo "::endgroup::"
 
@@ -670,7 +656,7 @@ jobs:
 
           echo "::endgroup::"
 
-      - name: Run Claude Code for conflict resolution (FILE EDITS ONLY)
+      - name: Run Claude Code for conflict resolution (GOAL-DRIVEN)
         id: claude-run
         uses: anthropics/claude-code-action@v1
         with:
@@ -679,197 +665,196 @@ jobs:
           show_full_output: true
           claude_args: "--model claude-opus-4-5@20251101 --max-turns 250 --allowedTools Read,Write,Edit,Bash,Grep,Glob ${{ github.event.inputs.debug == 'true' && '--debug' || '' }}"
           prompt: |
-            # Conflict Resolution Task - CARTO-FIRST STRATEGY
+            # Upstream Sync Conflict Resolution
 
-            ## ⚠️ CRITICAL: CARTO CUSTOMIZATIONS ARE MANDATORY TO PRESERVE
+            ## YOUR PRIMARY GOAL
 
-            **Key Principle:** CARTO customizations made by CartoDB organization members are **INTENTIONAL and MUST be preserved**. Upstream changes should be merged **AROUND** CARTO code, not replacing it.
+            **Make CI pass** while preserving CARTO features.
 
-            The git merge has ALREADY been started by the workflow.
+            You have FULL FREEDOM to decide how to resolve each conflict. The workflow trusts your judgment.
+            There are no rigid per-file rules - you decide what makes sense for each situation.
 
-            **IMPORTANT:** The workflow has already AUTO-RESOLVED ${{ steps.auto-resolve-upstream.outputs.auto-resolved }} UPSTREAM-ONLY files.
-            You only need to focus on the remaining ${{ steps.auto-resolve-upstream.outputs.remaining }} CARTO-MODIFIED files.
+            ---
 
-            **DO NOT RUN THESE COMMANDS - THE WORKFLOW WILL HANDLE THEM:**
-            - ❌ `git commit` - Workflow does this AFTER you finish
-            - ❌ `git checkout -b` - Workflow does this AFTER you finish
-            - ❌ `git push` - Workflow does this AFTER you finish
-            - ❌ `gh pr create` - Workflow does this AFTER you finish
+            ## GIT CONTEXT (Important!)
 
-            **YOUR ONLY JOB:**
-            1. Read conflicted CARTO-MODIFIED files (upstream-only are already resolved!)
-            2. Edit files to remove conflict markers (PRESERVING CARTO CODE)
-            3. Run tests and fix issues
-            4. Say "RESOLUTION COMPLETE" when done
+            **Current branch:** ${{ steps.pr-info.outputs.head-ref }} (upstream TAG content, e.g., upstream-sync/v1.65.0)
+            **Merging in:** ${{ steps.pr-info.outputs.base-ref }} (carto/main with CARTO customizations)
 
-            ## Pre-Analysis: CARTO vs Upstream Files
+            This means:
+            - **HEAD / `--ours`** = Upstream TAG version (the sync branch content)
+            - **`--theirs`** = carto/main version (CARTO customizations)
 
-            The workflow has analyzed and pre-resolved files:
-
-            **🔒 CARTO-MODIFIED FILES (MUST KEEP CARTO VERSION - YOUR FOCUS):**
-            ```
-            ${{ steps.carto-files.outputs.carto-files }}
-            ```
-
-            **✅ UPSTREAM-ONLY FILES (Already auto-resolved by workflow):**
-            These ${{ steps.auto-resolve-upstream.outputs.auto-resolved }} files have been automatically resolved to accept upstream.
-            You do NOT need to touch these files.
-
-            ## Remaining Conflicted Files (${{ steps.auto-resolve-upstream.outputs.remaining }} CARTO-modified files)
-
-            To see the actual remaining conflicts, run:
-            ```bash
-            git diff --name-only --diff-filter=U
-            ```
-
-            These should match the CARTO-MODIFIED files above.
-
-            ## Step 0: Check Previous Resolution Attempts
-
-            **IMPORTANT:** Read PR comments first for context on previous attempts:
-            ```bash
-            cat /tmp/pr_comments.md
-            ```
-
-            This shows:
-            - Previous Claude resolution attempts and what was tried
-            - Human feedback or guidance
-            - Issues that have already been addressed
-
-            **If a previous resolution attempt exists, learn from it - don't repeat failed approaches.**
-
-            ## Step 1: Read CARTO Guidelines
-
-            ```bash
-            cat CARTO_CLAUDE.md
-            ```
-
-            ## Step 2: Resolution Rules (CARTO-FIRST PRIORITY)
-
-            **Conflict markers look like this:**
+            **Conflict markers:**
             ```
             <<<<<<< HEAD
-            [upstream code from main branch]
+            [upstream TAG code - from sync branch]
             =======
-            [CARTO code from carto/main branch]
+            [CARTO code - from carto/main]
             >>>>>>> carto/main
             ```
 
-            ## ⚠️ CRITICAL: SYNC-REQUIRED FILES (ALWAYS ACCEPT UPSTREAM)
+            ---
 
-            These files MUST track upstream even if CARTO has commits. Accept the upstream (HEAD) version:
+            ## STEP 0: FIX LOOP DETECTION (DO THIS FIRST!)
 
-            | File | Reason |
-            |------|--------|
-            | `schema.prisma` | Database schema MUST match LiteLLM code expectations |
-            | `litellm/proxy/schema.prisma` | Upstream Prisma schema |
-
-            **For schema.prisma specifically:**
-            - ALWAYS accept the upstream (HEAD) version - it has more tables
-            - Missing tables cause runtime errors like: `'Prisma' object has no attribute 'litellm_agentstable'`
-            - If CARTO added unique tables, add them AFTER accepting upstream, but this is rare
-
-            **Resolution priorities (with SYNC-REQUIRED EXCEPTION):**
-
-            | Priority | File Pattern | Resolution | Reason |
-            |----------|--------------|------------|--------|
-            | **0** | `schema.prisma` | **ACCEPT UPSTREAM (HEAD)** | Database schema must match code |
-            | 1 | Files in CARTO-MODIFIED list above | **KEEP carto/main** | CartoDB org members made intentional changes |
-            | 2 | `carto_*.yaml`, `carto-*.yml` | **KEEP carto/main** | CARTO workflows |
-            | 3 | `CARTO_*.md` | **KEEP carto/main** | CARTO docs |
-            | 4 | Files in UPSTREAM-ONLY list above | Accept HEAD (upstream) | No CARTO changes |
-            | 5 | `pyproject.toml` | Merge carefully | Upstream version + CARTO deps |
-            | 6 | `Dockerfile`, `Makefile` | Merge carefully | Keep `# CARTO:` sections |
-
-            ## CARTO Customizations for Conflicted Files
-
-            The workflow has analyzed ${{ steps.carto-context.outputs.total-prs }} merged PRs to carto/main.
-
-            **Read these files for CARTO context:**
-            - `/tmp/carto_pr_context.md` - Detailed context for each CARTO-modified conflicted file
-            - `/tmp/carto_pr_table.md` - Summary table of all CARTO PRs
+            Before resolving ANY conflicts, check for fix loops:
 
             ```bash
-            # Read CARTO context for conflicted files
-            cat /tmp/carto_pr_context.md
-
-            # Read summary of all CARTO PRs (if needed)
-            cat /tmp/carto_pr_table.md
+            cat /tmp/pr_comments.md | grep -iE "Added.*function|Added.*from upstream|sync.*file|ImportError|cannot import|fix:" | head -20
             ```
 
-            **To get full details about a specific PR (description, discussion, files):**
+            **If same file appears 3+ times in previous fixes → SYNC ENTIRE FILE from upstream TAG:**
+            ```bash
+            # Use HEAD which already has the upstream TAG content
+            git show HEAD:path/to/problematic_file.py > path/to/problematic_file.py
+            git add path/to/problematic_file.py
+            ```
+
+            This breaks the loop by accepting the complete upstream TAG version.
+
+            ---
+
+            ## CARTO FEATURES TO PRESERVE
+
+            These are the INTENTIONAL CARTO customizations from merged PRs.
+            **Preserve the BEHAVIOR, not necessarily the exact file versions.**
+
+            Read the feature context:
+            ```bash
+            cat /tmp/carto_features.md
+            ```
+
+            And the file-to-PR mapping (shows which PRs touched which conflicted files):
+            ```bash
+            cat /tmp/carto_file_mapping.md
+            ```
+
+            For detailed PR information:
             ```bash
             gh pr view <PR_NUMBER> --repo ${{ github.repository }}
             ```
 
-            ## Step 3: Resolve Each File (CARTO-FIRST)
+            ---
 
-            For EACH conflicted file:
+            ## SYNC-REQUIRED FILES (Always Accept Upstream TAG)
 
-            ### If file is in CARTO-MODIFIED list:
-            1. **Read** the file
-            2. **KEEP the CARTO version** (after `=======`, before `>>>>>>> carto/main`)
-            3. **ALSO check if upstream added NEW code** that doesn't conflict with CARTO fix
-            4. **Merge BOTH** if possible: Keep CARTO fix + add non-conflicting upstream additions
+            These files MUST match upstream regardless of CARTO history:
 
-            ### If file is in UPSTREAM-ONLY list:
-            1. **Read** the file
-            2. **Accept upstream version** (after `<<<<<<< HEAD`, before `=======`)
-            3. Remove conflict markers
+            | File | Reason |
+            |------|--------|
+            | `schema.prisma` | Database schema MUST match LiteLLM code |
+            | `litellm/proxy/schema.prisma` | Prisma schema |
 
-            ### Correct Merge Example (keeping BOTH):
-            ```python
-            # CORRECT: Keep CARTO fix, add upstream feature
-            def process(self, data):
-                # CARTO fix: Handle null metadata (PRESERVED)
-                if data.get('metadata') is None:
-                    data['metadata'] = {}
-                # New upstream feature (ADDED)
-                if data.get('new_flag'):
-                    self.handle_new_flag(data)
-                return self.transform(data)
-            ```
-
-            ### WRONG Merge (losing CARTO code):
-            ```python
-            # WRONG: Lost CARTO fix, only kept upstream
-            def process(self, data):
-                # CARTO fix is GONE - this is WRONG!
-                if data.get('new_flag'):
-                    self.handle_new_flag(data)
-                return self.transform(data)
-            ```
-
-            ## Step 4: Run Tests
-
-            After resolving ALL files:
-
+            For these files, accept the upstream TAG version:
             ```bash
-            # Verify no conflict markers remain
-            grep -r "^<<<<<<< \|^=======\|^>>>>>>>" --include="*.py" litellm/ tests/ || echo "✅ No conflict markers found"
-
-            # Install deps and run tests
-            make install-dev
-            make lint
-            make lint-mypy
+            git checkout --ours <file>  # --ours = HEAD = upstream TAG
+            git add <file>
             ```
-
-            Fix any errors that occur.
-
-            ## Step 5: Confirm Completion
-
-            When ALL files are resolved and tests pass, say:
-
-            **"RESOLUTION COMPLETE"**
-
-            The workflow will then:
-            1. Stage all changes (`git add -A`)
-            2. Create merge commit (`git commit`)
-            3. Push directly to the sync branch (this PR will update automatically!)
 
             ---
 
-            **REMEMBER: CARTO code is INTENTIONAL. Preserve it. Begin resolving conflicts now!**
+            ## CONFLICTED FILES (${{ steps.carto-context.outputs.conflict-count }} files)
+
+            ```bash
+            git diff --name-only --diff-filter=U
+            ```
+
+            ---
+
+            ## RESOLUTION STRATEGY
+
+            For each conflicted file, YOU DECIDE based on:
+
+            | Pattern | Strategy |
+            |---------|----------|
+            | File implements a CARTO feature (check /tmp/carto_file_mapping.md) | Merge carefully - preserve feature code |
+            | File is pure upstream (core lib, tests, no CARTO PRs) | Accept upstream: `git checkout --ours <file>` |
+            | File has both CARTO and upstream changes | Merge BOTH - keep CARTO + add upstream |
+            | ImportError for missing function | Check if in fix loop → sync entire file from HEAD |
+            | TypeScript module not found | Check if file path changed in upstream TAG |
+            | File in `_experimental/out/` or `node_modules/` | Accept upstream (build artifacts) |
+
+            ## KEY PRINCIPLE
+
+            **Upstream TAG code WORKS** - it's from a tested stable release. If something is "missing",
+            the conflict resolver probably kept an old carto/main version instead of the new upstream TAG.
+
+            When in doubt: Compare file sizes. Bigger = usually newer = probably correct.
+
+            ---
+
+            ## ERROR PATTERN REFERENCE
+
+            | Error Pattern | Root Cause | Fix |
+            |--------------|------------|-----|
+            | `Type error: Expected X arguments` | Function signature changed in upstream | Update call site OR sync file |
+            | `Cannot find module 'X'` | File renamed/moved in upstream TAG | Update import path |
+            | `ImportError: cannot import name 'X'` | File outdated, missing upstream changes | `git show HEAD:<file> > <file>` |
+            | `'Prisma' object has no attribute` | schema.prisma out of sync | `git checkout --ours schema.prisma` |
+            | `SyntaxError` | Conflict markers left in file | Search for `<<<<<<<` |
+            | `AssertionError` in tests | Test expects old behavior | Update test expectation |
+
+            ---
+
+            ## GIT COMMANDS REFERENCE
+
+            ```bash
+            # Accept upstream TAG version (HEAD/--ours):
+            git checkout --ours path/to/file.py
+            git add path/to/file.py
+
+            # Accept CARTO version (--theirs):
+            git checkout --theirs path/to/file.py
+            git add path/to/file.py
+
+            # View upstream TAG version without replacing:
+            git show HEAD:path/to/file.py | head -50
+
+            # View CARTO version without replacing:
+            git show carto/main:path/to/file.py | head -50
+            ```
+
+            ---
+
+            ## VERIFICATION (Before Saying Done)
+
+            Run Docker build to catch ALL errors at once:
+            ```bash
+            docker build -f docker/Dockerfile.non_root . 2>&1 | tail -100
+            ```
+
+            Iterate until success:
+            1. Fix error
+            2. Run Docker build again
+            3. Repeat until no errors
+
+            Also run:
+            ```bash
+            # Check no conflict markers remain
+            grep -rE "^(<{7}|>{7}|={7})[[:space:]]" --include="*.py" --include="*.ts" litellm/ tests/ || echo "✅ No markers"
+
+            # Quick lint check
+            make lint-ruff || true
+            ```
+
+            ---
+
+            ## WORKFLOW HANDLES THESE (DO NOT RUN)
+
+            - ❌ `git commit` - Workflow does this
+            - ❌ `git push` - Workflow does this
+            - ❌ `gh pr create` - Not needed, pushing to existing PR
+
+            ---
+
+            ## SAY "RESOLUTION COMPLETE" WHEN DONE
+
+            When all conflicts are resolved and verification passes, say exactly:
+
+            **"RESOLUTION COMPLETE"**
+
+            The workflow will then stage, commit, and push to this PR.
 
         env:
           ANTHROPIC_VERTEX_PROJECT_ID: carto-ci-resources

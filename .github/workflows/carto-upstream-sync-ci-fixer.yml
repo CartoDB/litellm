@@ -234,6 +234,19 @@ jobs:
           echo "=== All Extracted Errors ==="
           cat /tmp/all_errors.txt
 
+          # Output which CI workflows failed (for targeted verification)
+          if [ -n "$DOCKER_RUN" ] && [ "$DOCKER_RUN" != "null" ]; then
+            echo "docker-failed=true" >> $GITHUB_OUTPUT
+          else
+            echo "docker-failed=false" >> $GITHUB_OUTPUT
+          fi
+
+          if [ -n "$TESTS_RUN" ] && [ "$TESTS_RUN" != "null" ]; then
+            echo "tests-failed=true" >> $GITHUB_OUTPUT
+          else
+            echo "tests-failed=false" >> $GITHUB_OUTPUT
+          fi
+
           echo "::endgroup::"
 
       - name: Comment on PR - Starting Fix
@@ -358,491 +371,173 @@ jobs:
           show_full_output: true
           claude_args: "--model claude-opus-4-5@20251101 --max-turns 200 --allowedTools Read,Write,Edit,Bash,Grep,Glob"
           prompt: |
-            # CI Failure Auto-Fix Session
+            # CI Failure Auto-Fix
+
+            ## YOUR PRIMARY GOAL
+
+            **Make CI pass.** Fix the errors, verify locally, push, and end session.
+
+            ---
+
+            ## CONTEXT
 
             **PR:** #${{ needs.check-ci-status.outputs.pr-number }}
             **Branch:** `${{ needs.check-ci-status.outputs.branch-name }}`
+            **Docker Build Failed:** ${{ steps.extract-errors.outputs.docker-failed }}
+            **Mock Tests Failed:** ${{ steps.extract-errors.outputs.tests-failed }}
+
+            **Key insight:** The upstream TAG code is TESTED and WORKING. If something is "missing",
+            the conflict resolver likely kept an old carto/main version instead of the new upstream TAG.
 
             ---
 
-            ## 🧭 CONTEXT: UNDERSTAND THE BIG PICTURE
+            ## STEP 0: FIX LOOP DETECTION (DO THIS FIRST!)
 
-            **What you're doing:** Fixing CI failures in an upstream sync PR that merges BerriAI/litellm
-            into CartoDB/litellm.
-
-            **Why failures happen:** These are NOT bugs in the upstream code. The upstream stable tag
-            is already tested and working. Failures occur because:
-
-            1. **The conflict resolver may have incorrectly kept OLD carto/main versions** of files
-               instead of accepting NEW upstream versions (missing functions, classes, modules)
-            2. **CARTO customizations may conflict** with new upstream code (signature changes, imports)
-            3. **Files may have been partially merged** leaving some content from both versions
-
-            **Your mindset should be:**
-            - The upstream code is CORRECT - it works in the stable release
-            - If something is "missing", it was likely dropped during conflict resolution
-            - ImportErrors and ModuleNotFoundErrors usually mean a file needs to be synced from upstream
-            - Think about WHY something is missing, not just how to patch it
-
-            **The goal:** Bring upstream's latest features to CARTO without breaking CARTO customizations.
-            This means:
-            - Accept upstream code for files CARTO doesn't customize
-            - Preserve CARTO code for files CARTO DOES customize
-            - When both exist, merge them intelligently
-
-            **Avoid fix loops:** If you see the same file being patched repeatedly (adding one function
-            at a time), STOP and sync the entire file from upstream instead.
-
-            ---
-
-            ## 🚨 IMPORTANT: HOW THIS WORKS
-
-            **DO NOT wait for CI to run.** Your job is simple:
-
-            1. **READ** the CI failure logs (already extracted for you)
-            2. **UNDERSTAND** the error by reading the relevant code
-            3. **PLAN** a fix
-            4. **IMPLEMENT** the fix
-            5. **PUSH** and **END SESSION**
-
-            **FEEDBACK LOOP:** After you push, CI will run automatically. If it fails again,
-            this workflow triggers a NEW session with the NEW error logs. You don't wait -
-            each session is one fix attempt.
-
-            ---
-
-            ## 🎯 PRIORITIES (in order)
-
-            1. **FIX CI** - The main goal is making CI pass
-            2. **PRESERVE BOTH** - Try to keep both CARTO customizations AND upstream code working together
-            3. **MERGE INTELLIGENTLY** - If there's a conflict between CARTO and upstream, find a solution that keeps both
-            4. **LAST RESORT** - Only revert CARTO changes or skip tests if no other option exists
-
-            ---
-
-            ## 🧠 STOP AND THINK: CHECK FOR FIX LOOPS (CRITICAL!)
-
-            **BEFORE fixing anything, check the PR comments to see previous fix attempts:**
+            Check for fix loops before doing anything:
 
             ```bash
-            gh pr view ${{ needs.check-ci-status.outputs.pr-number }} --repo ${{ github.repository }} --comments | grep -A 10 "Fixes Applied\|Fix Applied\|Added.*function\|Added.*from upstream"
+            cat /tmp/pr_comments.md | grep -iE "Added.*function|sync.*file|ImportError|fix:" | head -15
             ```
 
-            **If you see the SAME FILE mentioned in multiple previous fixes, you are in a FIX LOOP.**
-
-            **Example of a fix loop (DETECT THIS!):**
-            - Attempt #1: Added `function_a` to `common_utils.py`
-            - Attempt #2: Added `function_b` to `common_utils.py`
-            - Attempt #3: Added `function_c` to `common_utils.py`  ← THIS IS A LOOP!
-
-            **ROOT CAUSE:** The conflict resolver may have INCORRECTLY kept the OLD carto/main version
-            of a file instead of the NEW upstream version. This causes ImportErrors for every
-            function/class that was added in upstream but is missing in the old version.
-
-            **SOLUTION: Sync the ENTIRE file from upstream instead of patching:**
-
+            **If same file appears 3+ times → SYNC ENTIRE FILE from upstream TAG:**
             ```bash
-            # FIRST: Add upstream remote if not already added
-            git remote add upstream https://github.com/BerriAI/litellm.git 2>/dev/null || true
-            git fetch upstream main
-
-            # THEN: Compare line counts to confirm upstream has more content
-            echo "Upstream:" && git show upstream/main:path/to/problematic_file.py | wc -l
-            echo "Current:" && wc -l < path/to/problematic_file.py
-
-            # IF upstream has more lines, sync the ENTIRE file:
-            git show upstream/main:path/to/problematic_file.py > path/to/problematic_file.py
+            # ORIG_HEAD = upstream TAG version (pre-merge state)
+            git show ORIG_HEAD:path/to/problematic_file.py > path/to/problematic_file.py
+            git add path/to/problematic_file.py
             ```
-
-            **This fixes ALL missing functions/classes at once and breaks the loop.**
 
             ---
 
-            ## 🔄 UPSTREAM SYNC ISSUES: FILES WITH PARTIAL CONTENT
-
-            **The conflict resolver may have INCORRECTLY kept the OLD carto/main version of files
-            instead of the NEW upstream version. This causes ImportErrors for missing functions.**
-
-            **DETECTION:** When you see `ImportError: cannot import name 'X' from 'module'`:
-
-            1. **Add upstream remote and compare file sizes:**
-            ```bash
-            git remote add upstream https://github.com/BerriAI/litellm.git 2>/dev/null || true
-            git fetch upstream main
-
-            echo "Upstream:" && git show upstream/main:path/to/file.py | wc -l
-            echo "Current:" && wc -l < path/to/file.py
-            ```
-
-            2. **If upstream has significantly MORE lines (>50), sync the ENTIRE file:**
-            ```bash
-            git show upstream/main:path/to/file.py > path/to/file.py
-            ```
-
-            3. **Files commonly affected by this bug:**
-            - `litellm/constants.py` (often 200+ lines missing)
-            - `litellm/llms/vertex_ai/common_utils.py` (often 300+ lines missing)
-            - `litellm/types/utils.py`
-            - `litellm/llms/bedrock/common_utils.py`
-
-            **WHY THIS HAPPENS:** Previous upstream sync PRs touched these files, which caused them
-            to be incorrectly classified as "CARTO-modified". The resolver then kept the old version
-            instead of accepting the new upstream version.
-
-            **IMPORTANT:** If a file is NOT in the CARTO-modified list, it's safe to sync entirely from upstream.
-
-            ---
-
-            ## 📋 CARTO-MODIFIED FILES REFERENCE
-
-            **Check if failing files are CARTO-modified:**
+            ## STEP 1: READ CI LOGS
 
             ```bash
-            # List of files modified by CARTO PRs (preserve these changes!)
-            if [ -f /tmp/carto-analysis/carto_files.txt ]; then
-              echo "CARTO-modified files ($(wc -l < /tmp/carto-analysis/carto_files.txt) total):"
-              head -50 /tmp/carto-analysis/carto_files.txt
-            else
-              echo "No CARTO analysis available"
+            # Read Docker build errors (if Docker failed)
+            if [ -s /tmp/docker_full_log.txt ]; then
+              echo "=== DOCKER BUILD ERRORS (filtered) ==="
+              # Show errors, warnings, and failed lines
+              grep -iE "error|failed|Error:|TypeError|ImportError|ModuleNotFound|Cannot find" /tmp/docker_full_log.txt | tail -50
+              echo ""
+              echo "=== DOCKER BUILD LOG (last 100 lines for context) ==="
+              tail -100 /tmp/docker_full_log.txt
             fi
 
-            # Check if a specific failing file is CARTO-modified:
-            # grep "path/to/failing/file.py" /tmp/carto-analysis/carto_files.txt
+            # Read test errors (if tests failed)
+            if [ -s /tmp/tests_full_log.txt ]; then
+              echo ""
+              echo "=== MOCK TEST ERRORS (filtered) ==="
+              grep -iE "FAILED|ERROR|AssertionError|ImportError|Exception" /tmp/tests_full_log.txt | tail -30
+              echo ""
+              echo "=== TEST LOG (last 100 lines for context) ==="
+              tail -100 /tmp/tests_full_log.txt
+            fi
             ```
-
-            **Decision matrix:**
-            | File in CARTO list? | Fix Strategy |
-            |---------------------|--------------|
-            | YES | Preserve CARTO code, fix around it |
-            | NO | Accept upstream, fix imports/signatures |
 
             ---
 
-            ## STEP 1: READ THE CI FAILURE LOGS
+            ## STEP 2: TARGETED VERIFICATION
 
-            The CI logs have been pre-extracted. **Read them completely:**
+            **Run the verification that matches the failed CI:**
 
+            ### If Docker Build Failed:
             ```bash
-            echo "============================================"
-            echo "=== STEP 1: READING CI FAILURE LOGS ==="
-            echo "============================================"
-
-            echo ""
-            echo "--- DOCKER BUILD LOG (last 50 lines - actual errors) ---"
-            tail -500 /tmp/docker_full_log.txt
-
-            echo ""
-            echo "--- MOCK TESTS LOG (Python errors) ---"
-            cat /tmp/tests_full_log.txt
-            ```
-
-            **IMPORTANT:** Read these logs carefully. Extract:
-            - The exact error message
-            - The file path and line number
-            - The context around the error
-
-            ---
-
-            ## 🐳 DOCKER BUILD: ITERATIVE FIX & VERIFY
-
-            **Use Docker build to verify your fixes. This catches ALL errors - not just the first one.**
-
-            ```bash
-            # Run Docker build to see ALL current errors
             docker build -f docker/Dockerfile.non_root . 2>&1 | tail -100
             ```
 
-            **Iterative fix loop:**
-            1. Run Docker build → See error
-            2. Fix the error
-            3. Run Docker build again → See next error (or success)
-            4. Repeat until build succeeds
-            5. Commit ALL fixes together
-
-            **This is the most reliable approach** because:
-            - You see the EXACT same errors as CI
-            - You catch ALL errors, not just the first one
-            - You verify fixes before pushing
-
-            **Note:** Docker build takes ~5-10 minutes. For faster iteration on UI errors only:
+            For UI-only errors (faster):
             ```bash
             cd ui/litellm-dashboard && npm install --legacy-peer-deps && npm run build 2>&1 | tail -50
             ```
 
-            ---
-
-            ## STEP 2: READ THE FAILING CODE
-
-            After identifying the error location from the logs, **read the actual source file:**
-
+            ### If Mock Tests Failed:
             ```bash
-            # Example: If error is in ui/litellm-dashboard/src/components/Foo.tsx:42
-            cat ui/litellm-dashboard/src/components/Foo.tsx
-
-            # Example: If error is ImportError for 'some_function' in litellm/proxy/utils.py
-            cat litellm/proxy/utils.py
+            pip install -e ".[dev]" -q
+            pytest tests/test_litellm/ -v --tb=short 2>&1 | tail -100
             ```
 
-            **Understand the code context before making changes.**
+            **Iterate:** Fix error → Run verification → Repeat until success.
 
             ---
 
-            ## STEP 3: CHECK WHAT UPSTREAM AND CARTO HAVE (for merge issues)
+            ## ERROR PATTERN REFERENCE
 
-            If the error is due to missing code, modules, or merge conflicts:
+            | Error Pattern | Root Cause | Fix |
+            |--------------|------------|-----|
+            | `ImportError: cannot import name 'X'` | File outdated | `git show ORIG_HEAD:<file> > <file>` |
+            | `Cannot find module 'X'` | File missing/renamed | Check ORIG_HEAD or carto/main |
+            | `Type error: Expected X arguments` | Signature changed | Update call site |
+            | `'Prisma' object has no attribute` | schema.prisma outdated | `git show ORIG_HEAD:schema.prisma > schema.prisma` |
+            | `SyntaxError` | Conflict markers | Search for `<<<<<<<` |
+            | `FAILED tests/...` | Test assertion | Update test expectation |
+
+            ---
+
+            ## GIT COMMANDS REFERENCE
 
             ```bash
-            # Fetch both remotes - IMPORTANT!
-            git fetch origin carto/main
-            git remote add upstream https://github.com/BerriAI/litellm.git 2>/dev/null || true
-            git fetch upstream main
+            # Get upstream TAG version (ORIG_HEAD = pre-merge state):
+            git show ORIG_HEAD:path/to/file.py > path/to/file.py
 
-            # See what carto/main has
-            git show origin/carto/main:path/to/file.py 2>/dev/null | head -100
+            # Get carto/main version:
+            git checkout origin/carto/main -- path/to/file.py
 
-            # See what upstream has
-            git show upstream/main:path/to/file.py 2>/dev/null | head -100
+            # Compare file sizes:
+            echo "TAG:" && git show ORIG_HEAD:path/to/file.py 2>/dev/null | wc -l
+            echo "Current:" && wc -l < path/to/file.py
 
-            # Compare folder contents across all three branches
-            echo "=== CARTO/MAIN ==="
-            git ls-tree --name-only origin/carto/main path/to/folder/
-            echo "=== UPSTREAM/MAIN ==="
-            git ls-tree --name-only upstream/main path/to/folder/
-            echo "=== CURRENT BRANCH ==="
-            git ls-tree --name-only HEAD path/to/folder/
+            # Check if file is CARTO-modified:
+            grep "path/to/file.py" /tmp/carto-analysis/carto_files.txt
             ```
+
+            **Decision:**
+            - File in CARTO list? → Preserve CARTO code, fix around it
+            - File NOT in CARTO list? → Safe to sync from ORIG_HEAD
 
             ---
 
-            ## 🔍 STEP 3.5: TROUBLESHOOTING - COMPARE BRANCH STATES
+            ## STEP 3: FIX AND VERIFY
 
-            **CRITICAL:** For "Cannot find module" or "ImportError" errors, ALWAYS compare branches first!
-
-            | Error Pattern | Root Cause | Fix Location |
-            |--------------|------------|--------------|
-            | `Type error: Expected X arguments` | TypeScript function signature mismatch | `ui/litellm-dashboard/src/` |
-            | `Cannot find module` | Missing import in UI | `ui/litellm-dashboard/src/` |
-            | `Failed to compile` | Next.js build error | `ui/litellm-dashboard/src/` |
-            | `ImportError` / `ModuleNotFoundError` | Python import missing | `litellm/` or `tests/` |
-            | `SyntaxError` | Conflict markers or bad merge | Check for `<<<<<<<` markers |
-            | `FAILED tests/...` | Test assertion failure | `tests/` - fix test expectations |
-            | `AssertionError` | Test expecting wrong value | Update test to match CARTO behavior |
-            | `'Prisma' object has no attribute` | **schema.prisma missing tables** | Sync `schema.prisma` from upstream |
-            | `AttributeError: 'Prisma'` | **schema.prisma out of sync** | Sync `schema.prisma` from upstream |
-
-            ### Decision Matrix for Missing Files
-
-            | Scenario | Fix |
-            |----------|-----|
-            | File exists on carto/main but NOT on sync branch | **Restore it:** `git checkout origin/carto/main -- <path>` |
-            | File exists on upstream with DIFFERENT path | **Update import:** Change import to use new path |
-            | File was renamed in upstream | **Update all imports** to use new name |
-            | CARTO file depends on missing CARTO file | **Restore CARTO dependencies** from origin/carto/main |
-
-            ### Example: Restoring Missing TypeScript Files
-
-            If error is "Cannot find module './chat_ui/llm_calls/fetch_models'":
-
-            ```bash
-            # Check what carto/main has in that folder
-            git ls-tree origin/carto/main ui/litellm-dashboard/src/components/chat_ui/llm_calls/
-
-            # If file exists on carto/main but missing here, restore it:
-            git checkout origin/carto/main -- ui/litellm-dashboard/src/components/chat_ui/llm_calls/fetch_models.tsx
-
-            # Or restore the entire folder if multiple files are missing:
-            git checkout origin/carto/main -- ui/litellm-dashboard/src/components/chat_ui/llm_calls/
-            ```
-
-            ### Example: Restoring Missing Python Functions
-
-            If error is "ImportError: cannot import name 'some_function'":
-
-            ```bash
-            # Check if carto/main has this function
-            git show origin/carto/main:litellm/proxy/utils.py | grep -A 20 "def some_function"
-
-            # If it exists, restore the file from carto/main
-            git checkout origin/carto/main -- litellm/proxy/utils.py
-            ```
-
-            ### For Schema/Prisma Errors
-
-            If you see errors like:
-            - `'Prisma' object has no attribute 'litellm_agentstable'`
-            - `AttributeError: 'Prisma' object has no attribute`
-
-            This means `schema.prisma` is missing tables from upstream. **This is a CRITICAL issue.**
-
-            **Fix:**
-            ```bash
-            # Check current vs upstream table count
-            echo "Current tables: $(grep -c '^model ' schema.prisma)"
-            echo "Upstream tables: $(git show upstream/main:schema.prisma | grep -c '^model ')"
-
-            # Sync the entire schema from upstream
-            git show upstream/main:schema.prisma > schema.prisma
-
-            # Or from the current branch's origin (which should have upstream content)
-            git show origin/HEAD:schema.prisma > schema.prisma
-            ```
-
-            **Required tables that MUST exist:**
-            - LiteLLM_AgentsTable
-            - LiteLLM_SSOConfig
-            - LiteLLM_CacheConfig
-            - LiteLLM_ManagedVectorStoreIndexTable
-            - LiteLLM_UISettings
-            - LiteLLM_SkillsTable
+            1. Read the failing file
+            2. Apply fix
+            3. Run targeted verification (Docker or pytest)
+            4. Repeat until verification passes
 
             ---
 
-            ## STEP 4: PLAN YOUR FIX
-
-            Before coding, decide on the approach:
-
-            | Error Type | Best Fix Approach |
-            |------------|-------------------|
-            | **Cannot find module** | Check if file exists on carto/main → Restore with `git checkout origin/carto/main -- <path>` |
-            | **ImportError (Python)** | Check if function exists on carto/main → Restore file or add function |
-            | Missing function/class | Restore from carto/main OR upstream, whichever has it |
-            | TypeScript type mismatch | Update call site to match function signature |
-            | Import error | Add the missing import statement |
-            | Merge conflict markers | Remove markers, merge both versions intelligently |
-            | Test assertion failure | Update test OR fix code to match expected behavior |
-            | **Schema/Prisma error** | Sync `schema.prisma` from upstream (see above) |
-
-            ---
-
-            ## STEP 5: IMPLEMENT THE FIX
-
-            Make the necessary code changes using Edit/Write tools.
-
-            **For TypeScript errors:** UI code is in `ui/litellm-dashboard/src/`
-            **For Python errors:** Main code in `litellm/`, tests in `tests/`
-
-            ---
-
-            ## STEP 6: COMMIT AND PUSH (then END SESSION)
-
-            **CRITICAL:** All CI fixes MUST be in ONE commit. Always amend if a previous CI fix exists.
+            ## STEP 4: COMMIT AND PUSH
 
             ```bash
             git add -A
-            git status
 
-            # Check if last commit was a CI fix (to amend it)
-            # Note: claude-code-action commits as "claude[bot]", not "Cartofante"
-            LAST_COMMIT_MSG=$(git log -1 --pretty=%s)
-            LAST_COMMIT_AUTHOR=$(git log -1 --pretty=%an)
+            LAST_MSG=$(git log -1 --pretty=%s)
+            LAST_AUTHOR=$(git log -1 --pretty=%an)
 
-            echo "Last commit: '$LAST_COMMIT_MSG' by '$LAST_COMMIT_AUTHOR'"
-
-            # Match CI fix commits from either claude[bot] or Cartofante
-            if [[ "$LAST_COMMIT_MSG" == fix\(ci\):* ]] && [[ "$LAST_COMMIT_AUTHOR" == "claude[bot]" || "$LAST_COMMIT_AUTHOR" == "Cartofante" ]]; then
-              echo "✅ Found previous CI fix commit - AMENDING..."
+            if [[ "$LAST_MSG" == fix\(ci\):* ]] && [[ "$LAST_AUTHOR" == "claude[bot]" || "$LAST_AUTHOR" == "Cartofante" ]]; then
               git commit --amend --no-edit
               git push --force-with-lease origin ${{ needs.check-ci-status.outputs.branch-name }}
-              echo "Amended and pushed successfully"
             else
-              echo "📝 No previous CI fix commit - creating new one..."
-              git commit -m "fix(ci): resolve CI failures from upstream sync
-
-            Automated fix by Claude Code.
-            "
+              git commit -m "fix(ci): resolve CI failures from upstream sync"
               git push origin ${{ needs.check-ci-status.outputs.branch-name }}
-              echo "Committed and pushed successfully"
             fi
             ```
 
-            **After pushing, your session is DONE.** CI will run, and if it fails again,
-            a new session will start with the new error logs. All fixes will be amended into ONE commit.
-
             ---
 
-            ## STEP 7: COMMENT ON PR
+            ## STEP 5: COMMENT ON PR
 
             ```bash
             gh pr comment ${{ needs.check-ci-status.outputs.pr-number }} --repo ${{ github.repository }} --body "## 🔧 CI Fix Applied
 
-            **Error Fixed:**
-            \`\`\`
-            [PASTE EXACT ERROR]
-            \`\`\`
-
-            **Fix Applied:**
-            - File: \`[FILE PATH]\`
-            - Change: [DESCRIPTION]
-
-            **Verification:** Pushed to branch, CI will re-run automatically.
-
-            ---
-            _Attempt #[N] - If this fails, I'll analyze the new errors and try again._"
+            **Error:** [ONE LINE SUMMARY]
+            **Fix:** [FILE:LINE] - [WHAT CHANGED]
+            **Verification:** [Docker build / pytest] passed locally"
             ```
 
             ---
 
-            ## DECISION TREE
+            ## SAY "FIX COMPLETE" WHEN DONE
 
-            ```
-            START
-              │
-              ├─► Check PR status (gh pr checks)
-              │
-              ├─► Is Docker Build failing?
-              │     │
-              │     └─► YES: Get Docker logs → Find TypeScript error → Fix in ui/litellm-dashboard/
-              │
-              ├─► Are Mock Tests failing?
-              │     │
-              │     └─► YES: Get test logs → Find failing test → Fix test expectations (not CARTO code)
-              │
-              ├─► Are there conflict markers?
-              │     │
-              │     └─► YES: Remove markers, keep CARTO version
-              │
-              └─► Commit & Push → CI re-runs → If fails, this workflow runs again
-            ```
-
-            ---
-
-            ## EXAMPLES
-
-            ### Example 1: TypeScript Function Signature Error
-
-            **Error:** `Type error: Expected 0 arguments, but got 1`
-            **File:** `ui/litellm-dashboard/src/.../PriceDataManagementTab.tsx:28`
-            **Code:** `const data = await modelCostMap(accessToken);`
-
-            **Fix Process:**
-            1. Find function definition: `grep -rn "modelCostMap" ui/litellm-dashboard/src/`
-            2. Check signature: `export const modelCostMap = async (): Promise<...>`
-            3. Fix call: Remove the argument → `const data = await modelCostMap();`
-
-            ### Example 2: Python Test Assertion Error
-
-            **Error:** `AssertionError: assert 'old_value' == 'new_carto_value'`
-            **File:** `tests/test_something.py::test_feature`
-
-            **Fix Process:**
-            1. CARTO intentionally changed the behavior
-            2. Update test: `assert result == 'new_carto_value'`
-            3. Add comment: `# CARTO: Updated for new behavior`
-
-            ---
-
-            ## 🚀 NOW START!
-
-            **Execute these steps in order:**
-
-            1. **READ LOGS** - `cat /tmp/docker_full_log.txt` and `cat /tmp/tests_full_log.txt`
-            2. **READ CODE** - Read the files mentioned in the error
-            3. **UNDERSTAND** - What's the root cause?
-            4. **FIX** - Make the code change
-            5. **PUSH** - Commit and push
-            6. **DONE** - End session. CI will run. If it fails, new session starts.
-
-            **Remember:** You are NOT waiting for CI. Push your fix and end the session.
+            After pushing, say **"FIX COMPLETE"** and end session.
+            CI will run. If it fails again, a new session starts with new error logs.
         env:
           ANTHROPIC_VERTEX_PROJECT_ID: carto-ci-resources
           CLOUD_ML_REGION: global
