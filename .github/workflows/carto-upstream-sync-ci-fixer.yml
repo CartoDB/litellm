@@ -427,6 +427,34 @@ jobs:
 
             ---
 
+            ## 🐳 DOCKER BUILD: ITERATIVE FIX & VERIFY
+
+            **Use Docker build to verify your fixes. This catches ALL errors - not just the first one.**
+
+            ```bash
+            # Run Docker build to see ALL current errors
+            docker build -f docker/Dockerfile.non_root . 2>&1 | tail -100
+            ```
+
+            **Iterative fix loop:**
+            1. Run Docker build → See error
+            2. Fix the error
+            3. Run Docker build again → See next error (or success)
+            4. Repeat until build succeeds
+            5. Commit ALL fixes together
+
+            **This is the most reliable approach** because:
+            - You see the EXACT same errors as CI
+            - You catch ALL errors, not just the first one
+            - You verify fixes before pushing
+
+            **Note:** Docker build takes ~5-10 minutes. For faster iteration on UI errors only:
+            ```bash
+            cd ui/litellm-dashboard && npm install --legacy-peer-deps && npm run build 2>&1 | tail -50
+            ```
+
+            ---
+
             ## STEP 2: READ THE FAILING CODE
 
             After identifying the error location from the logs, **read the actual source file:**
