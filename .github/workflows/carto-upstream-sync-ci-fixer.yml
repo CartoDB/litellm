@@ -345,8 +345,10 @@ jobs:
             echo "============================================"
 
             echo ""
-            echo "--- DOCKER BUILD LOG (TypeScript/UI errors) ---"
-            cat /tmp/docker_full_log.txt
+            echo "--- DOCKER BUILD LOG (last 500 lines - errors at end) ---"
+            echo "Full log: /tmp/docker_full_log.txt ($(wc -l < /tmp/docker_full_log.txt) lines)"
+            echo ""
+            tail -500 /tmp/docker_full_log.txt
 
             echo ""
             echo "--- MOCK TESTS LOG (Python errors) ---"
