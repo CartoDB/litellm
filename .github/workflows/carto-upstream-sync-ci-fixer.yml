@@ -364,6 +364,36 @@ jobs:
 
             ---
 
+            ## 🧭 CONTEXT: UNDERSTAND THE BIG PICTURE
+
+            **What you're doing:** Fixing CI failures in an upstream sync PR that merges BerriAI/litellm
+            into CartoDB/litellm.
+
+            **Why failures happen:** These are NOT bugs in the upstream code. The upstream stable tag
+            is already tested and working. Failures occur because:
+
+            1. **The conflict resolver may have incorrectly kept OLD carto/main versions** of files
+               instead of accepting NEW upstream versions (missing functions, classes, modules)
+            2. **CARTO customizations may conflict** with new upstream code (signature changes, imports)
+            3. **Files may have been partially merged** leaving some content from both versions
+
+            **Your mindset should be:**
+            - The upstream code is CORRECT - it works in the stable release
+            - If something is "missing", it was likely dropped during conflict resolution
+            - ImportErrors and ModuleNotFoundErrors usually mean a file needs to be synced from upstream
+            - Think about WHY something is missing, not just how to patch it
+
+            **The goal:** Bring upstream's latest features to CARTO without breaking CARTO customizations.
+            This means:
+            - Accept upstream code for files CARTO doesn't customize
+            - Preserve CARTO code for files CARTO DOES customize
+            - When both exist, merge them intelligently
+
+            **Avoid fix loops:** If you see the same file being patched repeatedly (adding one function
+            at a time), STOP and sync the entire file from upstream instead.
+
+            ---
+
             ## 🚨 IMPORTANT: HOW THIS WORKS
 
             **DO NOT wait for CI to run.** Your job is simple:
