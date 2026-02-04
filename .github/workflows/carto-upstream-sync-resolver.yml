@@ -1194,9 +1194,9 @@ jobs:
           > _Squashing destroys upstream history and breaks future syncs (see PR #26)._"
           echo "[Resolver] ✅ Merge warning comment added"
 
-  # Job 4: Verify-only mode - Check CARTO features without conflict resolution
+  # Job 4: Verify-only mode - Check CARTO LiteLLM code features are preserved
   verify-carto-features:
-    name: Verify CARTO Features Only
+    name: Verify CARTO LiteLLM Code Features
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: [security-check, check-eligibility]
@@ -1230,11 +1230,12 @@ jobs:
         run: |
           gh pr comment ${{ needs.check-eligibility.outputs.pr-number }} \
             --repo ${{ github.repository }} \
-            --body "## 🔍 CARTO Feature Verification Started
+            --body "## 🔍 CARTO LiteLLM Code Feature Verification
 
           **Mode:** Verify-only (no conflict resolution)
 
-          Checking if CARTO features are preserved in the current PR state.
+          Checking if CARTO code features in \`litellm/\` and \`tests/\` are preserved.
+          Features are dynamically extracted from merged CARTO PRs.
 
           [View workflow run →](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
 
@@ -1263,28 +1264,35 @@ jobs:
             > "${OUTPUT_PATH}/all_prs.json" 2>/dev/null || echo "[]" > "${OUTPUT_PATH}/all_prs.json"
 
           # Filter to CARTO org members, excluding upstream-sync PRs
+          # Also filter to only include PRs that touch litellm/ or tests/ directories (LiteLLM code)
           jq --arg pattern "$ORG_MEMBERS" '
             [.[] |
               select(.author.login | test("^(" + $pattern + ")$"; "i")) |
               select(([(.labels // [])[].name] | any(. == "upstream-sync")) | not) |
               select(.title | test("^(sync:|upstream sync:|fix: resolve.*upstream|fix: resolve conflicts|fix\\(ci\\):|merge:)"; "i") | not) |
-              select(.title | test("Upstream Sync:"; "i") | not)
+              select(.title | test("Upstream Sync:"; "i") | not) |
+              # Filter files to only litellm/ and tests/ directories
+              . + {files: [.files[] | select(.path | test("^(litellm/|tests/)"))]} |
+              # Only keep PRs that have litellm/tests files
+              select(.files | length > 0)
             ]
           ' "${OUTPUT_PATH}/all_prs.json" > "${OUTPUT_PATH}/carto_prs.json"
 
           CARTO_PRS=$(jq 'length' "${OUTPUT_PATH}/carto_prs.json")
-          echo "[Verify] Found ${CARTO_PRS} CARTO feature PRs"
+          echo "[Verify] Found ${CARTO_PRS} CARTO feature PRs with litellm/tests changes"
 
-          # Generate feature summaries
+          # Generate feature summaries - focus on litellm code features
           jq -r '
             sort_by(.mergedAt) | reverse | .[0:20] |
             .[] |
             "### PR #\(.number): \(.title)\n" +
-            "- **Files:** \(.files[:3] | map(.path) | join(", "))\(if (.files | length) > 3 then " (+\(.files | length - 3) more)" else "" end)\n"
+            "- **LiteLLM Files:** \(.files[:5] | map(.path) | join(", "))\(if (.files | length) > 5 then " (+\(.files | length - 5) more)" else "" end)\n"
           ' "${OUTPUT_PATH}/carto_prs.json" > /tmp/carto_features.md
 
-          # Create file-to-PR mapping for all CARTO files
-          echo "## CARTO Files with Feature History" > /tmp/carto_file_mapping.md
+          # Create file-to-PR mapping for LiteLLM code files only
+          echo "## CARTO LiteLLM Code Features" > /tmp/carto_file_mapping.md
+          echo "" >> /tmp/carto_file_mapping.md
+          echo "These files contain CARTO-specific code features that must be preserved." >> /tmp/carto_file_mapping.md
           echo "" >> /tmp/carto_file_mapping.md
 
           for FILE in $(jq -r '[.[] | .files[].path] | unique | .[]' "${OUTPUT_PATH}/carto_prs.json" | head -50); do
@@ -1347,11 +1355,12 @@ jobs:
           show_full_output: true
           claude_args: "--model claude-opus-4-5@20251101 --max-turns 100 --allowedTools Read,Bash,Grep,Glob ${{ github.event.inputs.debug == 'true' && '--debug' || '' }}"
           prompt: |
-            # CARTO Feature Verification
+            # CARTO LiteLLM Feature Verification
 
             ## YOUR GOAL
 
-            Verify that CARTO features are preserved in the current PR branch.
+            Verify that CARTO **code features** are preserved in the upstream sync PR.
+            Focus ONLY on `litellm/` and `tests/` directories - ignore workflows, docs, configs.
             **DO NOT MAKE ANY CHANGES** - this is a verification-only run.
 
             ---
@@ -1363,31 +1372,29 @@ jobs:
 
             ---
 
-            ## STEP 1: Read CARTO context files
+            ## STEP 1: Read CARTO feature context (dynamically generated from PRs)
 
             ```bash
-            echo "=== CARTO Features ===" && cat /tmp/carto_features.md
+            echo "=== CARTO LiteLLM Features ===" && cat /tmp/carto_features.md
             echo ""
-            echo "=== File Mapping ===" && cat /tmp/carto_file_mapping.md
+            echo "=== File-to-PR Mapping ===" && cat /tmp/carto_file_mapping.md
             echo ""
-            echo "=== Key Patterns ===" && cat /tmp/carto_patterns.md
+            echo "=== Key Patterns from carto/main ===" && cat /tmp/carto_patterns.md
             ```
 
             ---
 
-            ## STEP 2: Verify patterns exist in current files
+            ## STEP 2: Verify CARTO functions exist in current code
 
-            For each file in `/tmp/carto_patterns.md`:
-
-            1. Check if file exists
-            2. Check if key functions/classes are present
-            3. Note any MISSING patterns
+            For each file in `/tmp/carto_patterns.md`, check if the CARTO patterns exist:
 
             ```bash
-            for FILE in $(grep -oE '\`[^\`]+\`' /tmp/carto_file_mapping.md 2>/dev/null | tr -d '\`' | head -30); do
+            # Extract files and their expected patterns from carto_patterns.md
+            # Then verify those patterns exist in current code
+            for FILE in $(grep -oE '\`[^\`]+\`' /tmp/carto_file_mapping.md 2>/dev/null | tr -d '\`' | head -20); do
               if [ -f "$FILE" ]; then
                 echo "✅ EXISTS: $FILE"
-                # Show current patterns
+                echo "Current patterns:"
                 grep -E "^\s*(def |class |async def )" "$FILE" | head -10
               else
                 echo "❌ MISSING: $FILE"
@@ -1398,33 +1405,51 @@ jobs:
 
             ---
 
-            ## STEP 3: Compare patterns
+            ## STEP 3: Deep verification - compare with carto/main
 
-            For each file with CARTO history, compare:
-            - **Expected** patterns (from /tmp/carto_patterns.md)
-            - **Actual** patterns (from current file)
+            For files with CARTO features, compare current code with carto/main:
 
-            Note any MISSING functionality.
+            ```bash
+            # For each CARTO file, compare current vs carto/main patterns
+            for FILE in $(grep -oE '\`[^\`]+\`' /tmp/carto_file_mapping.md 2>/dev/null | tr -d '\`' | head -10); do
+              if [ -f "$FILE" ]; then
+                echo "=== $FILE ==="
+                echo "--- Expected (from carto/main) ---"
+                git show origin/carto/main:"$FILE" 2>/dev/null | grep -E "^\s*(def |class |async def )" | head -10
+                echo ""
+                echo "--- Actual (in PR) ---"
+                grep -E "^\s*(def |class |async def )" "$FILE" | head -10
+                echo ""
+              fi
+            done
+            ```
+
+            Look for CARTO-specific patterns that might be missing in the PR version.
 
             ---
 
             ## STEP 4: Generate verification report
 
-            Create a summary with:
+            Create a summary for each file in `/tmp/carto_file_mapping.md`:
 
-            | Status | File | Notes |
-            |--------|------|-------|
-            | ✅ / ⚠️ / ❌ | file path | what's present/missing |
+            | Status | File | PR(s) | Notes |
+            |--------|------|-------|-------|
+            | ✅ / ⚠️ / ❌ | file path | PR #N | patterns present/missing |
 
             ---
 
             ## SAY "VERIFICATION COMPLETE" WHEN DONE
 
-            End with a summary:
-            - Total files checked
-            - Files with all patterns present
-            - Files with missing patterns (list them)
-            - Overall assessment: PASS / NEEDS ATTENTION
+            End with:
+            - **Total CARTO features checked:** N
+            - **Features preserved:** N (list them)
+            - **Features missing/modified:** N (list them with details)
+            - **Overall assessment:** PASS / NEEDS ATTENTION
+
+            If features are missing, explain:
+            1. What functionality is missing
+            2. Why it might be missing (upstream refactored? conflict resolution accepted upstream?)
+            3. Impact on CARTO functionality
 
         env:
           ANTHROPIC_VERTEX_PROJECT_ID: carto-ci-resources
