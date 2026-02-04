@@ -14,7 +14,10 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
-from openapi_core import OpenAPI
+
+# Skip this entire module if openapi_core is not installed
+openapi_core = pytest.importorskip("openapi_core", reason="openapi_core not installed")
+OpenAPI = openapi_core.OpenAPI
 
 OPENAPI_SPEC_URL = "https://ai.google.dev/static/api/interactions.openapi.json"
 

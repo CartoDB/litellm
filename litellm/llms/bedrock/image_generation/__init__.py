@@ -1,0 +1,1 @@
+"""Bedrock Image Generation support."""

@@ -10,7 +10,7 @@ from httpx import Response
 sys.path.insert(0, os.path.abspath("../../.."))
 
 import litellm
-from litellm_enterprise.enterprise_callbacks.send_emails.sendgrid_email import (
+from enterprise.litellm_enterprise.enterprise_callbacks.send_emails.sendgrid_email import (
     SendGridEmailLogger,
 )
 

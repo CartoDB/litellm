@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.abspath("../../.."))
-from litellm_enterprise.types.enterprise_callbacks.send_emails import (
+from enterprise.litellm_enterprise.types.enterprise_callbacks.send_emails import (
     EmailEvent,
     SendKeyCreatedEmailEvent,
 )
