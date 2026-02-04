@@ -17,7 +17,6 @@ from typing import (
 from pydantic import BaseModel
 
 from litellm._logging import verbose_logger
-from litellm.caching.caching import DualCache
 from litellm.constants import DEFAULT_MAX_RECURSE_DEPTH_SENSITIVE_DATA_MASKER
 from litellm.types.integrations.argilla import ArgillaItem
 from litellm.types.llms.openai import AllMessageValues, ChatCompletionRequest
@@ -34,6 +33,7 @@ from litellm.types.utils import (
 if TYPE_CHECKING:
     from opentelemetry.trace import Span as _Span
 
+    from litellm.caching.caching import DualCache
     from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
     from litellm.proxy._types import UserAPIKeyAuth
     from litellm.types.mcp import (
@@ -46,6 +46,7 @@ if TYPE_CHECKING:
     Span = Union[_Span, Any]
 else:
     Span = Any
+    DualCache = Any
     LiteLLMLoggingObj = Any
     UserAPIKeyAuth = Any
     MCPPostCallResponseObject = Any

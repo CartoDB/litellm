@@ -1,74 +1,58 @@
-"use client";
-
-import {
-  ApiOutlined,
-  ArrowUpOutlined,
-  ClearOutlined,
-  CodeOutlined,
-  DatabaseOutlined,
-  DeleteOutlined,
-  FilePdfOutlined,
-  InfoCircleOutlined,
-  KeyOutlined,
-  LinkOutlined,
-  LoadingOutlined,
-  PictureOutlined,
-  RobotOutlined,
-  SafetyOutlined,
-  SettingOutlined,
-  SoundOutlined,
-  TagsOutlined,
-  ToolOutlined,
-  UserOutlined,
-} from "@ant-design/icons";
-import { Card, Text, TextInput, Title, Button as TremorButton } from "@tremor/react";
-import { Button, Input, Modal, Popover, Select, Spin, Tooltip, Typography, Upload } from "antd";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
+import { Card, Title, Text, TextInput, Button as TremorButton } from "@tremor/react";
+import { v4 as uuidv4 } from "uuid";
+
+import { Select, Spin, Typography, Tooltip, Input, Upload, Modal, Button } from "antd";
+import { makeOpenAIChatCompletionRequest } from "./llm_calls/chat_completion";
+import { makeOpenAIImageGenerationRequest } from "./llm_calls/image_generation";
+import { makeOpenAIImageEditsRequest } from "./llm_calls/image_edits";
+import { makeOpenAIResponsesRequest } from "./llm_calls/responses_api";
+import { makeAnthropicMessagesRequest } from "./llm_calls/anthropic_messages";
+import { fetchAvailableModels, ModelGroup } from "./llm_calls/fetch_models";
+import { fetchAvailableMCPTools } from "./llm_calls/fetch_mcp_tools";
+import type { MCPTool } from "./llm_calls/fetch_mcp_tools";
+import { EndpointType } from "./mode_endpoint_mapping";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { coy } from "react-syntax-highlighter/dist/esm/styles/prism";
-import { v4 as uuidv4 } from "uuid";
-import { truncateString } from "../../../utils/textUtils";
-import GuardrailSelector from "../../guardrails/GuardrailSelector";
-import PolicySelector from "../../policies/PolicySelector";
-import { MCPServer } from "../../mcp_tools/types";
-import NotificationsManager from "../../molecules/notifications_manager";
-import { fetchMCPServers, listMCPTools } from "../../networking";
-import TagSelector from "../../tag_management/TagSelector";
-import VectorStoreSelector from "../../vector_store_management/VectorStoreSelector";
-import { makeA2ASendMessageRequest } from "../llm_calls/a2a_send_message";
-import { makeAnthropicMessagesRequest } from "../llm_calls/anthropic_messages";
-import { makeOpenAIAudioSpeechRequest } from "../llm_calls/audio_speech";
-import { makeOpenAIAudioTranscriptionRequest } from "../llm_calls/audio_transcriptions";
-import { makeOpenAIChatCompletionRequest } from "../llm_calls/chat_completion";
-import { makeOpenAIEmbeddingsRequest } from "../llm_calls/embeddings_api";
-import { Agent, fetchAvailableAgents } from "../llm_calls/fetch_agents";
-import { fetchAvailableModels, ModelGroup } from "../llm_calls/fetch_models";
-import { makeOpenAIImageEditsRequest } from "../llm_calls/image_edits";
-import { makeOpenAIImageGenerationRequest } from "../llm_calls/image_generation";
-import { makeOpenAIResponsesRequest } from "../llm_calls/responses_api";
-import A2AMetrics from "./A2AMetrics";
-import AdditionalModelSettings from "./AdditionalModelSettings";
-import AudioRenderer from "./AudioRenderer";
-import { OPEN_AI_VOICE_SELECT_OPTIONS, OpenAIVoice } from "./chatConstants";
-import ChatImageRenderer from "./ChatImageRenderer";
-import ChatImageUpload from "./ChatImageUpload";
-import { createChatDisplayMessage, createChatMultimodalMessage } from "./ChatImageUtils";
-import CodeInterpreterOutput from "./CodeInterpreterOutput";
-import CodeInterpreterTool from "./CodeInterpreterTool";
-import { generateCodeSnippet } from "./CodeSnippets";
 import EndpointSelector from "./EndpointSelector";
-import MCPEventsDisplay, { MCPEvent } from "./MCPEventsDisplay";
-import { EndpointType, getEndpointType } from "./mode_endpoint_mapping";
+import TagSelector from "../tag_management/TagSelector";
+import VectorStoreSelector from "../vector_store_management/VectorStoreSelector";
+import GuardrailSelector from "../guardrails/GuardrailSelector";
+import { generateCodeSnippet } from "./CodeSnippets";
+import { MessageType } from "./types";
 import ReasoningContent from "./ReasoningContent";
 import ResponseMetrics, { TokenUsage } from "./ResponseMetrics";
-import ResponsesImageRenderer from "./ResponsesImageRenderer";
 import ResponsesImageUpload from "./ResponsesImageUpload";
-import { createDisplayMessage, createMultimodalMessage } from "./ResponsesImageUtils";
-import { SearchResultsDisplay } from "./SearchResultsDisplay";
+import ResponsesImageRenderer from "./ResponsesImageRenderer";
+import { createMultimodalMessage, createDisplayMessage } from "./ResponsesImageUtils";
+import ChatImageUpload from "./ChatImageUpload";
+import ChatImageRenderer from "./ChatImageRenderer";
+import { createChatMultimodalMessage, createChatDisplayMessage } from "./ChatImageUtils";
 import SessionManagement from "./SessionManagement";
-import { A2ATaskMetadata, MessageType } from "./types";
-import { useCodeInterpreter } from "./useCodeInterpreter";
+import MCPEventsDisplay, { MCPEvent } from "./MCPEventsDisplay";
+import { SearchResultsDisplay } from "./SearchResultsDisplay";
+import {
+  ApiOutlined,
+  KeyOutlined,
+  ClearOutlined,
+  RobotOutlined,
+  UserOutlined,
+  DeleteOutlined,
+  LoadingOutlined,
+  TagsOutlined,
+  DatabaseOutlined,
+  InfoCircleOutlined,
+  SafetyOutlined,
+  PictureOutlined,
+  CodeOutlined,
+  ToolOutlined,
+  FilePdfOutlined,
+  ArrowUpOutlined,
+} from "@ant-design/icons";
+import NotificationsManager from "../molecules/notifications_manager";
+import { makeOpenAIEmbeddingsRequest } from "./llm_calls/embeddings_api";
+import { truncateString } from "./chatUtils";
 
 const { TextArea } = Input;
 const { Dragger } = Upload;
@@ -79,43 +63,23 @@ interface ChatUIProps {
   userRole: string | null;
   userID: string | null;
   disabledPersonalKeyCreation: boolean;
-  proxySettings?: {
-    PROXY_BASE_URL?: string;
-    LITELLM_UI_API_DOC_BASE_URL?: string | null;
-  };
 }
 
-const MCP_SUPPORTED_ENDPOINTS = new Set<EndpointType>([EndpointType.CHAT, EndpointType.RESPONSES]);
-
-const ChatUI: React.FC<ChatUIProps> = ({
-  accessToken,
-  token,
-  userRole,
-  userID,
-  disabledPersonalKeyCreation,
-  proxySettings,
-}) => {
-  const [mcpServers, setMCPServers] = useState<MCPServer[]>([]);
-  const [selectedMCPServers, setSelectedMCPServers] = useState<string[]>(() => {
-    const saved = sessionStorage.getItem("selectedMCPServers");
+const ChatUI: React.FC<ChatUIProps> = ({ accessToken, token, userRole, userID, disabledPersonalKeyCreation }) => {
+  const [isMCPToolsModalVisible, setIsMCPToolsModalVisible] = useState(false);
+  const [mcpTools, setMCPTools] = useState<MCPTool[]>([]);
+  const [selectedMCPTools, setSelectedMCPTools] = useState<string[]>(() => {
+    const saved = sessionStorage.getItem("selectedMCPTools");
     try {
-      return saved ? JSON.parse(saved) : [];
+      const parsed = saved ? JSON.parse(saved) : [];
+      // Convert from single string to array if needed for backward compatibility
+      return Array.isArray(parsed) ? parsed : parsed ? [parsed] : [];
     } catch (error) {
-      console.error("Error parsing selectedMCPServers from sessionStorage", error);
+      console.error("Error parsing selectedMCPTools from sessionStorage", error);
       return [];
     }
   });
-  const [isLoadingMCPServers, setIsLoadingMCPServers] = useState(false);
-  const [serverToolsMap, setServerToolsMap] = useState<Record<string, any[]>>({});
-  const [mcpServerToolRestrictions, setMCPServerToolRestrictions] = useState<Record<string, string[]>>(() => {
-    const saved = sessionStorage.getItem("mcpServerToolRestrictions");
-    try {
-      return saved ? JSON.parse(saved) : {};
-    } catch (error) {
-      console.error("Error parsing mcpServerToolRestrictions from sessionStorage", error);
-      return {};
-    }
-  });
+  const [isLoadingMCPTools, setIsLoadingMCPTools] = useState(false);
   const [apiKeySource, setApiKeySource] = useState<"session" | "custom">(() => {
     const saved = sessionStorage.getItem("apiKeySource");
     if (saved) {
@@ -128,9 +92,6 @@ const ChatUI: React.FC<ChatUIProps> = ({
     return disabledPersonalKeyCreation ? "custom" : "session";
   });
   const [apiKey, setApiKey] = useState<string>(() => sessionStorage.getItem("apiKey") || "");
-  const [customProxyBaseUrl, setCustomProxyBaseUrl] = useState<string>(
-    () => sessionStorage.getItem("customProxyBaseUrl") || "",
-  );
   const [inputMessage, setInputMessage] = useState("");
   const [chatHistory, setChatHistory] = useState<MessageType[]>(() => {
     try {
@@ -141,11 +102,11 @@ const ChatUI: React.FC<ChatUIProps> = ({
       return [];
     }
   });
-  const [selectedModel, setSelectedModel] = useState<string | undefined>(undefined);
+  const [selectedModel, setSelectedModel] = useState<string | undefined>(
+    () => sessionStorage.getItem("selectedModel") || undefined,
+  );
   const [showCustomModelInput, setShowCustomModelInput] = useState<boolean>(false);
   const [modelInfo, setModelInfo] = useState<ModelGroup[]>([]);
-  const [agentInfo, setAgentInfo] = useState<Agent[]>([]);
-  const [selectedAgent, setSelectedAgent] = useState<string | undefined>(undefined);
   const customModelTimeout = useRef<NodeJS.Timeout | null>(null);
   const [endpointType, setEndpointType] = useState<string>(
     () => sessionStorage.getItem("endpointType") || EndpointType.CHAT,
@@ -159,16 +120,6 @@ const ChatUI: React.FC<ChatUIProps> = ({
     } catch (error) {
       console.error("Error parsing selectedTags from sessionStorage", error);
       return [];
-    }
-  });
-  const [selectedVoice, setSelectedVoice] = useState<OpenAIVoice>(() => {
-    const saved = sessionStorage.getItem("selectedVoice");
-    if (!saved) return "alloy";
-    try {
-      return JSON.parse(saved) as OpenAIVoice;
-    } catch {
-      // If stored value is not valid JSON, treat it as a plain string
-      return saved as OpenAIVoice;
     }
   });
   const [selectedVectorStores, setSelectedVectorStores] = useState<string[]>(() => {
@@ -189,15 +140,6 @@ const ChatUI: React.FC<ChatUIProps> = ({
       return [];
     }
   });
-  const [selectedPolicies, setSelectedPolicies] = useState<string[]>(() => {
-    const saved = sessionStorage.getItem("selectedPolicies");
-    try {
-      return saved ? JSON.parse(saved) : [];
-    } catch (error) {
-      console.error("Error parsing selectedPolicies from sessionStorage", error);
-      return [];
-    }
-  });
   const [messageTraceId, setMessageTraceId] = useState<string | null>(
     () => sessionStorage.getItem("messageTraceId") || null,
   );
@@ -214,51 +156,34 @@ const ChatUI: React.FC<ChatUIProps> = ({
   const [responsesImagePreviewUrl, setResponsesImagePreviewUrl] = useState<string | null>(null);
   const [chatUploadedImage, setChatUploadedImage] = useState<File | null>(null);
   const [chatImagePreviewUrl, setChatImagePreviewUrl] = useState<string | null>(null);
-  const [uploadedAudio, setUploadedAudio] = useState<File | null>(null);
   const [isGetCodeModalVisible, setIsGetCodeModalVisible] = useState(false);
   const [generatedCode, setGeneratedCode] = useState("");
   const [selectedSdk, setSelectedSdk] = useState<"openai" | "azure">("openai");
   const [mcpEvents, setMCPEvents] = useState<MCPEvent[]>([]);
-  const [temperature, setTemperature] = useState<number>(1.0);
-  const [maxTokens, setMaxTokens] = useState<number>(2048);
-  const [useAdvancedParams, setUseAdvancedParams] = useState<boolean>(false);
-
-  // Code Interpreter state (using custom hook)
-  const codeInterpreter = useCodeInterpreter();
 
   const chatEndRef = useRef<HTMLDivElement>(null);
 
-  // Fetch MCP servers
-  const loadMCPServers = async () => {
+  // Fetch MCP tools
+  const loadMCPTools = async () => {
     const userApiKey = apiKeySource === "session" ? accessToken : apiKey;
     if (!userApiKey) return;
 
-    setIsLoadingMCPServers(true);
+    setIsLoadingMCPTools(true);
     try {
-      const servers = await fetchMCPServers(userApiKey);
-      setMCPServers(Array.isArray(servers) ? servers : servers.data || []);
+      const tools = await fetchAvailableMCPTools(userApiKey);
+      setMCPTools(tools);
     } catch (error) {
-      console.error("Error fetching MCP servers:", error);
+      console.error("Error fetching MCP tools:", error);
     } finally {
-      setIsLoadingMCPServers(false);
+      setIsLoadingMCPTools(false);
     }
   };
 
-  // Fetch tools for a specific server
-  const loadServerTools = async (serverId: string) => {
-    const userApiKey = apiKeySource === "session" ? accessToken : apiKey;
-    if (!userApiKey || serverToolsMap[serverId]) return;
-
-    try {
-      const response = await listMCPTools(userApiKey, serverId);
-      setServerToolsMap((prev) => ({
-        ...prev,
-        [serverId]: response.tools || [],
-      }));
-    } catch (error) {
-      console.error(`Error fetching tools for server ${serverId}:`, error);
+  useEffect(() => {
+    if (isMCPToolsModalVisible) {
+      loadMCPTools();
     }
-  };
+  }, [isMCPToolsModalVisible, accessToken, apiKey, apiKeySource]);
 
   useEffect(() => {
     if (isGetCodeModalVisible) {
@@ -271,15 +196,10 @@ const ChatUI: React.FC<ChatUIProps> = ({
         selectedTags,
         selectedVectorStores,
         selectedGuardrails,
-        selectedPolicies,
-        selectedMCPServers,
-        mcpServers,
-        mcpServerToolRestrictions,
+        selectedMCPTools,
         endpointType,
         selectedModel,
         selectedSdk,
-        selectedVoice,
-        proxySettings,
       });
       setGeneratedCode(code);
     }
@@ -294,13 +214,9 @@ const ChatUI: React.FC<ChatUIProps> = ({
     selectedTags,
     selectedVectorStores,
     selectedGuardrails,
-    selectedPolicies,
-    selectedMCPServers,
-    mcpServers,
-    mcpServerToolRestrictions,
+    selectedMCPTools,
     endpointType,
     selectedModel,
-    proxySettings,
   ]);
 
   useEffect(() => {
@@ -320,11 +236,7 @@ const ChatUI: React.FC<ChatUIProps> = ({
     sessionStorage.setItem("selectedTags", JSON.stringify(selectedTags));
     sessionStorage.setItem("selectedVectorStores", JSON.stringify(selectedVectorStores));
     sessionStorage.setItem("selectedGuardrails", JSON.stringify(selectedGuardrails));
-    sessionStorage.setItem("selectedPolicies", JSON.stringify(selectedPolicies));
-    sessionStorage.setItem("selectedMCPServers", JSON.stringify(selectedMCPServers));
-    sessionStorage.setItem("mcpServerToolRestrictions", JSON.stringify(mcpServerToolRestrictions));
-    sessionStorage.setItem("selectedVoice", selectedVoice);
-    sessionStorage.removeItem("selectedMCPTools"); // Clean up old key
+    sessionStorage.setItem("selectedMCPTools", JSON.stringify(selectedMCPTools));
 
     if (selectedModel) {
       sessionStorage.setItem("selectedModel", selectedModel);
@@ -342,7 +254,6 @@ const ChatUI: React.FC<ChatUIProps> = ({
       sessionStorage.removeItem("responsesSessionId");
     }
     sessionStorage.setItem("useApiSessionManagement", JSON.stringify(useApiSessionManagement));
-    // Note: codeInterpreterEnabled and selectedContainerId are persisted by useCodeInterpreter hook
   }, [
     apiKeySource,
     apiKey,
@@ -351,13 +262,10 @@ const ChatUI: React.FC<ChatUIProps> = ({
     selectedTags,
     selectedVectorStores,
     selectedGuardrails,
-    selectedPolicies,
     messageTraceId,
     responsesSessionId,
     useApiSessionManagement,
-    selectedMCPServers,
-    mcpServerToolRestrictions,
-    selectedVoice,
+    selectedMCPTools,
   ]);
 
   useEffect(() => {
@@ -385,7 +293,7 @@ const ChatUI: React.FC<ChatUIProps> = ({
         if (!uniqueModels.length) {
           setSelectedModel(undefined);
         } else if (!hasSelection) {
-          setSelectedModel(undefined);
+          setSelectedModel(uniqueModels[0].model_group);
         }
       } catch (error) {
         console.error("Error fetching model info:", error);
@@ -393,31 +301,8 @@ const ChatUI: React.FC<ChatUIProps> = ({
     };
 
     loadModels();
-    loadMCPServers();
+    loadMCPTools();
   }, [accessToken, userID, userRole, apiKeySource, apiKey, token]);
-
-  // Fetch agents when A2A endpoint is selected
-  useEffect(() => {
-    const userApiKey = apiKeySource === "session" ? accessToken : apiKey;
-    if (!userApiKey || endpointType !== EndpointType.A2A_AGENTS) {
-      return;
-    }
-
-    const loadAgents = async () => {
-      try {
-        const agents = await fetchAvailableAgents(userApiKey, customProxyBaseUrl || undefined);
-        setAgentInfo(agents);
-        // Clear selection if current agent not in list
-        if (selectedAgent && !agents.some((a) => a.agent_name === selectedAgent)) {
-          setSelectedAgent(undefined);
-        }
-      } catch (error) {
-        console.error("Error fetching agents:", error);
-      }
-    };
-
-    loadAgents();
-  }, [accessToken, apiKeySource, apiKey, endpointType, customProxyBaseUrl, selectedAgent]);
 
   useEffect(() => {
     // Scroll to the bottom of the chat whenever chatHistory updates
@@ -437,7 +322,7 @@ const ChatUI: React.FC<ChatUIProps> = ({
     setChatHistory((prev) => {
       const last = prev[prev.length - 1];
       // if the last message is already from this same role, append
-      if (last && last.role === role && !last.isImage && !last.isAudio) {
+      if (last && last.role === role && !last.isImage) {
         // build a new object, but only set `model` if it wasn't there already
         const updated: MessageType = {
           ...last,
@@ -463,7 +348,7 @@ const ChatUI: React.FC<ChatUIProps> = ({
     setChatHistory((prevHistory) => {
       const lastMessage = prevHistory[prevHistory.length - 1];
 
-      if (lastMessage && lastMessage.role === "assistant" && !lastMessage.isImage && !lastMessage.isAudio) {
+      if (lastMessage && lastMessage.role === "assistant" && !lastMessage.isImage) {
         return [
           ...prevHistory.slice(0, prevHistory.length - 1),
           {
@@ -548,41 +433,6 @@ const ChatUI: React.FC<ChatUIProps> = ({
     });
   };
 
-  const updateA2AMetadata = (a2aMetadata: A2ATaskMetadata) => {
-    console.log("Received A2A metadata:", a2aMetadata);
-    setChatHistory((prevHistory) => {
-      const lastMessage = prevHistory[prevHistory.length - 1];
-
-      if (lastMessage && lastMessage.role === "assistant") {
-        const updatedMessage = {
-          ...lastMessage,
-          a2aMetadata,
-        };
-        return [...prevHistory.slice(0, prevHistory.length - 1), updatedMessage];
-      }
-
-      return prevHistory;
-    });
-  };
-
-  const updateTotalLatency = (totalLatency: number) => {
-    setChatHistory((prevHistory) => {
-      const lastMessage = prevHistory[prevHistory.length - 1];
-
-      if (lastMessage && lastMessage.role === "assistant") {
-        return [
-          ...prevHistory.slice(0, prevHistory.length - 1),
-          {
-            ...lastMessage,
-            totalLatency,
-          },
-        ];
-      }
-
-      return prevHistory;
-    });
-  };
-
   const updateSearchResults = (searchResults: any[]) => {
     console.log("Received search results:", searchResults);
     setChatHistory((prevHistory) => {
@@ -621,16 +471,12 @@ const ChatUI: React.FC<ChatUIProps> = ({
     console.log("ChatUI: Received MCP event:", event);
     setMCPEvents((prev) => {
       // Check if this is a duplicate event (same item_id and type)
-      // Only check for duplicates if item_id is defined (for mcp_list_tools, item_id is "mcp_list_tools")
-      const isDuplicate = event.item_id
-        ? prev.some(
-            (existingEvent) =>
-              existingEvent.item_id === event.item_id &&
-              existingEvent.type === event.type &&
-              (existingEvent.sequence_number === event.sequence_number ||
-                (existingEvent.sequence_number === undefined && event.sequence_number === undefined)),
-          )
-        : false;
+      const isDuplicate = prev.some(
+        (existingEvent) =>
+          existingEvent.item_id === event.item_id &&
+          existingEvent.type === event.type &&
+          existingEvent.sequence_number === event.sequence_number,
+      );
 
       if (isDuplicate) {
         console.log("ChatUI: Duplicate MCP event, skipping");
@@ -654,15 +500,11 @@ const ChatUI: React.FC<ChatUIProps> = ({
     ]);
   };
 
-  const updateAudioUI = (audioUrl: string, model: string) => {
-    setChatHistory((prevHistory) => [...prevHistory, { role: "assistant", content: audioUrl, model, isAudio: true }]);
-  };
-
   const updateChatImageUI = (imageUrl: string, model?: string) => {
     setChatHistory((prev) => {
       const last = prev[prev.length - 1];
       // If the last message is from assistant and has content, add image to it
-      if (last && last.role === "assistant" && !last.isImage && !last.isAudio) {
+      if (last && last.role === "assistant" && !last.isImage) {
         const updated = {
           ...last,
           image: {
@@ -760,50 +602,12 @@ const ChatUI: React.FC<ChatUIProps> = ({
     setChatImagePreviewUrl(null);
   };
 
-  const handleAudioUpload = (file: File): false => {
-    setUploadedAudio(file);
-    return false; // Prevent default upload behavior
-  };
-
-  const handleRemoveAudio = () => {
-    setUploadedAudio(null);
-  };
-
   const handleSendMessage = async () => {
-    if (inputMessage.trim() === "" && endpointType !== EndpointType.TRANSCRIPTION) return;
+    if (inputMessage.trim() === "") return;
 
     // For image edits, require both image and prompt
     if (endpointType === EndpointType.IMAGE_EDITS && uploadedImages.length === 0) {
       NotificationsManager.fromBackend("Please upload at least one image for editing");
-      return;
-    }
-
-    // For audio transcriptions, require audio file
-    if (endpointType === EndpointType.TRANSCRIPTION && !uploadedAudio) {
-      NotificationsManager.fromBackend("Please upload an audio file for transcription");
-      return;
-    }
-
-    // For A2A agents, require agent selection
-    if (endpointType === EndpointType.A2A_AGENTS && !selectedAgent) {
-      NotificationsManager.fromBackend("Please select an agent to send a message");
-      return;
-    }
-
-    // Require model selection for all model-based endpoints
-    const modelRequiredEndpoints = [
-      EndpointType.CHAT,
-      EndpointType.IMAGE,
-      EndpointType.SPEECH,
-      EndpointType.IMAGE_EDITS,
-      EndpointType.RESPONSES,
-      EndpointType.ANTHROPIC_MESSAGES,
-      EndpointType.EMBEDDINGS,
-      EndpointType.TRANSCRIPTION,
-    ];
-
-    if (modelRequiredEndpoints.includes(endpointType as EndpointType) && !selectedModel) {
-      NotificationsManager.fromBackend("Please select a model before sending a request");
       return;
     }
 
@@ -814,7 +618,7 @@ const ChatUI: React.FC<ChatUIProps> = ({
     const effectiveApiKey = apiKeySource === "session" ? accessToken : apiKey;
 
     if (!effectiveApiKey) {
-      NotificationsManager.fromBackend("Please provide a Virtual Key or select Current UI Session");
+      NotificationsManager.fromBackend("Please provide an API key or select Current UI Session");
       return;
     }
 
@@ -868,19 +672,12 @@ const ChatUI: React.FC<ChatUIProps> = ({
         chatImagePreviewUrl || undefined,
         chatUploadedImage.name,
       );
-    } else if (endpointType === EndpointType.TRANSCRIPTION && uploadedAudio) {
-      // For audio transcription, show the audio file name and optional prompt
-      const audioMessage = inputMessage
-        ? `🎵 Audio file: ${uploadedAudio.name}\nPrompt: ${inputMessage}`
-        : `🎵 Audio file: ${uploadedAudio.name}`;
-      displayMessage = createDisplayMessage(audioMessage, false);
     } else {
       displayMessage = createDisplayMessage(inputMessage, false);
     }
 
     setChatHistory([...chatHistory, displayMessage]);
     setMCPEvents([]); // Clear previous MCP events for new conversation turn
-    codeInterpreter.clearResult(); // Clear previous code interpreter results
     setIsLoading(true);
 
     try {
@@ -890,7 +687,7 @@ const ChatUI: React.FC<ChatUIProps> = ({
           // For chat completions, we preserve the multimodal content structure
           const apiChatHistory = [
             ...chatHistory
-              .filter((msg) => !msg.isImage && !msg.isAudio)
+              .filter((msg) => !msg.isImage)
               .map(({ role, content }) => ({
                 role,
                 content: typeof content === "string" ? content : "",
@@ -911,17 +708,9 @@ const ChatUI: React.FC<ChatUIProps> = ({
             traceId,
             selectedVectorStores.length > 0 ? selectedVectorStores : undefined,
             selectedGuardrails.length > 0 ? selectedGuardrails : undefined,
-            selectedPolicies.length > 0 ? selectedPolicies : undefined,
-            selectedMCPServers,
-            updateChatImageUI,
-            updateSearchResults,
-            useAdvancedParams ? temperature : undefined,
-            useAdvancedParams ? maxTokens : undefined,
-            updateTotalLatency,
-            customProxyBaseUrl || undefined,
-            mcpServers,
-            mcpServerToolRestrictions,
-            handleMCPEvent,
+            selectedMCPTools, // Pass the selected tools array
+            updateChatImageUI, // Pass the image callback
+            updateSearchResults, // Pass the search results callback
           );
         } else if (endpointType === EndpointType.IMAGE) {
           // For image generation
@@ -932,21 +721,6 @@ const ChatUI: React.FC<ChatUIProps> = ({
             effectiveApiKey,
             selectedTags,
             signal,
-            customProxyBaseUrl || undefined,
-          );
-        } else if (endpointType === EndpointType.SPEECH) {
-          // For audio speech
-          await makeOpenAIAudioSpeechRequest(
-            inputMessage,
-            selectedVoice,
-            (audioUrl, model) => updateAudioUI(audioUrl, model),
-            selectedModel || "",
-            effectiveApiKey,
-            selectedTags,
-            signal,
-            undefined, // responseFormat
-            undefined, // speed
-            customProxyBaseUrl || undefined,
           );
         } else if (endpointType === EndpointType.IMAGE_EDITS) {
           // For image edits
@@ -959,7 +733,6 @@ const ChatUI: React.FC<ChatUIProps> = ({
               effectiveApiKey,
               selectedTags,
               signal,
-              customProxyBaseUrl || undefined,
             );
           }
         } else if (endpointType === EndpointType.RESPONSES) {
@@ -972,9 +745,7 @@ const ChatUI: React.FC<ChatUIProps> = ({
           } else {
             // When using UI session management or starting new API session, send full history
             apiChatHistory = [
-              ...chatHistory
-                .filter((msg) => !msg.isImage && !msg.isAudio)
-                .map(({ role, content }) => ({ role, content })),
+              ...chatHistory.filter((msg) => !msg.isImage).map(({ role, content }) => ({ role, content })),
               newUserMessage,
             ];
           }
@@ -992,22 +763,14 @@ const ChatUI: React.FC<ChatUIProps> = ({
             traceId,
             selectedVectorStores.length > 0 ? selectedVectorStores : undefined,
             selectedGuardrails.length > 0 ? selectedGuardrails : undefined,
-            selectedPolicies.length > 0 ? selectedPolicies : undefined,
-            selectedMCPServers, // Pass the selected servers array
+            selectedMCPTools, // Pass the selected tools array
             useApiSessionManagement ? responsesSessionId : null, // Only pass session ID if API mode is enabled
             handleResponseId, // Pass callback to capture new response ID
             handleMCPEvent, // Pass MCP event handler
-            codeInterpreter.enabled, // Enable Code Interpreter tool
-            codeInterpreter.setResult, // Handle code interpreter output
-            customProxyBaseUrl || undefined,
-            mcpServers,
-            mcpServerToolRestrictions,
           );
         } else if (endpointType === EndpointType.ANTHROPIC_MESSAGES) {
           const apiChatHistory = [
-            ...chatHistory
-              .filter((msg) => !msg.isImage && !msg.isAudio)
-              .map(({ role, content }) => ({ role, content })),
+            ...chatHistory.filter((msg) => !msg.isImage).map(({ role, content }) => ({ role, content })),
             newUserMessage,
           ];
 
@@ -1024,9 +787,7 @@ const ChatUI: React.FC<ChatUIProps> = ({
             traceId,
             selectedVectorStores.length > 0 ? selectedVectorStores : undefined,
             selectedGuardrails.length > 0 ? selectedGuardrails : undefined,
-            selectedPolicies.length > 0 ? selectedPolicies : undefined,
-            selectedMCPServers, // Pass the selected tools array
-            customProxyBaseUrl || undefined,
+            selectedMCPTools, // Pass the selected tools array
           );
         } else if (endpointType === EndpointType.EMBEDDINGS) {
           await makeOpenAIEmbeddingsRequest(
@@ -1035,41 +796,8 @@ const ChatUI: React.FC<ChatUIProps> = ({
             selectedModel,
             effectiveApiKey,
             selectedTags,
-            customProxyBaseUrl || undefined,
           );
-        } else if (endpointType === EndpointType.TRANSCRIPTION) {
-          // For audio transcriptions
-          if (uploadedAudio) {
-            await makeOpenAIAudioTranscriptionRequest(
-              uploadedAudio,
-              (transcription, model) => updateTextUI("assistant", transcription, model),
-              selectedModel,
-              effectiveApiKey,
-              selectedTags,
-              signal,
-              undefined, // language
-              undefined, // prompt
-              undefined, // responseFormat
-              undefined, // temperature
-              customProxyBaseUrl || undefined,
-            );
-          }
         }
-      }
-
-      // Handle A2A agent calls (separate from model-based calls) - use streaming
-      if (endpointType === EndpointType.A2A_AGENTS && selectedAgent) {
-        await makeA2ASendMessageRequest(
-          selectedAgent,
-          inputMessage,
-          (chunk, model) => updateTextUI("assistant", chunk, model),
-          effectiveApiKey,
-          signal,
-          updateTimingData,
-          updateTotalLatency,
-          updateA2AMetadata,
-          customProxyBaseUrl || undefined,
-        );
       }
     } catch (error) {
       if (signal.aborted) {
@@ -1093,23 +821,12 @@ const ChatUI: React.FC<ChatUIProps> = ({
       if (endpointType === EndpointType.CHAT && chatUploadedImage) {
         handleRemoveChatImage();
       }
-      // Clear audio after successful request for transcription
-      if (endpointType === EndpointType.TRANSCRIPTION && uploadedAudio) {
-        handleRemoveAudio();
-      }
     }
 
     setInputMessage("");
   };
 
   const clearChatHistory = () => {
-    // Clean up audio object URLs before clearing history
-    chatHistory.forEach((message) => {
-      if (message.isAudio && typeof message.content === "string") {
-        URL.revokeObjectURL(message.content);
-      }
-    });
-
     setChatHistory([]);
     setMessageTraceId(null);
     setResponsesSessionId(null); // Clear responses session ID
@@ -1117,7 +834,6 @@ const ChatUI: React.FC<ChatUIProps> = ({
     handleRemoveAllImages(); // Clear any uploaded images for image edits
     handleRemoveResponsesImage(); // Clear any uploaded images for responses
     handleRemoveChatImage(); // Clear any uploaded images for chat completions
-    handleRemoveAudio(); // Clear any uploaded audio for transcription
     sessionStorage.removeItem("chatHistory");
     sessionStorage.removeItem("messageTraceId");
     sessionStorage.removeItem("responsesSessionId");
@@ -1141,23 +857,10 @@ const ChatUI: React.FC<ChatUIProps> = ({
     setShowCustomModelInput(value === "custom");
   };
 
-  // Check if the selected model is a chat model
-  const isChatModel = () => {
-    if (!selectedModel || selectedModel === "custom") {
-      return false;
-    }
-    const model = modelInfo.find((m) => m.model_group === selectedModel);
-    if (!model) {
-      return false;
-    }
-    // Check if mode is explicitly "chat" or undefined (which defaults to chat per backend)
-    return !model.mode || model.mode === "chat";
-  };
-
   const antIcon = <LoadingOutlined style={{ fontSize: 24 }} spin />;
 
   return (
-    <div className="w-full p-4 pb-0 bg-white">
+    <div className="w-full h-screen p-4 bg-white">
       <Card className="w-full rounded-xl shadow-md overflow-hidden">
         <div className="flex h-[80vh] w-full gap-4">
           {/* Left Sidebar with Controls */}
@@ -1166,7 +869,7 @@ const ChatUI: React.FC<ChatUIProps> = ({
             <div className="space-y-4">
               <div>
                 <Text className="font-medium block mb-2 text-gray-700 flex items-center">
-                  <KeyOutlined className="mr-2" /> Virtual Key Source
+                  <KeyOutlined className="mr-2" /> API Key Source
                 </Text>
                 <Select
                   disabled={disabledPersonalKeyCreation}
@@ -1184,7 +887,7 @@ const ChatUI: React.FC<ChatUIProps> = ({
                 {apiKeySource === "custom" && (
                   <TextInput
                     className="mt-2"
-                    placeholder="Enter custom Virtual Key"
+                    placeholder="Enter custom API key"
                     type="password"
                     onValueChange={setApiKey}
                     value={apiKey}
@@ -1194,50 +897,40 @@ const ChatUI: React.FC<ChatUIProps> = ({
               </div>
 
               <div>
-                <div className="flex items-center justify-between mb-2">
-                  <Text className="font-medium block text-gray-700 flex items-center">
-                    <SettingOutlined className="mr-2" /> Custom Proxy Base URL
-                  </Text>
-                  {proxySettings?.LITELLM_UI_API_DOC_BASE_URL && !customProxyBaseUrl && (
-                    <Button
-                      type="link"
-                      size="small"
-                      icon={<LinkOutlined />}
-                      onClick={() => {
-                        setCustomProxyBaseUrl(proxySettings.LITELLM_UI_API_DOC_BASE_URL || "");
-                        sessionStorage.setItem("customProxyBaseUrl", proxySettings.LITELLM_UI_API_DOC_BASE_URL || "");
-                      }}
-                      className="text-gray-500 hover:text-gray-700"
-                    >
-                      Fill
-                    </Button>
-                  )}
-                  {customProxyBaseUrl && (
-                    <Button
-                      type="link"
-                      size="small"
-                      icon={<ClearOutlined />}
-                      onClick={() => {
-                        setCustomProxyBaseUrl("");
-                        sessionStorage.removeItem("customProxyBaseUrl");
-                      }}
-                      className="text-gray-500 hover:text-gray-700"
-                    >
-                      Clear
-                    </Button>
-                  )}
-                </div>
-                <TextInput
-                  placeholder="Optional: Enter custom proxy URL (e.g., http://localhost:5000)"
-                  onValueChange={(value) => {
-                    setCustomProxyBaseUrl(value);
-                    sessionStorage.setItem("customProxyBaseUrl", value);
-                  }}
-                  value={customProxyBaseUrl}
-                  icon={ApiOutlined}
+                <Text className="font-medium block mb-2 text-gray-700 flex items-center">
+                  <RobotOutlined className="mr-2" /> Select Model
+                </Text>
+                <Select
+                  value={selectedModel}
+                  placeholder="Select a Model"
+                  onChange={onModelChange}
+                  options={[
+                    ...Array.from(new Set(modelInfo.map((option) => option.model_group))).map((model_group, index) => ({
+                      value: model_group,
+                      label: model_group,
+                      key: index,
+                    })),
+                    { value: "custom", label: "Enter custom model", key: "custom" },
+                  ]}
+                  style={{ width: "100%" }}
+                  showSearch={true}
+                  className="rounded-md"
                 />
-                {customProxyBaseUrl && (
-                  <Text className="text-xs text-gray-500 mt-1">API calls will be sent to: {customProxyBaseUrl}</Text>
+                {showCustomModelInput && (
+                  <TextInput
+                    className="mt-2"
+                    placeholder="Enter custom model name"
+                    onValueChange={(value) => {
+                      // Using setTimeout to create a simple debounce effect
+                      if (customModelTimeout.current) {
+                        clearTimeout(customModelTimeout.current);
+                      }
+
+                      customModelTimeout.current = setTimeout(() => {
+                        setSelectedModel(value);
+                      }, 500); // 500ms delay after typing stops
+                    }}
+                  />
                 )}
               </div>
 
@@ -1249,37 +942,9 @@ const ChatUI: React.FC<ChatUIProps> = ({
                   endpointType={endpointType}
                   onEndpointChange={(value) => {
                     setEndpointType(value);
-                    // Clear model/agent selection when switching endpoint type
-                    setSelectedModel(undefined);
-                    setSelectedAgent(undefined);
-                    setShowCustomModelInput(false);
-                    try {
-                      sessionStorage.removeItem("selectedModel");
-                      sessionStorage.removeItem("selectedAgent");
-                    } catch { }
                   }}
                   className="mb-4"
                 />
-
-                {/* Voice Selector for Speech Endpoint */}
-                {endpointType === EndpointType.SPEECH && (
-                  <div className="mb-4">
-                    <Text className="font-medium block mb-2 text-gray-700 flex items-center">
-                      <SoundOutlined className="mr-2" />
-                      Voice
-                    </Text>
-                    <Select
-                      value={selectedVoice}
-                      onChange={(value) => {
-                        setSelectedVoice(value);
-                        sessionStorage.setItem("selectedVoice", value);
-                      }}
-                      style={{ width: "100%" }}
-                      className="rounded-md"
-                      options={OPEN_AI_VOICE_SELECT_OPTIONS}
-                    />
-                  </div>
-                )}
 
                 {/* Session Management Component */}
                 <SessionManagement
@@ -1289,150 +954,6 @@ const ChatUI: React.FC<ChatUIProps> = ({
                   onToggleSessionManagement={handleToggleSessionManagement}
                 />
               </div>
-
-              {/* Model Selector - shown when NOT using A2A Agents */}
-              {endpointType !== EndpointType.A2A_AGENTS && (
-                <div>
-                  <Text className="font-medium block mb-2 text-gray-700 flex items-center justify-between">
-                    <span className="flex items-center">
-                      <RobotOutlined className="mr-2" /> Select Model
-                    </span>
-                    {isChatModel() ? (
-                      <Popover
-                        content={
-                          <AdditionalModelSettings
-                            temperature={temperature}
-                            maxTokens={maxTokens}
-                            useAdvancedParams={useAdvancedParams}
-                            onTemperatureChange={setTemperature}
-                            onMaxTokensChange={setMaxTokens}
-                            onUseAdvancedParamsChange={setUseAdvancedParams}
-                          />
-                        }
-                        title="Model Settings"
-                        trigger="click"
-                        placement="right"
-                      >
-                        <Button
-                          type="text"
-                          size="small"
-                          icon={<SettingOutlined />}
-                          className="text-gray-500 hover:text-gray-700"
-                        />
-                      </Popover>
-                    ) : (
-                      <Tooltip title="Advanced parameters are only supported for chat models currently">
-                        <Button
-                          type="text"
-                          size="small"
-                          icon={<SettingOutlined />}
-                          className="text-gray-300 cursor-not-allowed"
-                          disabled
-                        />
-                      </Tooltip>
-                    )}
-                  </Text>
-                  <Select
-                    value={selectedModel}
-                    placeholder="Select a Model"
-                    onChange={onModelChange}
-                    options={[
-                      { value: "custom", label: "Enter custom model", key: "custom" },
-                      ...Array.from(
-                        new Set(
-                          modelInfo
-                            .filter((option) => {
-                              if (!option.mode) {
-                                //If no mode, show all models
-                                return true;
-                              }
-                              const optionEndpoint = getEndpointType(option.mode);
-                              // Show chat models for responses/anthropic_messages endpoints as they are compatible
-                              if (
-                                endpointType === EndpointType.RESPONSES ||
-                                endpointType === EndpointType.ANTHROPIC_MESSAGES
-                              ) {
-                                return optionEndpoint === endpointType || optionEndpoint === EndpointType.CHAT;
-                              }
-                              // Show image models for image_edits endpoint as they are compatible
-                              if (endpointType === EndpointType.IMAGE_EDITS) {
-                                return optionEndpoint === endpointType || optionEndpoint === EndpointType.IMAGE;
-                              }
-                              return optionEndpoint === endpointType;
-                            })
-                            .map((option) => option.model_group),
-                        ),
-                      ).map((model_group, index) => ({
-                        value: model_group,
-                        label: model_group,
-                        key: index,
-                      })),
-                    ]}
-                    style={{ width: "100%" }}
-                    showSearch={true}
-                    className="rounded-md"
-                  />
-                  {showCustomModelInput && (
-                    <TextInput
-                      className="mt-2"
-                      placeholder="Enter custom model name"
-                      onValueChange={(value) => {
-                        // Using setTimeout to create a simple debounce effect
-                        if (customModelTimeout.current) {
-                          clearTimeout(customModelTimeout.current);
-                        }
-
-                        customModelTimeout.current = setTimeout(() => {
-                          setSelectedModel(value);
-                        }, 500); // 500ms delay after typing stops
-                      }}
-                    />
-                  )}
-                </div>
-              )}
-
-              {/* Agent Selector - shown ONLY for A2A Agents endpoint */}
-              {endpointType === EndpointType.A2A_AGENTS && (
-                <div>
-                  <Text className="font-medium block mb-2 text-gray-700 flex items-center">
-                    <RobotOutlined className="mr-2" /> Select Agent
-                  </Text>
-                  <Select
-                    value={selectedAgent}
-                    placeholder="Select an Agent"
-                    onChange={(value) => setSelectedAgent(value)}
-                    options={agentInfo.map((agent) => ({
-                      value: agent.agent_name,
-                      label: agent.agent_name || agent.agent_id,
-                      key: agent.agent_id,
-                    }))}
-                    style={{ width: "100%" }}
-                    showSearch={true}
-                    className="rounded-md"
-                    optionLabelProp="label"
-                  >
-                    {agentInfo.map((agent) => (
-                      <Select.Option
-                        key={agent.agent_id}
-                        value={agent.agent_name}
-                        label={agent.agent_name || agent.agent_id}
-                      >
-                        <div className="flex flex-col py-1">
-                          <span className="font-medium">{agent.agent_name || agent.agent_id}</span>
-                          {agent.agent_card_params?.description && (
-                            <span className="text-xs text-gray-500 mt-1">{agent.agent_card_params.description}</span>
-                          )}
-                        </div>
-                      </Select.Option>
-                    ))}
-                  </Select>
-                  {agentInfo.length === 0 && (
-                    <Text className="text-xs text-gray-500 mt-2 block">
-                      No agents found. Create agents via /v1/agents endpoint.
-                    </Text>
-                  )}
-                </div>
-              )}
 
               <div>
                 <Text className="font-medium block mb-2 text-gray-700 flex items-center">
@@ -1446,110 +967,44 @@ const ChatUI: React.FC<ChatUIProps> = ({
                 />
               </div>
 
-              {/* MCP Server Selection */}
+              {/* MCP Tool Selection */}
               <div>
                 <Text className="font-medium block mb-2 text-gray-700 flex items-center">
-                  <ToolOutlined className="mr-2" /> MCP Servers
-                  <Tooltip className="ml-1" title="Select MCP servers to use in your conversation.">
+                  <ToolOutlined className="mr-2" /> MCP Tool
+                  <Tooltip
+                    className="ml-1"
+                    title="Select MCP tools to use in your conversation, only available for /v1/responses endpoint"
+                  >
                     <InfoCircleOutlined />
                   </Tooltip>
                 </Text>
                 <Select
                   mode="multiple"
                   style={{ width: "100%" }}
-                  placeholder="Select MCP servers"
-                  value={selectedMCPServers}
-                  onChange={(value) => {
-                    if (value.includes("__all__")) {
-                      setSelectedMCPServers(["__all__"]);
-                      setMCPServerToolRestrictions({});
-                    } else {
-                      setSelectedMCPServers(value);
-                      // Clean up tool restrictions for removed servers
-                      setMCPServerToolRestrictions((prev) => {
-                        const updated = { ...prev };
-                        Object.keys(updated).forEach((serverId) => {
-                          if (!value.includes(serverId)) delete updated[serverId];
-                        });
-                        return updated;
-                      });
-                      // Load tools for newly selected servers
-                      value.forEach((serverId) => {
-                        if (!serverToolsMap[serverId]) {
-                          loadServerTools(serverId);
-                        }
-                      });
-                    }
-                  }}
-                  loading={isLoadingMCPServers}
-                  className="mb-2"
+                  placeholder="Select MCP tools"
+                  value={selectedMCPTools}
+                  onChange={(value) => setSelectedMCPTools(value)}
+                  loading={isLoadingMCPTools}
+                  className="mb-4"
                   allowClear
                   optionLabelProp="label"
-                  disabled={!MCP_SUPPORTED_ENDPOINTS.has(endpointType as EndpointType)}
+                  disabled={!(endpointType === EndpointType.RESPONSES)}
                   maxTagCount="responsive"
                 >
-                  {/* All MCP Servers option */}
-                  <Select.Option key="__all__" value="__all__" label="All MCP Servers">
-                    <div className="flex flex-col py-1">
-                      <span className="font-medium">All MCP Servers</span>
-                      <span className="text-xs text-gray-500 mt-1">Use all available MCP servers</span>
-                    </div>
-                  </Select.Option>
-
-                  {/* Individual servers */}
-                  {mcpServers.map((server) => (
-                    <Select.Option
-                      key={server.server_id}
-                      value={server.server_id}
-                      label={server.alias || server.server_name || server.server_id}
-                      disabled={selectedMCPServers.includes("__all__")}
-                    >
-                      <div className="flex flex-col py-1">
-                        <span className="font-medium">{server.alias || server.server_name || server.server_id}</span>
-                        {server.description && <span className="text-xs text-gray-500 mt-1">{server.description}</span>}
-                      </div>
-                    </Select.Option>
-                  ))}
+                  {Array.isArray(mcpTools) &&
+                    mcpTools.map((tool) => (
+                      <Select.Option
+                        key={tool.name}
+                        value={tool.name}
+                        label={<div className="font-medium">{tool.name}</div>}
+                      >
+                        <div className="flex flex-col py-1">
+                          <span className="font-medium">{tool.name}</span>
+                          <span className="text-xs text-gray-500 mt-1">{tool.description}</span>
+                        </div>
+                      </Select.Option>
+                    ))}
                 </Select>
-
-                {/* Tool restrictions UI (optional) */}
-                {selectedMCPServers.length > 0 &&
-                  !selectedMCPServers.includes("__all__") &&
-                  MCP_SUPPORTED_ENDPOINTS.has(endpointType as EndpointType) && (
-                    <div className="mt-3 space-y-2">
-                      {selectedMCPServers.map((serverId) => {
-                        const server = mcpServers.find((s) => s.server_id === serverId);
-                        const tools = serverToolsMap[serverId] || [];
-                        if (tools.length === 0) return null;
-
-                        return (
-                          <div key={serverId} className="border rounded p-2">
-                            <Text className="text-xs text-gray-600 mb-1">
-                              Limit tools for {server?.alias || server?.server_name || serverId}:
-                            </Text>
-                            <Select
-                              mode="multiple"
-                              size="small"
-                              style={{ width: "100%" }}
-                              placeholder="All tools (default)"
-                              value={mcpServerToolRestrictions[serverId] || []}
-                              onChange={(selectedTools) => {
-                                setMCPServerToolRestrictions((prev) => ({
-                                  ...prev,
-                                  [serverId]: selectedTools,
-                                }));
-                              }}
-                              options={tools.map((tool) => ({
-                                value: tool.name,
-                                label: tool.name,
-                              }))}
-                              maxTagCount={2}
-                            />
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
               </div>
 
               <div>
@@ -1603,46 +1058,6 @@ const ChatUI: React.FC<ChatUIProps> = ({
                   accessToken={accessToken || ""}
                 />
               </div>
-
-              <div>
-                <Text className="font-medium block mb-2 text-gray-700 flex items-center">
-                  <SafetyOutlined className="mr-2" /> Policies
-                  <Tooltip
-                    className="ml-1"
-                    title={
-                      <span>
-                        Select policy/policies to apply to this LLM API call. Policies define which guardrails are applied based on conditions. You can set up your policies{" "}
-                        <a href="?page=policies" style={{ color: "#1890ff" }}>
-                          here
-                        </a>
-                        .
-                      </span>
-                    }
-                  >
-                    <InfoCircleOutlined />
-                  </Tooltip>
-                </Text>
-                <PolicySelector
-                  value={selectedPolicies}
-                  onChange={setSelectedPolicies}
-                  className="mb-4"
-                  accessToken={accessToken || ""}
-                />
-              </div>
-
-              {/* Code Interpreter Toggle - Only for Responses endpoint */}
-              {endpointType === EndpointType.RESPONSES && (
-                <div>
-                  <CodeInterpreterTool
-                    accessToken={apiKeySource === "session" ? accessToken || "" : apiKey}
-                    enabled={codeInterpreter.enabled}
-                    onEnabledChange={codeInterpreter.setEnabled}
-                    selectedContainerId={null}
-                    onContainerChange={() => { }}
-                    selectedModel={selectedModel || ""}
-                  />
-                </div>
-              )}
             </div>
           </div>
 
@@ -1671,7 +1086,7 @@ const ChatUI: React.FC<ChatUIProps> = ({
               {chatHistory.length === 0 && (
                 <div className="h-full flex flex-col items-center justify-center text-gray-400">
                   <RobotOutlined style={{ fontSize: "48px", marginBottom: "16px" }} />
-                  <Text>Start a conversation, generate an image, or handle audio</Text>
+                  <Text>Start a conversation or generate an image</Text>
                 </div>
               )}
 
@@ -1712,7 +1127,7 @@ const ChatUI: React.FC<ChatUIProps> = ({
                       {message.role === "assistant" &&
                         index === chatHistory.length - 1 &&
                         mcpEvents.length > 0 &&
-                        (endpointType === EndpointType.RESPONSES || endpointType === EndpointType.CHAT) && (
+                        endpointType === EndpointType.RESPONSES && (
                           <div className="mb-3">
                             <MCPEventsDisplay events={mcpEvents} />
                           </div>
@@ -1722,19 +1137,6 @@ const ChatUI: React.FC<ChatUIProps> = ({
                       {message.role === "assistant" && message.searchResults && (
                         <SearchResultsDisplay searchResults={message.searchResults} />
                       )}
-
-                      {/* Show Code Interpreter output for the last assistant message */}
-                      {message.role === "assistant" &&
-                        index === chatHistory.length - 1 &&
-                        codeInterpreter.result &&
-                        endpointType === EndpointType.RESPONSES && (
-                          <CodeInterpreterOutput
-                            code={codeInterpreter.result.code}
-                            containerId={codeInterpreter.result.containerId}
-                            annotations={codeInterpreter.result.annotations}
-                            accessToken={apiKeySource === "session" ? accessToken || "" : apiKey}
-                          />
-                        )}
 
                       <div
                         className="whitespace-pre-wrap break-words max-w-full message-content"
@@ -1752,8 +1154,6 @@ const ChatUI: React.FC<ChatUIProps> = ({
                             className="max-w-full rounded-md border border-gray-200 shadow-sm"
                             style={{ maxHeight: "500px" }}
                           />
-                        ) : message.isAudio ? (
-                          <AudioRenderer message={message} />
                         ) : (
                           <>
                             {/* Show attached image for user messages based on current endpoint */}
@@ -1817,23 +1217,11 @@ const ChatUI: React.FC<ChatUIProps> = ({
                           </>
                         )}
 
-                        {message.role === "assistant" &&
-                          (message.timeToFirstToken || message.totalLatency || message.usage) &&
-                          !message.a2aMetadata && (
-                            <ResponseMetrics
-                              timeToFirstToken={message.timeToFirstToken}
-                              totalLatency={message.totalLatency}
-                              usage={message.usage}
-                              toolName={message.toolName}
-                            />
-                          )}
-
-                        {/* A2A Metrics - show for A2A agent responses */}
-                        {message.role === "assistant" && message.a2aMetadata && (
-                          <A2AMetrics
-                            a2aMetadata={message.a2aMetadata}
+                        {message.role === "assistant" && (message.timeToFirstToken || message.usage) && (
+                          <ResponseMetrics
                             timeToFirstToken={message.timeToFirstToken}
-                            totalLatency={message.totalLatency}
+                            usage={message.usage}
+                            toolName={message.toolName}
                           />
                         )}
                       </div>
@@ -1845,7 +1233,7 @@ const ChatUI: React.FC<ChatUIProps> = ({
               {/* Show MCP events during loading if no assistant message exists yet */}
               {isLoading &&
                 mcpEvents.length > 0 &&
-                (endpointType === EndpointType.RESPONSES || endpointType === EndpointType.CHAT) &&
+                endpointType === EndpointType.RESPONSES &&
                 chatHistory.length > 0 &&
                 chatHistory[chatHistory.length - 1].role === "user" && (
                   <div className="text-left mb-4">
@@ -1886,7 +1274,12 @@ const ChatUI: React.FC<ChatUIProps> = ({
               {endpointType === EndpointType.IMAGE_EDITS && (
                 <div className="mb-4">
                   {uploadedImages.length === 0 ? (
-                    <Dragger beforeUpload={handleImageUpload} accept="image/*" showUploadList={false}>
+                    <Dragger
+                      beforeUpload={handleImageUpload}
+                      accept="image/*"
+                      showUploadList={false}
+                      className="border-dashed border-2 border-gray-300 rounded-lg p-4"
+                    >
                       <p className="ant-upload-drag-icon">
                         <PictureOutlined style={{ fontSize: "24px", color: "#666" }} />
                       </p>
@@ -1937,44 +1330,6 @@ const ChatUI: React.FC<ChatUIProps> = ({
                   )}
                 </div>
               )}
-
-              {/* Audio Upload Section for Transcriptions */}
-              {endpointType === EndpointType.TRANSCRIPTION && (
-                <div className="mb-4">
-                  {!uploadedAudio ? (
-                    <Dragger
-                      beforeUpload={handleAudioUpload}
-                      accept="audio/*,.mp3,.mp4,.mpeg,.mpga,.m4a,.wav,.webm"
-                      showUploadList={false}
-                    >
-                      <p className="ant-upload-drag-icon">
-                        <SoundOutlined style={{ fontSize: "24px", color: "#666" }} />
-                      </p>
-                      <p className="ant-upload-text text-sm">Click or drag audio file to upload</p>
-                      <p className="ant-upload-hint text-xs text-gray-500">
-                        Support for MP3, MP4, MPEG, MPGA, M4A, WAV, WEBM formats. Max file size: 25 MB.
-                      </p>
-                    </Dragger>
-                  ) : (
-                    <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg border border-gray-200">
-                      <div className="flex items-center gap-2 flex-1">
-                        <SoundOutlined style={{ fontSize: "20px", color: "#666" }} />
-                        <span className="text-sm font-medium">{uploadedAudio.name}</span>
-                        <span className="text-xs text-gray-500">
-                          ({(uploadedAudio.size / 1024 / 1024).toFixed(2)} MB)
-                        </span>
-                      </div>
-                      <button
-                        className="bg-white shadow-sm border border-gray-200 rounded px-2 py-1 text-red-500 hover:bg-red-50 text-xs"
-                        onClick={handleRemoveAudio}
-                      >
-                        <DeleteOutlined /> Remove
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
-
               {/* Show file previews above input when files are uploaded */}
               {endpointType === EndpointType.RESPONSES && responsesUploadedImage && (
                 <div className="mb-2">
@@ -2040,74 +1395,10 @@ const ChatUI: React.FC<ChatUIProps> = ({
                 </div>
               )}
 
-              {/* Code Interpreter indicator and sample prompts when enabled */}
-              {endpointType === EndpointType.RESPONSES && codeInterpreter.enabled && (
-                <div className="mb-2 space-y-2">
-                  <div className="px-3 py-2 bg-gradient-to-r from-blue-50 to-purple-50 rounded-lg border border-blue-200 flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      {isLoading ? (
-                        <>
-                          <LoadingOutlined className="text-blue-500" spin />
-                          <span className="text-sm text-blue-700 font-medium">Running Python code...</span>
-                        </>
-                      ) : (
-                        <>
-                          <CodeOutlined className="text-blue-500" />
-                          <span className="text-sm text-blue-700 font-medium">Code Interpreter Active</span>
-                        </>
-                      )}
-                    </div>
-                    <button
-                      className="text-xs text-blue-500 hover:text-blue-700"
-                      onClick={() => codeInterpreter.setEnabled(false)}
-                    >
-                      Disable
-                    </button>
-                  </div>
-                  {/* Sample prompts - only show when not loading */}
-                  {!isLoading && (
-                    <div className="flex flex-wrap gap-2">
-                      {[
-                        "Generate sample sales data CSV and create a chart",
-                        "Create a PNG bar chart comparing AI gateway providers including LiteLLM",
-                        "Generate a CSV of LLM pricing data and visualize it as a line chart",
-                      ].map((prompt, idx) => (
-                        <button
-                          key={idx}
-                          className="text-xs px-3 py-1.5 bg-white border border-gray-200 rounded-full hover:bg-blue-50 hover:border-blue-300 hover:text-blue-600 transition-colors"
-                          onClick={() => setInputMessage(prompt)}
-                        >
-                          {prompt}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Suggested prompts - show when chat is empty and not loading */}
-              {chatHistory.length === 0 && !isLoading && (
-                <div className="flex items-center gap-2 mb-3 overflow-x-auto">
-                  {(endpointType === EndpointType.A2A_AGENTS
-                    ? ["What can you help me with?", "Tell me about yourself", "What tasks can you perform?"]
-                    : ["Write me a poem", "Explain quantum computing", "Draft a polite email requesting a meeting"]
-                  ).map((prompt) => (
-                    <button
-                      key={prompt}
-                      type="button"
-                      className="shrink-0 rounded-full border border-gray-200 px-3 py-1 text-xs font-medium text-gray-600 transition-colors hover:bg-blue-50 hover:border-blue-300 hover:text-blue-600 cursor-pointer"
-                      onClick={() => setInputMessage(prompt)}
-                    >
-                      {prompt}
-                    </button>
-                  ))}
-                </div>
-              )}
-
               <div className="flex items-center gap-2">
                 <div className="flex items-center flex-1 bg-white border border-gray-300 rounded-xl px-3 py-1 min-h-[44px]">
-                  {/* Left: attachment and code interpreter icons */}
-                  <div className="flex-shrink-0 mr-2 flex items-center gap-1">
+                  {/* Left: paperclip icon */}
+                  <div className="flex-shrink-0 mr-2">
                     {endpointType === EndpointType.RESPONSES && !responsesUploadedImage && (
                       <ResponsesImageUpload
                         responsesUploadedImage={responsesUploadedImage}
@@ -2124,31 +1415,6 @@ const ChatUI: React.FC<ChatUIProps> = ({
                         onRemoveImage={handleRemoveChatImage}
                       />
                     )}
-                    {/* Quick Code Interpreter toggle for Responses */}
-                    {endpointType === EndpointType.RESPONSES && (
-                      <Tooltip
-                        title={
-                          codeInterpreter.enabled
-                            ? "Code Interpreter enabled (click to disable)"
-                            : "Enable Code Interpreter"
-                        }
-                      >
-                        <button
-                          className={`p-1.5 rounded-md transition-colors ${codeInterpreter.enabled
-                            ? "bg-blue-100 text-blue-600"
-                            : "text-gray-400 hover:text-gray-600 hover:bg-gray-100"
-                            }`}
-                          onClick={() => {
-                            codeInterpreter.toggle();
-                            if (!codeInterpreter.enabled) {
-                              NotificationsManager.success("Code Interpreter enabled!");
-                            }
-                          }}
-                        >
-                          <CodeOutlined style={{ fontSize: "16px" }} />
-                        </button>
-                      </Tooltip>
-                    )}
                   </div>
 
                   {/* Middle: input field */}
@@ -2158,19 +1424,13 @@ const ChatUI: React.FC<ChatUIProps> = ({
                     onKeyDown={handleKeyDown}
                     placeholder={
                       endpointType === EndpointType.CHAT ||
-                        endpointType === EndpointType.EMBEDDINGS ||
-                        endpointType === EndpointType.RESPONSES ||
-                        endpointType === EndpointType.ANTHROPIC_MESSAGES
+                      endpointType === EndpointType.EMBEDDINGS ||
+                      endpointType === EndpointType.RESPONSES ||
+                      endpointType === EndpointType.ANTHROPIC_MESSAGES
                         ? "Type your message... (Shift+Enter for new line)"
-                        : endpointType === EndpointType.A2A_AGENTS
-                          ? "Send a message to the A2A agent..."
-                          : endpointType === EndpointType.IMAGE_EDITS
-                            ? "Describe how you want to edit the image..."
-                            : endpointType === EndpointType.SPEECH
-                              ? "Enter text to convert to speech..."
-                              : endpointType === EndpointType.TRANSCRIPTION
-                                ? "Optional: Add context or prompt for transcription..."
-                                : "Describe the image you want to generate..."
+                        : endpointType === EndpointType.IMAGE_EDITS
+                          ? "Describe how you want to edit the image..."
+                          : "Describe the image you want to generate..."
                     }
                     disabled={isLoading}
                     className="flex-1"
@@ -2189,9 +1449,7 @@ const ChatUI: React.FC<ChatUIProps> = ({
                   {/* Right: send button - matching blue theme */}
                   <TremorButton
                     onClick={handleSendMessage}
-                    disabled={
-                      isLoading || (endpointType === EndpointType.TRANSCRIPTION ? !uploadedAudio : !inputMessage.trim())
-                    }
+                    disabled={isLoading || !inputMessage.trim()}
                     className="flex-shrink-0 ml-2 !w-8 !h-8 !min-w-8 !p-0 !rounded-full !bg-blue-600 hover:!bg-blue-700 disabled:!bg-gray-300 !border-none !text-white disabled:!text-gray-500 !flex !items-center !justify-center"
                   >
                     <ArrowUpOutlined style={{ fontSize: "14px" }} />
@@ -2255,6 +1513,53 @@ const ChatUI: React.FC<ChatUIProps> = ({
           {generatedCode}
         </SyntaxHighlighter>
       </Modal>
+      {apiKeySource === "custom" && (
+        <Modal
+          title="Select MCP Tool"
+          visible={isMCPToolsModalVisible}
+          onCancel={() => setIsMCPToolsModalVisible(false)}
+          onOk={() => {
+            setIsMCPToolsModalVisible(false);
+            NotificationsManager.success("MCP tool selection updated");
+          }}
+          width={800}
+        >
+          {isLoadingMCPTools ? (
+            <div className="flex justify-center items-center py-8">
+              <Spin indicator={<LoadingOutlined style={{ fontSize: 24 }} spin />} />
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <Text className="text-gray-600 block mb-4">
+                Select the MCP tools you want to use in your conversation.
+              </Text>
+              <Select
+                mode="multiple"
+                style={{ width: "100%" }}
+                placeholder="Select MCP tools"
+                value={selectedMCPTools}
+                onChange={(value) => setSelectedMCPTools(value)}
+                optionLabelProp="label"
+                allowClear
+                maxTagCount="responsive"
+              >
+                {mcpTools.map((tool) => (
+                  <Select.Option
+                    key={tool.name}
+                    value={tool.name}
+                    label={<div className="font-medium">{tool.name}</div>}
+                  >
+                    <div className="flex flex-col py-1">
+                      <span className="font-medium">{tool.name}</span>
+                      <span className="text-xs text-gray-500 mt-1">{tool.description}</span>
+                    </div>
+                  </Select.Option>
+                ))}
+              </Select>
+            </div>
+          )}
+        </Modal>
+      )}
     </div>
   );
 };

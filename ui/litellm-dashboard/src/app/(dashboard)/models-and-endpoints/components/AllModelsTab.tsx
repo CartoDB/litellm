@@ -3,10 +3,10 @@ import { InfoCircleOutlined } from "@ant-design/icons";
 import { ModelDataTable } from "@/components/model_dashboard/table";
 import { columns } from "@/components/molecules/models/columns";
 import { getDisplayModelName } from "@/components/view_model/model_name_display";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import useTeams from "@/app/(dashboard)/hooks/useTeams";
 import useAuthorized from "@/app/(dashboard)/hooks/useAuthorized";
-import { Table as TableInstance, PaginationState } from "@tanstack/react-table";
+import { PaginationState } from "@tanstack/react-table";
 
 type ModelViewMode = "all" | "current_team";
 
@@ -44,7 +44,6 @@ const AllModelsTab = ({
     pageIndex: 0,
     pageSize: 50,
   });
-  const tableRef = useRef<TableInstance<any>>(null);
 
   const filteredData = useMemo(() => {
     if (!modelData || !modelData.data || modelData.data.length === 0) {
@@ -355,7 +354,6 @@ const AllModelsTab = ({
               )}
               data={paginatedData}
               isLoading={false}
-              table={tableRef}
             />
           </div>
         </div>
