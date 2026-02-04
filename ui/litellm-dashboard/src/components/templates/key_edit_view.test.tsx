@@ -1,8 +1,7 @@
-import { fireEvent, waitFor } from "@testing-library/react";
+import { render, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { renderWithProviders } from "../../../tests/test-utils";
-import { KeyResponse } from "../key_team_helpers/key_list";
 import { KeyEditView } from "./key_edit_view";
+import { KeyResponse } from "../key_team_helpers/key_list";
 
 // Mock window.matchMedia
 Object.defineProperty(window, "matchMedia", {
@@ -21,8 +20,8 @@ Object.defineProperty(window, "matchMedia", {
 
 describe("KeyEditView", () => {
   const MOCK_KEY_DATA: KeyResponse = {
-    token: "test-token-123",
-    token_id: "test-token-123",
+    token: "40b7608ea43423400d5b82bb5ee11042bfb2ed4655f05b5992b5abbc2f294931",
+    token_id: "40b7608ea43423400d5b82bb5ee11042bfb2ed4655f05b5992b5abbc2f294931",
     key_name: "sk-...TUuw",
     key_alias: "asdasdas",
     spend: 0,
@@ -36,7 +35,6 @@ describe("KeyEditView", () => {
     max_parallel_requests: 10,
     metadata: {
       logging: [],
-      tags: ["test-tag"],
     },
     tpm_limit: 10,
     rpm_limit: 10,
@@ -90,7 +88,7 @@ describe("KeyEditView", () => {
     key_rotation_at: undefined,
   };
   it("should render", async () => {
-    const { getByText } = renderWithProviders(
+    const { getByText } = render(
       <KeyEditView
         keyData={MOCK_KEY_DATA}
         onCancel={() => {}}
@@ -105,66 +103,5 @@ describe("KeyEditView", () => {
     await waitFor(() => {
       expect(getByText("Save Changes")).toBeInTheDocument();
     });
-  });
-
-  it("should render tags", async () => {
-    const { getByText } = renderWithProviders(
-      <KeyEditView
-        keyData={MOCK_KEY_DATA}
-        onCancel={() => {}}
-        onSubmit={async () => {}}
-        accessToken={""}
-        userID={""}
-        userRole={""}
-        premiumUser={false}
-      />,
-    );
-
-    await waitFor(() => {
-      expect(getByText("test-tag")).toBeInTheDocument();
-    });
-  });
-
-  it("should not render tags in metadata textarea", async () => {
-    const { getByLabelText } = renderWithProviders(
-      <KeyEditView
-        keyData={MOCK_KEY_DATA}
-        onCancel={() => {}}
-        onSubmit={async () => {}}
-        accessToken={""}
-        userID={""}
-        userRole={""}
-        premiumUser={false}
-      />,
-    );
-
-    const metadataTextarea = getByLabelText("Metadata") as HTMLTextAreaElement;
-    await waitFor(() => {
-      expect(metadataTextarea).toHaveValue("{}");
-    });
-  });
-
-  it("should call onCancel when cancel button is clicked", async () => {
-    const onCancelMock = vi.fn();
-    const { getByText } = renderWithProviders(
-      <KeyEditView
-        keyData={MOCK_KEY_DATA}
-        onCancel={onCancelMock}
-        onSubmit={async () => {}}
-        accessToken={""}
-        userID={""}
-        userRole={""}
-        premiumUser={false}
-      />,
-    );
-
-    await waitFor(() => {
-      expect(getByText("Cancel")).toBeInTheDocument();
-    });
-
-    const cancelButton = getByText("Cancel");
-    fireEvent.click(cancelButton);
-
-    expect(onCancelMock).toHaveBeenCalledTimes(1);
   });
 });

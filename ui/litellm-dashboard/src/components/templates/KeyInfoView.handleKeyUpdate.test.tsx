@@ -1,21 +1,16 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import React from "react";
+import { describe, it, expect, beforeEach, vi } from "vitest";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 
 // ---- Hoisted shared mocks (safe to use inside vi.mock factories) ----
-const { keyUpdateCallMock, keyDeleteCallMock, mockUseAuthorized } = vi.hoisted(() => {
+const { keyUpdateCallMock, keyDeleteCallMock } = vi.hoisted(() => {
   return {
     keyUpdateCallMock: vi.fn().mockResolvedValue({}),
     keyDeleteCallMock: vi.fn().mockResolvedValue({}),
-    mockUseAuthorized: vi.fn(),
   };
 });
 
 // ---- Module mocks ----
-
-// Mock useAuthorized hook FIRST (before component imports it)
-vi.mock("@/app/(dashboard)/hooks/useAuthorized", () => ({
-  default: mockUseAuthorized,
-}));
 
 // Networking: wire the hoisted fns so we can assert calls later
 vi.mock("../networking", () => {
@@ -35,14 +30,10 @@ vi.mock("../molecules/notifications_manager", () => {
   return { default: Notifications };
 });
 
-// Roles: ensure 'Admin' has write access and include all role helper functions
-vi.mock("../../utils/roles", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../utils/roles")>();
-  return {
-    ...actual,
-    rolesWithWriteAccess: ["Admin"],
-  };
-});
+// Roles: ensure 'admin' has write access
+vi.mock("../../utils/roles", () => ({
+  rolesWithWriteAccess: ["admin"],
+}));
 
 // Helpers used in rendering
 vi.mock("@/utils/dataUtils", () => ({
@@ -52,7 +43,6 @@ vi.mock("@/utils/dataUtils", () => ({
 vi.mock("../key_info_utils", () => ({
   extractLoggingSettings: () => ({}),
   formatMetadataForDisplay: (m: any) => JSON.stringify(m, null, 2),
-  stripTagsFromMetadata: (m: any) => m,
 }));
 vi.mock("../callback_info_helpers", () => ({
   callback_map: {},
@@ -128,9 +118,7 @@ vi.mock("@tremor/react", async () => {
 });
 
 // antd bits -> async factory & local React
-vi.mock("antd", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("antd")>();
-
+vi.mock("antd", async () => {
   const React = await import("react");
 
   const Form = { useForm: () => [{}] };
@@ -161,7 +149,7 @@ vi.mock("antd", async (importOriginal) => {
   }
   (Button as any).displayName = "AntdButton";
 
-  return { ...actual, Form, Input, InputNumber, Select, Tooltip, Button };
+  return { Form, Input, InputNumber, Select, Tooltip, Button };
 });
 
 // Icons -> async factory & local React
@@ -229,26 +217,6 @@ vi.mock("../common_components/AutoRotationView", async () => {
   return { __esModule: true, default: AutoRotationView };
 });
 
-// Mock Next.js router to avoid "invariant expected app router to be mounted" error
-vi.mock("next/navigation", () => ({
-  useRouter: () => ({
-    push: vi.fn(),
-    replace: vi.fn(),
-    refresh: vi.fn(),
-    back: vi.fn(),
-    forward: vi.fn(),
-    prefetch: vi.fn(),
-  }),
-}));
-
-// Mock useTeams hook
-vi.mock("@/app/(dashboard)/hooks/useTeams", () => ({
-  default: vi.fn(() => ({
-    teams: [],
-    setTeams: vi.fn(),
-  })),
-}));
-
 // KeyEditView mock: triggers onSubmit with our injected form values
 vi.mock("./key_edit_view", async () => {
   const React = await import("react");
@@ -276,7 +244,7 @@ import KeyInfoView from "./key_info_view";
 const baseKeyData = {
   token_id: "tok_123",
   token: "tok_123",
-  key_alias: "My Virtual Key",
+  key_alias: "My API Key",
   key_name: "sk-xxxx",
   created_at: new Date().toISOString(),
   updated_at: new Date().toISOString(),
@@ -294,29 +262,21 @@ const baseKeyData = {
   next_rotation_at: null as any,
 };
 
-const renderView = (premiumUser: boolean) => {
-  // Configure the mock for this test
-  mockUseAuthorized.mockReturnValue({
-    accessToken: "access_abc",
-    userId: "user_1",
-    userRole: "Admin",
-    premiumUser,
-    token: "token_123",
-    userEmail: "test@example.com",
-    disabledPersonalKeyCreation: false,
-    showSSOBanner: false,
-  });
-
-  return render(
+const renderView = (premiumUser: boolean) =>
+  render(
     <KeyInfoView
       keyId="tok_123"
       onClose={() => {}}
       keyData={baseKeyData as any}
       onKeyDataUpdate={() => {}}
+      accessToken="access_abc"
+      userID="user_1"
+      userRole="admin"
       teams={[]}
+      premiumUser={premiumUser}
+      setAccessToken={() => {}}
     />,
   );
-};
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -328,7 +288,6 @@ describe("KeyInfoView handleKeyUpdate premium guard", () => {
   it("removes guardrails & prompts for non-premium users and prevents metadata.guardrails", async () => {
     renderView(false); // premiumUser = false
 
-    fireEvent.click(screen.getByText("Settings"));
     fireEvent.click(screen.getByText("Edit Settings"));
     (globalThis as any).__TEST_FORM_VALUES = {
       token: "tok_123",
@@ -353,7 +312,6 @@ describe("KeyInfoView handleKeyUpdate premium guard", () => {
   it("preserves guardrails & prompts for premium users and includes metadata.guardrails", async () => {
     renderView(true); // premiumUser = true
 
-    fireEvent.click(screen.getByText("Settings"));
     fireEvent.click(screen.getByText("Edit Settings"));
     (globalThis as any).__TEST_FORM_VALUES = {
       token: "tok_123",
@@ -380,7 +338,6 @@ describe("KeyInfoView handleKeyUpdate empty strings", () => {
     it(`maps empty strings to null for ${limit}`, async () => {
       renderView(true); // premiumUser = true
 
-      fireEvent.click(screen.getByText("Settings"));
       fireEvent.click(screen.getByText("Edit Settings"));
       (globalThis as any).__TEST_FORM_VALUES = {
         token: "tok_123",

@@ -6,11 +6,10 @@ Simplified handler leveraging existing LiteLLM Bedrock infrastructure.
 
 from typing import Any, Dict
 
-import httpx
+from fastapi import HTTPException
 
 import litellm
 from litellm._logging import verbose_logger
-from litellm.llms.bedrock.common_utils import BedrockError
 from litellm.llms.bedrock.count_tokens.transformation import BedrockCountTokensConfig
 from litellm.llms.custom_httpx.http_handler import get_async_httpx_client
 
@@ -71,8 +70,6 @@ class BedrockCountTokensHandler(BedrockCountTokensConfig):
             verbose_logger.debug(f"Making request to: {endpoint_url}")
 
             # Use existing _sign_request method from BaseAWSLLM
-            # Extract api_key for bearer token auth if provided
-            api_key = litellm_params.get("api_key", None)
             headers = {"Content-Type": "application/json"}
             signed_headers, signed_body = self._sign_request(
                 service_name="bedrock",
@@ -81,7 +78,6 @@ class BedrockCountTokensHandler(BedrockCountTokensConfig):
                 request_data=bedrock_request,
                 api_base=endpoint_url,
                 model=resolved_model,
-                api_key=api_key,
             )
 
             async_client = get_async_httpx_client(llm_provider=litellm.LlmProviders.BEDROCK)
@@ -98,9 +94,9 @@ class BedrockCountTokensHandler(BedrockCountTokensConfig):
             if response.status_code != 200:
                 error_text = response.text
                 verbose_logger.error(f"AWS Bedrock error: {error_text}")
-                raise BedrockError(
-                    status_code=response.status_code,
-                    message=error_text,
+                raise HTTPException(
+                    status_code=400,
+                    detail={"error": f"AWS Bedrock error: {error_text}"},
                 )
 
             bedrock_response = response.json()
@@ -116,19 +112,12 @@ class BedrockCountTokensHandler(BedrockCountTokensConfig):
 
             return final_response
 
-        except BedrockError:
-            # Re-raise Bedrock exceptions as-is
+        except HTTPException:
+            # Re-raise HTTP exceptions as-is
             raise
-        except httpx.HTTPStatusError as e:
-            # HTTP errors - preserve the actual status code
-            verbose_logger.error(f"HTTP error in CountTokens handler: {str(e)}")
-            raise BedrockError(
-                status_code=e.response.status_code,
-                message=e.response.text,
-            )
         except Exception as e:
             verbose_logger.error(f"Error in CountTokens handler: {str(e)}")
-            raise BedrockError(
+            raise HTTPException(
                 status_code=500,
-                message=f"CountTokens processing error: {str(e)}",
+                detail={"error": f"CountTokens processing error: {str(e)}"},
             )

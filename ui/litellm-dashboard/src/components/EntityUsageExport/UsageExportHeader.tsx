@@ -1,14 +1,15 @@
-import type { DateRangePickerValue } from "@tremor/react";
+import React, { useState } from "react";
 import { Button, Text } from "@tremor/react";
 import { Select } from "antd";
-import React, { useState } from "react";
+import AdvancedDatePicker from "../shared/advanced_date_picker";
 import EntityUsageExportModal from "./EntityUsageExportModal";
-import type { EntitySpendData, EntityType } from "./types";
-import type { Team } from "@/components/key_team_helpers/key_list";
+import type { DateRangePickerValue } from "@tremor/react";
+import type { EntitySpendData } from "./types";
 
 interface UsageExportHeaderProps {
   dateValue: DateRangePickerValue;
-  entityType: EntityType;
+  onDateChange: (value: DateRangePickerValue) => void;
+  entityType: "tag" | "team";
   spendData: EntitySpendData;
   // Optional filter props
   showFilters?: boolean;
@@ -19,11 +20,11 @@ interface UsageExportHeaderProps {
   filterOptions?: Array<{ label: string; value: string }>;
   customTitle?: string;
   compactLayout?: boolean;
-  teams?: Team[];
 }
 
 const UsageExportHeader: React.FC<UsageExportHeaderProps> = ({
   dateValue,
+  onDateChange,
   entityType,
   spendData,
   showFilters = false,
@@ -34,27 +35,26 @@ const UsageExportHeader: React.FC<UsageExportHeaderProps> = ({
   filterOptions = [],
   customTitle,
   compactLayout = false,
-  teams = [],
 }) => {
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
-
-  // Determine grid layout based on what's visible
-  const getGridCols = () => {
-    const hasFilters = showFilters && filterOptions.length > 0;
-
-    if (hasFilters) return "grid-cols-[1fr_auto]";
-    return "grid-cols-[auto]";
-  };
 
   return (
     <>
       <div className="mb-4">
         {/**
-         * Use CSS grid with items-end so all cells (filter, button)
+         * Use CSS grid with items-end so all cells (date picker, filter, button)
          * align to the same baseline regardless of label heights. This removes
          * vertical drift when the right column has a label above the input.
          */}
-        <div className={`grid ${getGridCols()} items-end gap-4`}>
+        <div
+          className={`grid ${
+            showFilters && filterOptions.length > 0 ? "grid-cols-[1fr_1fr_auto]" : "grid-cols-[1fr_auto]"
+          } items-end gap-4`}
+        >
+          <div>
+            <AdvancedDatePicker value={dateValue} onValueChange={onDateChange} />
+          </div>
+
           {showFilters && filterOptions.length > 0 && (
             <div>
               {filterLabel && <Text className="mb-2">{filterLabel}</Text>}
@@ -98,10 +98,10 @@ const UsageExportHeader: React.FC<UsageExportHeaderProps> = ({
         dateRange={dateValue}
         selectedFilters={selectedFilters}
         customTitle={customTitle}
-        teams={teams}
       />
     </>
   );
 };
 
 export default UsageExportHeader;
+

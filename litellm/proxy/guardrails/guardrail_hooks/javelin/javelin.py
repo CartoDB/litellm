@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import TYPE_CHECKING, Dict, List, Optional, Type, Union
+from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Type, Union
 
 from fastapi import HTTPException
 
@@ -18,7 +18,7 @@ from litellm.types.proxy.guardrails.guardrail_hooks.javelin import (
     JavelinGuardRequest,
     JavelinGuardResponse,
 )
-from litellm.types.utils import CallTypesLiteral, GuardrailStatus
+from litellm.types.utils import GuardrailStatus
 
 if TYPE_CHECKING:
     from litellm.types.proxy.guardrails.guardrail_hooks.base import GuardrailConfigModel
@@ -83,7 +83,6 @@ class JavelinGuardrail(CustomGuardrail):
     async def call_javelin_guard(
         self,
         request: JavelinGuardRequest,
-        event_type: GuardrailEventHooks,
     ) -> JavelinGuardResponse:
         """
         Call the Javelin guard API.
@@ -159,7 +158,6 @@ class JavelinGuardrail(CustomGuardrail):
                 start_time=start_time.timestamp(),
                 end_time=datetime.now().timestamp(),
                 duration=(datetime.now() - start_time).total_seconds(),
-                event_type=event_type,
             )
 
     async def async_pre_call_hook(
@@ -167,7 +165,18 @@ class JavelinGuardrail(CustomGuardrail):
         user_api_key_dict: UserAPIKeyAuth,
         cache: litellm.DualCache,
         data: Dict,
-        call_type: CallTypesLiteral,
+        call_type: Literal[
+            "completion",
+            "text_completion",
+            "embeddings",
+            "image_generation",
+            "moderation",
+            "audio_transcription",
+            "pass_through_endpoint",
+            "rerank",
+            "mcp_call",
+            "anthropic_messages",
+        ],
     ) -> Optional[Union[Exception, str, Dict]]:
         """
         Pre-call hook for the Javelin guardrail.
@@ -210,9 +219,7 @@ class JavelinGuardrail(CustomGuardrail):
             config=self.config if self.config else {},
         )
 
-        javelin_response = await self.call_javelin_guard(
-            request=javelin_guard_request, event_type=GuardrailEventHooks.pre_call
-        )
+        javelin_response = await self.call_javelin_guard(request=javelin_guard_request)
 
         assessments = javelin_response.get("assessments", [])
         reject_prompt = ""

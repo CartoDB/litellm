@@ -14,7 +14,6 @@ from litellm.constants import request_timeout
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
 from litellm.llms.base_llm.ocr.transformation import BaseOCRConfig, OCRResponse
 from litellm.llms.custom_httpx.llm_http_handler import BaseLLMHTTPHandler
-from litellm.types.router import GenericLiteLLMParams
 from litellm.utils import ProviderConfigManager, client
 
 ####### ENVIRONMENT VARIABLES ###################
@@ -244,9 +243,6 @@ def ocr(
             f"OCR call - model: {model}, provider: {custom_llm_provider}"
         )
 
-        # Get litellm params using GenericLiteLLMParams (same as responses API)
-        litellm_params = GenericLiteLLMParams(**kwargs)
-        
         # Extract OCR-specific parameters from kwargs
         supported_params = ocr_provider_config.get_supported_ocr_params(model=model)
         non_default_params = {}
@@ -287,7 +283,10 @@ def ocr(
             aocr=_is_async,
             headers=extra_headers,
             provider_config=ocr_provider_config,
-            litellm_params=dict(litellm_params),
+            litellm_params={
+                "api_base": api_base,
+                "api_key": api_key,
+            },
         )
 
         return response

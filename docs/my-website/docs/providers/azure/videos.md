@@ -25,6 +25,7 @@ LiteLLM supports Azure OpenAI's video generation models including Sora with full
 import os 
 os.environ["AZURE_OPENAI_API_KEY"] = "your-azure-api-key"
 os.environ["AZURE_OPENAI_API_BASE"] = "https://your-resource.openai.azure.com/"
+os.environ["AZURE_OPENAI_API_VERSION"] = "2024-02-15-preview"
 ```
 
 ### Basic Usage
@@ -36,6 +37,7 @@ import time
 
 os.environ["AZURE_OPENAI_API_KEY"] = "your-azure-api-key"
 os.environ["AZURE_OPENAI_API_BASE"] = "https://your-resource.openai.azure.com/"
+os.environ["AZURE_OPENAI_API_VERSION"] = "2024-02-15-preview"
 
 # Generate video
 response = video_generation(
@@ -51,7 +53,8 @@ print(f"Initial Status: {response.status}")
 # Check status until video is ready
 while True:
     status_response = video_status(
-        video_id=response.id
+        video_id=response.id,
+        model="azure/sora-2"
     )
     
     print(f"Current Status: {status_response.status}")
@@ -66,7 +69,8 @@ while True:
 
 # Download video content when ready
 video_bytes = video_content(
-    video_id=response.id
+    video_id=response.id,
+    model="azure/sora-2"
 )
 
 # Save to file
@@ -83,6 +87,7 @@ Here's how to call Azure video generation models with the LiteLLM Proxy Server
 ```bash
 export AZURE_OPENAI_API_KEY="your-azure-api-key"
 export AZURE_OPENAI_API_BASE="https://your-resource.openai.azure.com/"
+export AZURE_OPENAI_API_VERSION="2024-02-15-preview"
 ```
 
 ### 2. Start the proxy 
@@ -97,6 +102,7 @@ model_list:
       model: azure/sora-2
       api_key: os.environ/AZURE_OPENAI_API_KEY
       api_base: os.environ/AZURE_OPENAI_API_BASE
+      api_version: "2024-02-15-preview"
 ```
 
 </TabItem>
@@ -205,7 +211,8 @@ general_settings:
 ```python
 # Download video content
 video_bytes = video_content(
-    video_id="video_1234567890"
+    video_id="video_1234567890",
+    model="azure/sora-2"
 )
 
 # Save to file
@@ -236,7 +243,8 @@ def generate_and_download_video(prompt):
     
     # Step 3: Download video
     video_bytes = litellm.video_content(
-        video_id=video_id
+        video_id=video_id,
+        model="azure/sora-2"
     )
     
     # Step 4: Save to file
@@ -256,9 +264,9 @@ video_file = generate_and_download_video(
 ```python
 # Video editing with reference image
 response = litellm.video_remix(
-    video_id="video_456",
     prompt="Make the cat jump higher",
     input_reference=open("path/to/image.jpg", "rb"),  # Reference image as file object
+    model="azure/sora-2",
     seconds="8"
 )
 
