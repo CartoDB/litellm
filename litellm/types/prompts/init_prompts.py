@@ -11,6 +11,8 @@ class SupportedPromptIntegrations(str, Enum):
     CUSTOM = "custom"
     BITBUCKET = "bitbucket"
     GITLAB = "gitlab"
+    GENERIC_PROMPT_MANAGEMENT = "generic_prompt_management"
+    ARIZE_PHOENIX = "arize_phoenix"
 
 
 class PromptInfo(BaseModel):

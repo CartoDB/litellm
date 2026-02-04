@@ -42,6 +42,9 @@ DEFAULT_REPLICATE_POLLING_DELAY_SECONDS = int(
 DEFAULT_IMAGE_TOKEN_COUNT = int(os.getenv("DEFAULT_IMAGE_TOKEN_COUNT", 250))
 DEFAULT_IMAGE_WIDTH = int(os.getenv("DEFAULT_IMAGE_WIDTH", 300))
 DEFAULT_IMAGE_HEIGHT = int(os.getenv("DEFAULT_IMAGE_HEIGHT", 300))
+MAX_IMAGE_URL_DOWNLOAD_SIZE_MB = int(
+    os.getenv("MAX_IMAGE_URL_DOWNLOAD_SIZE_MB", 20)
+)  # Maximum allowed size for downloading images from URLs (default 20MB)
 MAX_SIZE_PER_ITEM_IN_MEMORY_CACHE_IN_KB = int(
     os.getenv("MAX_SIZE_PER_ITEM_IN_MEMORY_CACHE_IN_KB", 1024)
 )  # 1MB = 1024KB
@@ -216,6 +219,9 @@ DEFAULT_POLLING_INTERVAL = float(
 AZURE_OPERATION_POLLING_TIMEOUT = int(os.getenv("AZURE_OPERATION_POLLING_TIMEOUT", 120))
 REDIS_SOCKET_TIMEOUT = float(os.getenv("REDIS_SOCKET_TIMEOUT", 0.1))
 REDIS_CONNECTION_POOL_TIMEOUT = int(os.getenv("REDIS_CONNECTION_POOL_TIMEOUT", 5))
+# Default Redis major version to assume when version cannot be determined
+# Using 7 as it's the modern version that supports LPOP with count parameter
+DEFAULT_REDIS_MAJOR_VERSION = int(os.getenv("DEFAULT_REDIS_MAJOR_VERSION", 7))
 NON_LLM_CONNECTION_TIMEOUT = int(
     os.getenv("NON_LLM_CONNECTION_TIMEOUT", 15)
 )  # timeout for adjacent services (e.g. jwt auth)

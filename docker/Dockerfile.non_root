@@ -68,7 +68,9 @@ RUN rm -rf dist/* && python -m build && \
   cp dist/*.whl /wheels/
 
 # Optionally build local litellm-proxy-extras wheel
+# Remove any old litellm_proxy_extras wheels before copying new one to prevent version conflicts
 RUN if [ "$PROXY_EXTRAS_SOURCE" = "local" ]; then \
+      rm -f /wheels/litellm_proxy_extras-*.whl && \
       cd /app/litellm-proxy-extras && rm -rf dist && python -m build && \
       cp dist/*.whl /wheels/; \
     fi
