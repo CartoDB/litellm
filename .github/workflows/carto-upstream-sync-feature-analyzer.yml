@@ -518,12 +518,12 @@ jobs:
 
           echo "::endgroup::"
 
-      - name: Update PR description with analysis
+      - name: Update PR description with full analysis
         if: steps.verify-analysis.outputs.analysis_exists == 'true'
         env:
           GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
         run: |
-          echo "::group::Updating PR description with analysis"
+          echo "::group::Updating PR description with full analysis"
 
           PR_NUMBER="${{ steps.pr-info.outputs.pr-number }}"
 
@@ -533,7 +533,7 @@ jobs:
           # Remove existing CARTO features section if present
           CLEAN_BODY=$(echo "$CURRENT_BODY" | sed '/<!-- CARTO_FEATURES_START -->/,/<!-- CARTO_FEATURES_END -->/d')
 
-          # Build CARTO features status section
+          # Build CARTO features status section with FULL details
           ASSESSMENT="${{ steps.verify-analysis.outputs.assessment }}"
           if [ "$ASSESSMENT" == "PASS" ]; then
             ASSESSMENT_ICON="✅"
@@ -548,9 +548,6 @@ jobs:
 
           **Overall Assessment:** ${ASSESSMENT_ICON} ${ASSESSMENT}
 
-          <details>
-          <summary>Decision Summary (click to expand)</summary>
-
           | Decision | Count | Description |
           |----------|-------|-------------|
           | **Upstream Substitutes** | ${{ steps.verify-analysis.outputs.upstream_substitutes }} | Upstream provides equivalent functionality |
@@ -559,19 +556,49 @@ jobs:
           | **Incorrectly Dropped** | ${{ steps.verify-analysis.outputs.incorrectly_dropped }} | CARTO feature lost (needs fixing!) |
           | **Total** | **${{ steps.verify-analysis.outputs.total }}** | |
 
-          </details>
+          SECTION_EOF
 
-          <details>
-          <summary>Analysis Details (click to expand)</summary>
+          # Add detailed analysis markdown if exists
+          if [ -f /tmp/analysis_summary.md ]; then
+            echo "" >> /tmp/carto_section.md
+            echo "---" >> /tmp/carto_section.md
+            echo "" >> /tmp/carto_section.md
+            cat /tmp/analysis_summary.md >> /tmp/carto_section.md
+          fi
 
+          # Add feature-by-feature breakdown
+          if [ -f /tmp/feature_analysis.json ]; then
+            echo "" >> /tmp/carto_section.md
+            echo "---" >> /tmp/carto_section.md
+            echo "" >> /tmp/carto_section.md
+            echo "### Feature-by-Feature Breakdown" >> /tmp/carto_section.md
+            echo "" >> /tmp/carto_section.md
+
+            jq -r '.features[] |
+              "#### PR #\(.pr): \(.title)\n" +
+              "- **Decision:** " + (
+                if .decision == "UPSTREAM_SUBSTITUTES" then "✅ Upstream Substitutes"
+                elif .decision == "CUSTOMIZED_UPSTREAM" then "🔧 Customized Upstream"
+                elif .decision == "PRESERVED_CARTO" then "🔒 Preserved CARTO"
+                else "❌ Incorrectly Dropped"
+                end
+              ) + " (\(.confidence // "unknown") confidence)\n" +
+              "- **Reason:** \(.reason // "N/A")\n" +
+              "- **Files:** \((.files_analyzed // []) | join(", "))\n" +
+              "- **Recommendation:** \(.recommendation // "N/A")\n"
+            ' /tmp/feature_analysis.json >> /tmp/carto_section.md 2>/dev/null || echo "Could not parse features" >> /tmp/carto_section.md
+          fi
+
+          # Add metadata footer
+          cat >> /tmp/carto_section.md << METADATA_EOF
+
+          ---
           **Analyzed:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")
           **Workflow Run:** [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
           **Method:** Claude Code (Opus 4.5) post-resolution semantic analysis
 
-          </details>
-
           <!-- CARTO_FEATURES_END -->
-          SECTION_EOF
+          METADATA_EOF
 
           # Combine and update PR
           NEW_BODY="${CLEAN_BODY}
@@ -580,28 +607,26 @@ jobs:
 
           gh pr edit $PR_NUMBER --repo ${{ github.repository }} --body "$NEW_BODY"
 
-          echo "[Analyzer] PR description updated"
+          echo "[Analyzer] PR description updated with full analysis"
           echo "::endgroup::"
 
-      - name: Post analysis comment
+      - name: Post summary comment
         if: steps.verify-analysis.outputs.analysis_exists == 'true'
         env:
           GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
         run: |
           PR_NUMBER="${{ steps.pr-info.outputs.pr-number }}"
 
-          # Build comment from analysis
+          # Build SHORT summary comment
           ASSESSMENT="${{ steps.verify-analysis.outputs.assessment }}"
           if [ "$ASSESSMENT" == "PASS" ]; then
-            HEADER="## CARTO Feature Preservation Analysis Complete"
+            HEADER="## ✅ CARTO Feature Analysis Complete"
           else
-            HEADER="## CARTO Feature Preservation Analysis - Attention Needed"
+            HEADER="## ⚠️ CARTO Feature Analysis - Attention Needed"
           fi
 
           cat > /tmp/analysis_comment.md << COMMENT_EOF
           ${HEADER}
-
-          ### Summary
 
           | Decision | Count |
           |----------|-------|
@@ -612,52 +637,15 @@ jobs:
 
           **Overall Assessment:** ${ASSESSMENT}
 
-          COMMENT_EOF
-
-          # Add detailed analysis if summary exists
-          if [ -f /tmp/analysis_summary.md ]; then
-            echo "<details>" >> /tmp/analysis_comment.md
-            echo "<summary>Detailed Analysis (click to expand)</summary>" >> /tmp/analysis_comment.md
-            echo "" >> /tmp/analysis_comment.md
-            cat /tmp/analysis_summary.md >> /tmp/analysis_comment.md
-            echo "" >> /tmp/analysis_comment.md
-            echo "</details>" >> /tmp/analysis_comment.md
-          fi
-
-          # Add feature-by-feature breakdown
-          if [ -f /tmp/feature_analysis.json ]; then
-            echo "" >> /tmp/analysis_comment.md
-            echo "<details>" >> /tmp/analysis_comment.md
-            echo "<summary>Feature-by-Feature Breakdown (click to expand)</summary>" >> /tmp/analysis_comment.md
-            echo "" >> /tmp/analysis_comment.md
-
-            jq -r '.features[] |
-              "**PR #\(.pr):** \(.title)\n" +
-              "- Decision: " + (
-                if .decision == "UPSTREAM_SUBSTITUTES" then "Upstream Substitutes"
-                elif .decision == "CUSTOMIZED_UPSTREAM" then "Customized Upstream"
-                elif .decision == "PRESERVED_CARTO" then "Preserved CARTO"
-                else "Incorrectly Dropped"
-                end
-              ) + " (\(.confidence // "unknown") confidence)\n" +
-              "- Reason: \(.reason // "N/A")\n" +
-              "- Files: \((.files_analyzed // []) | join(", "))\n" +
-              "- Recommendation: \(.recommendation // "N/A")\n"
-            ' /tmp/feature_analysis.json >> /tmp/analysis_comment.md 2>/dev/null || echo "Could not parse features" >> /tmp/analysis_comment.md
-
-            echo "" >> /tmp/analysis_comment.md
-            echo "</details>" >> /tmp/analysis_comment.md
-          fi
-
-          cat >> /tmp/analysis_comment.md << COMMENT_FOOTER
+          📋 **Full details in PR description above.**
 
           ---
-          **Workflow Run:** [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
-          COMMENT_FOOTER
+          [View workflow run →](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          COMMENT_EOF
 
           gh pr comment $PR_NUMBER --repo ${{ github.repository }} --body "$(cat /tmp/analysis_comment.md)"
 
-          echo "[Analyzer] Analysis comment posted"
+          echo "[Analyzer] Summary comment posted"
 
       - name: Comment on PR - Analysis failed
         if: failure() || steps.verify-analysis.outputs.analysis_exists != 'true'
