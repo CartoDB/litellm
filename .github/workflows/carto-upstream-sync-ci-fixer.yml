@@ -315,23 +315,35 @@ jobs:
           fi
 
           # Fetch merged PRs to carto/main, filter by org members
+          # IMPORTANT: Also fetch labels for exclusion filtering
           gh pr list \
             --repo ${{ github.repository }} \
             --base carto/main \
             --state merged \
             --limit 1000 \
-            --json number,title,author,files \
+            --json number,title,author,files,labels \
             > "${OUTPUT_PATH}/all_prs.json" 2>/dev/null || echo "[]" > "${OUTPUT_PATH}/all_prs.json"
 
+          # Filter to CARTO org members, excluding upstream-sync PRs
+          # IMPORTANT: Exclude upstream-sync PRs (they sync upstream code, not CARTO customizations)
+          # This prevents files touched by previous syncs from being incorrectly marked as "CARTO-modified"
           jq --arg pattern "$ORG_MEMBERS" '
-            [.[] | select(.author.login | test("^(" + $pattern + ")$"; "i"))]
+            [.[] |
+              select(.author.login | test("^(" + $pattern + ")$"; "i")) |
+              # Exclude PRs with upstream-sync label
+              select(([.labels[].name] | any(. == "upstream-sync")) | not) |
+              # Exclude PRs with sync/resolve/CI-fixer titles
+              select(.title | test("^(sync:|upstream sync:|fix: resolve.*upstream|fix: resolve conflicts|fix\\(ci\\):|merge:)"; "i") | not) |
+              # Also exclude PRs containing "Upstream Sync:"
+              select(.title | test("Upstream Sync:"; "i") | not)
+            ]
           ' "${OUTPUT_PATH}/all_prs.json" > "${OUTPUT_PATH}/carto_prs.json"
 
           # Extract unique file paths
           jq -r '[.[] | .files[].path] | unique | .[]' "${OUTPUT_PATH}/carto_prs.json" > "${OUTPUT_PATH}/carto_files.txt"
 
           FILE_COUNT=$(wc -l < "${OUTPUT_PATH}/carto_files.txt" | tr -d ' ')
-          echo "[CI Fixer] Found ${FILE_COUNT} CARTO-modified files"
+          echo "[CI Fixer] Found ${FILE_COUNT} CARTO-modified files (excluding upstream-sync PRs)"
 
           rm -f "${OUTPUT_PATH}/all_prs.json"
           echo "::endgroup::"
@@ -377,25 +389,37 @@ jobs:
 
             ---
 
-            ## 🧠 STOP AND THINK: CHECK FOR FIX LOOPS
+            ## 🧠 STOP AND THINK: CHECK FOR FIX LOOPS (CRITICAL!)
 
             **BEFORE fixing anything, check the PR comments to see previous fix attempts:**
 
             ```bash
-            gh pr view ${{ needs.check-ci-status.outputs.pr-number }} --repo ${{ github.repository }} --comments | grep -A 5 "Errors Fixed\|Fix Applied"
+            gh pr view ${{ needs.check-ci-status.outputs.pr-number }} --repo ${{ github.repository }} --comments | grep -A 10 "Fixes Applied\|Fix Applied\|Added.*function\|Added.*from upstream"
             ```
 
             **If you see the SAME FILE mentioned in multiple previous fixes, you are in a FIX LOOP.**
 
-            **Example of a fix loop:**
+            **Example of a fix loop (DETECT THIS!):**
             - Attempt #1: Added `function_a` to `common_utils.py`
             - Attempt #2: Added `function_b` to `common_utils.py`
             - Attempt #3: Added `function_c` to `common_utils.py`  ← THIS IS A LOOP!
 
+            **ROOT CAUSE:** The conflict resolver may have INCORRECTLY kept the OLD carto/main version
+            of a file instead of the NEW upstream version. This causes ImportErrors for every
+            function/class that was added in upstream but is missing in the old version.
+
             **SOLUTION: Sync the ENTIRE file from upstream instead of patching:**
 
             ```bash
+            # FIRST: Add upstream remote if not already added
+            git remote add upstream https://github.com/BerriAI/litellm.git 2>/dev/null || true
             git fetch upstream main
+
+            # THEN: Compare line counts to confirm upstream has more content
+            echo "Upstream:" && git show upstream/main:path/to/problematic_file.py | wc -l
+            echo "Current:" && wc -l < path/to/problematic_file.py
+
+            # IF upstream has more lines, sync the ENTIRE file:
             git show upstream/main:path/to/problematic_file.py > path/to/problematic_file.py
             ```
 
@@ -405,25 +429,34 @@ jobs:
 
             ## 🔄 UPSTREAM SYNC ISSUES: FILES WITH PARTIAL CONTENT
 
-            **The upstream sync may have left files with PARTIAL content from upstream.**
+            **The conflict resolver may have INCORRECTLY kept the OLD carto/main version of files
+            instead of the NEW upstream version. This causes ImportErrors for missing functions.**
 
-            When you see `ImportError: cannot import name 'X' from 'module'`:
+            **DETECTION:** When you see `ImportError: cannot import name 'X' from 'module'`:
 
-            1. **Compare file sizes:**
+            1. **Add upstream remote and compare file sizes:**
             ```bash
+            git remote add upstream https://github.com/BerriAI/litellm.git 2>/dev/null || true
+            git fetch upstream main
+
             echo "Upstream:" && git show upstream/main:path/to/file.py | wc -l
             echo "Current:" && wc -l < path/to/file.py
             ```
 
-            2. **If upstream has MORE lines, sync the entire file:**
+            2. **If upstream has significantly MORE lines (>50), sync the ENTIRE file:**
             ```bash
             git show upstream/main:path/to/file.py > path/to/file.py
             ```
 
-            3. **Common files that need full sync:**
-            - `litellm/constants.py`
-            - `litellm/llms/vertex_ai/common_utils.py`
+            3. **Files commonly affected by this bug:**
+            - `litellm/constants.py` (often 200+ lines missing)
+            - `litellm/llms/vertex_ai/common_utils.py` (often 300+ lines missing)
             - `litellm/types/utils.py`
+            - `litellm/llms/bedrock/common_utils.py`
+
+            **WHY THIS HAPPENS:** Previous upstream sync PRs touched these files, which caused them
+            to be incorrectly classified as "CARTO-modified". The resolver then kept the old version
+            instead of accepting the new upstream version.
 
             **IMPORTANT:** If a file is NOT in the CARTO-modified list, it's safe to sync entirely from upstream.
 

@@ -487,12 +487,27 @@ jobs:
           echo "[Resolver] Found ${TOTAL_PRS} total PRs merged to carto/main"
 
           # Step 3: Filter to CARTO org member authors only
+          # IMPORTANT: Exclude upstream-sync PRs (they sync upstream code, not CARTO customizations)
+          # This prevents files touched by previous syncs from being incorrectly marked as "CARTO-modified"
+          #
+          # Exclusion criteria:
+          # - Labels: upstream-sync (main sync PRs always have this)
+          # - Titles: sync:, Upstream Sync:, fix: resolve conflicts, fix: resolve.*upstream,
+          #           fix(ci): (CI fixer commits), merge: (merge commits)
           jq --arg pattern "$ORG_MEMBERS" '
-            [.[] | select(.author.login | test("^(" + $pattern + ")$"; "i"))]
+            [.[] |
+              select(.author.login | test("^(" + $pattern + ")$"; "i")) |
+              # Exclude PRs with upstream-sync label (catches all main sync PRs)
+              select(([.labels[].name] | any(. == "upstream-sync")) | not) |
+              # Exclude PRs with sync/resolve/CI-fixer titles
+              select(.title | test("^(sync:|upstream sync:|fix: resolve.*upstream|fix: resolve conflicts|fix\\(ci\\):|merge:)"; "i") | not) |
+              # Also exclude PRs containing "Upstream Sync:" (catches emoji prefix like 🔄)
+              select(.title | test("Upstream Sync:"; "i") | not)
+            ]
           ' "${OUTPUT_PATH}/all_prs.json" > "${OUTPUT_PATH}/carto_prs.json"
 
           CARTO_PRS=$(jq 'length' "${OUTPUT_PATH}/carto_prs.json")
-          echo "[Resolver] Found ${CARTO_PRS} PRs by CARTO org members"
+          echo "[Resolver] Found ${CARTO_PRS} PRs by CARTO org members (excluding upstream-sync PRs)"
 
           # Step 4: Extract unique file paths from CARTO PRs
           jq -r '[.[] | .files[].path] | unique | .[]' "${OUTPUT_PATH}/carto_prs.json" > "${OUTPUT_PATH}/carto_files.txt"
