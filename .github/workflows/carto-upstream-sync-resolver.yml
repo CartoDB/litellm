@@ -11,7 +11,7 @@ name: CARTO Upstream Sync - Conflict Resolver # do not change the name since is 
 #
 # This ensures:
 #   - Single PR workflow (no separate resolution PR)
-#   - Merge commit always has both parents (upstream + carto/main)
+#   - Merge commit always has both parents (upstream with main tag checkout + carto/main)
 #   - Git operations are deterministic (not dependent on Claude's actions)
 #
 # Security features:
@@ -364,6 +364,41 @@ jobs:
             echo "[Resolver] Conflicted files (${CONFLICT_COUNT}):"
             echo "$CONFLICTS"
           fi
+
+          echo "::endgroup::"
+
+      # =========================================================================
+      # Auto-resolve build artifacts (accept upstream - CARTO doesn't customize these)
+      # =========================================================================
+      - name: Auto-resolve build artifacts (accept upstream)
+        id: auto-resolve
+        run: |
+          echo "::group::Auto-resolving build artifacts"
+
+          # Patterns for build artifacts and generated files
+          # CARTO doesn't customize these - always accept upstream
+          AUTO_RESOLVE_DIRS=(
+            "litellm/proxy/_experimental/out/"
+            "ui/litellm-dashboard/out/"
+          )
+
+          CONFLICTS=$(git diff --name-only --diff-filter=U 2>/dev/null || echo "")
+          AUTO_RESOLVED=0
+
+          for file in $CONFLICTS; do
+            for dir in "${AUTO_RESOLVE_DIRS[@]}"; do
+              if [[ "$file" == "$dir"* ]]; then
+                echo "[Auto-resolve] Accepting upstream: $file"
+                git checkout --theirs "$file" 2>/dev/null || true
+                git add "$file" 2>/dev/null || true
+                AUTO_RESOLVED=$((AUTO_RESOLVED + 1))
+                break
+              fi
+            done
+          done
+
+          echo "[Auto-resolve] Resolved ${AUTO_RESOLVED} build artifact(s)"
+          echo "auto-resolved=${AUTO_RESOLVED}" >> $GITHUB_OUTPUT
 
           echo "::endgroup::"
 
@@ -823,43 +858,6 @@ jobs:
         if: always()
         run: rm -f /tmp/gcp-sa.json
 
-      # ============================================================
-      # POST-CLAUDE: Complete merge, create branch, push, create PR
-      # These steps are HARDCODED to ensure correct git operations
-      # ============================================================
-
-      - name: Verify no conflict markers remain
-        id: verify-resolution
-        run: |
-          echo "::group::Verifying conflict resolution"
-
-          # Check for conflict markers in all relevant file types
-          # Pattern matches: <<<<<<< (start), ======= (middle, allowing trailing spaces), >>>>>>> (end)
-          MARKER_PATTERN="^<<<<<<<\|^=======\|^>>>>>>>"
-
-          FOUND_MARKERS=$(grep -r "${MARKER_PATTERN}" \
-            --include="*.py" \
-            --include="*.yaml" --include="*.yml" \
-            --include="*.md" \
-            --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" \
-            --include="*.toml" \
-            --include="*.prisma" \
-            --include="*.json" \
-            --include="*.txt" \
-            . 2>/dev/null | grep -v ".git" || echo "")
-
-          if [ -n "$FOUND_MARKERS" ]; then
-            echo "❌ ERROR: Conflict markers still present!"
-            echo "$FOUND_MARKERS"
-            echo "Claude did not fully resolve all conflicts."
-            echo "resolved=false" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-
-          echo "✅ No conflict markers found"
-          echo "resolved=true" >> $GITHUB_OUTPUT
-          echo "::endgroup::"
-
       # =========================================================================
       # CARTO Patch Verification - Dynamically verify CARTO code is preserved
       # =========================================================================
@@ -998,8 +996,48 @@ jobs:
 
           echo "::endgroup::"
 
+      # ============================================================
+      # POST-CLAUDE: Complete merge, create branch, push, create PR
+      # These steps are HARDCODED to ensure correct git operations
+      # ============================================================
+
+      - name: Verify no conflict markers remain
+        id: verify-resolution
+        run: |
+          echo "::group::Verifying conflict resolution"
+
+          # Check for conflict markers in source files
+          # Use specific patterns to avoid false positives (markdown dividers like ====)
+          # Real conflict markers: <<<<<<< HEAD, =======, >>>>>>> branch
+
+          FOUND_MARKERS=$(grep -rE "^(<{7}|>{7}|={7})[[:space:]]" \
+            --include="*.py" \
+            --include="*.yaml" --include="*.yml" \
+            --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" \
+            --include="*.toml" \
+            --include="*.prisma" \
+            --include="*.json" \
+            . 2>/dev/null \
+            | grep -v ".git" \
+            | grep -v "_experimental/out/" \
+            | grep -v "node_modules/" \
+            || echo "")
+
+          if [ -n "$FOUND_MARKERS" ]; then
+            echo "❌ ERROR: Conflict markers still present!"
+            echo "$FOUND_MARKERS"
+            echo "Claude did not fully resolve all conflicts."
+            echo "resolved=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+          echo "✅ No conflict markers found"
+          echo "resolved=true" >> $GITHUB_OUTPUT
+          echo "::endgroup::"
+
       - name: Complete merge commit (HARDCODED - creates merge with both parents)
         id: complete-merge
+        if: steps.verify-resolution.outputs.resolved == 'true'
         run: |
           echo "::group::Completing merge commit (WORKFLOW CONTROLLED)"
 
@@ -1009,7 +1047,7 @@ jobs:
           git add -A
 
           # Complete the merge - this creates a MERGE COMMIT with BOTH parents:
-          # - Parent 1: main (upstream)
+          # - Parent 1: main (upstream with main tag checkout)
           # - Parent 2: carto/main (CARTO customizations)
           git commit -m "fix: resolve upstream sync conflicts for PR #${PR_NUMBER}
 
@@ -1038,6 +1076,7 @@ jobs:
 
       - name: Push resolution to sync branch (HARDCODED - updates existing PR)
         id: push-resolution
+        if: steps.verify-resolution.outputs.resolved == 'true'
         run: |
           echo "::group::Pushing resolution to sync branch (WORKFLOW CONTROLLED)"
 
@@ -1053,7 +1092,36 @@ jobs:
           echo "✅ PR #${PR_NUMBER} will automatically update with the resolved changes"
           echo "branch-name=${HEAD_REF}" >> $GITHUB_OUTPUT
           echo "::endgroup::"
+    
+      - name: Check if more conflicts remain after push
+        id: check-remaining
+        if: steps.push-resolution.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          echo "::group::Checking if PR still has conflicts"
 
+          PR_NUMBER="${{ needs.check-eligibility.outputs.pr-number }}"
+
+          # Wait for GitHub to compute mergeable status
+          sleep 10
+
+          MERGEABLE=$(gh pr view ${PR_NUMBER} --repo ${{ github.repository }} --json mergeable --jq '.mergeable')
+          echo "[Resolver] PR mergeable status: ${MERGEABLE}"
+
+          if [[ "${MERGEABLE}" == "CONFLICTING" ]]; then
+            echo "[Resolver] PR still has conflicts - retriggering resolver"
+            gh workflow run carto-upstream-sync-resolver.yml \
+              --repo ${{ github.repository }} \
+              -f pr-number=${PR_NUMBER}
+            echo "retriggered=true" >> $GITHUB_OUTPUT
+          else
+            echo "[Resolver] PR is clean - no retrigger needed"
+            echo "retriggered=false" >> $GITHUB_OUTPUT
+          fi
+
+          echo "::endgroup::"
+          
       - name: Summary
         if: always()
         env:

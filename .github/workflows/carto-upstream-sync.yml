@@ -331,14 +331,20 @@ jobs:
           # Format: upstream-sync/vX.Y.Z-stable (e.g., upstream-sync/v1.79.3-stable)
           BRANCH_NAME="upstream-sync/${NEW_VERSION}"
 
-          echo "[Sync] Creating branch: ${BRANCH_NAME}"
-          git checkout -b "${BRANCH_NAME}"
-
-          # Push the branch to origin
-          git push -u origin "${BRANCH_NAME}"
+          # Check if branch already exists on remote (from a previous failed run)
+          if git ls-remote --exit-code origin "${BRANCH_NAME}" >/dev/null 2>&1; then
+            echo "[Sync] Branch ${BRANCH_NAME} already exists - resetting to current HEAD"
+            git checkout -B "${BRANCH_NAME}"
+            git push -f origin "${BRANCH_NAME}"
+            echo "[Sync] ✅ Reset existing branch to current HEAD"
+          else
+            echo "[Sync] Creating new branch: ${BRANCH_NAME}"
+            git checkout -b "${BRANCH_NAME}"
+            git push -u origin "${BRANCH_NAME}"
+            echo "[Sync] ✅ Created and pushed new branch"
+          fi
 
           echo "branch-name=${BRANCH_NAME}" >> $GITHUB_OUTPUT
-          echo "[Sync] ✅ Created and pushed branch: ${BRANCH_NAME}"
           echo "::endgroup::"
 
       - name: Generate PR body
