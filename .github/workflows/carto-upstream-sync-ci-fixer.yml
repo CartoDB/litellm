@@ -700,13 +700,15 @@ jobs:
             git add -A
             git status
 
-            # Check if last commit was a CI fix by Cartofante (to amend it)
+            # Check if last commit was a CI fix (to amend it)
+            # Note: claude-code-action commits as "claude[bot]", not "Cartofante"
             LAST_COMMIT_MSG=$(git log -1 --pretty=%s)
             LAST_COMMIT_AUTHOR=$(git log -1 --pretty=%an)
 
             echo "Last commit: '$LAST_COMMIT_MSG' by '$LAST_COMMIT_AUTHOR'"
 
-            if [[ "$LAST_COMMIT_MSG" == fix\(ci\):* ]] && [[ "$LAST_COMMIT_AUTHOR" == "Cartofante" ]]; then
+            # Match CI fix commits from either claude[bot] or Cartofante
+            if [[ "$LAST_COMMIT_MSG" == fix\(ci\):* ]] && [[ "$LAST_COMMIT_AUTHOR" == "claude[bot]" || "$LAST_COMMIT_AUTHOR" == "Cartofante" ]]; then
               echo "✅ Found previous CI fix commit - AMENDING..."
               git commit --amend --no-edit
               git push --force-with-lease origin ${{ needs.check-ci-status.outputs.branch-name }}
