@@ -515,6 +515,94 @@ jobs:
 
           echo "::endgroup::"
 
+      - name: Build structured CARTO features inventory
+        id: carto-inventory
+        run: |
+          echo "::group::Building CARTO features inventory"
+
+          # Create structured inventory with PR details and category classification
+          jq '[.[] | {
+            pr_number: .number,
+            title: .title,
+            author: .author.login,
+            category: (
+              if .title | test("fix\\(azure\\)"; "i") then "Azure"
+              elif .title | test("fix\\(snowflake\\)"; "i") then "Snowflake"
+              elif .title | test("fix\\(databricks\\)"; "i") then "Databricks"
+              elif .title | test("fix\\(oci\\)"; "i") then "OCI"
+              elif .title | test("fix\\(responses\\)|responses.api"; "i") then "Responses API"
+              elif .title | test("fix\\(streaming\\)|streaming"; "i") then "Streaming"
+              elif .title | test("docker|prisma|dockerfile"; "i") then "Infrastructure"
+              elif .title | test("workflow|slack|release|ci"; "i") then "CI/CD"
+              else "Core"
+              end
+            ),
+            files: [.files[].path],
+            additions: .additions,
+            deletions: .deletions
+          }]' /tmp/carto-analysis/carto_prs.json > /tmp/carto_inventory.json
+
+          # Also extract the actual CARTO code for each feature for comparison
+          mkdir -p /tmp/carto_code
+          jq -r '.[] | "\(.pr_number):\(.files | join(","))"' /tmp/carto_inventory.json | while IFS=: read -r PR_NUM FILES; do
+            mkdir -p "/tmp/carto_code/pr_${PR_NUM}"
+            for FILE in $(echo "$FILES" | tr ',' '\n'); do
+              if git show origin/carto/main:"$FILE" &>/dev/null; then
+                mkdir -p "/tmp/carto_code/pr_${PR_NUM}/$(dirname "$FILE")"
+                git show origin/carto/main:"$FILE" > "/tmp/carto_code/pr_${PR_NUM}/$FILE" 2>/dev/null || true
+              fi
+            done
+          done
+
+          INVENTORY_COUNT=$(jq 'length' /tmp/carto_inventory.json)
+          echo "[Resolver] Built inventory with ${INVENTORY_COUNT} CARTO features"
+          echo "inventory-count=${INVENTORY_COUNT}" >> $GITHUB_OUTPUT
+
+          echo "::endgroup::"
+
+      - name: Extract CARTO feature functionality descriptions
+        run: |
+          echo "::group::Extracting feature functionality"
+
+          # For each CARTO PR, create a functionality summary for Claude to analyze
+          echo "# CARTO Features - Functionality Analysis" > /tmp/carto_functionality.md
+          echo "" >> /tmp/carto_functionality.md
+          echo "These are the CARTO customizations that need to be analyzed for preservation decisions." >> /tmp/carto_functionality.md
+
+          jq -c '.[]' /tmp/carto_inventory.json | while IFS= read -r FEATURE; do
+            PR_NUM=$(echo "$FEATURE" | jq -r '.pr_number')
+            TITLE=$(echo "$FEATURE" | jq -r '.title')
+            FILES=$(echo "$FEATURE" | jq -r '.files | join(", ")')
+            CATEGORY=$(echo "$FEATURE" | jq -r '.category')
+
+            echo "" >> /tmp/carto_functionality.md
+            echo "## PR #${PR_NUM}: ${TITLE}" >> /tmp/carto_functionality.md
+            echo "Category: ${CATEGORY}" >> /tmp/carto_functionality.md
+            echo "Files: ${FILES}" >> /tmp/carto_functionality.md
+            echo "" >> /tmp/carto_functionality.md
+            echo "Key Code Changes:" >> /tmp/carto_functionality.md
+
+            # Extract key functions/classes from CARTO version
+            for FILE in $(echo "$FEATURE" | jq -r '.files[]'); do
+              if [ -f "/tmp/carto_code/pr_${PR_NUM}/${FILE}" ]; then
+                PATTERNS=$(grep -E "^\s*(def |class |async def )" "/tmp/carto_code/pr_${PR_NUM}/${FILE}" 2>/dev/null | head -10 || true)
+                if [ -n "$PATTERNS" ]; then
+                  echo "" >> /tmp/carto_functionality.md
+                  echo "### ${FILE}" >> /tmp/carto_functionality.md
+                  echo '```' >> /tmp/carto_functionality.md
+                  echo "$PATTERNS" >> /tmp/carto_functionality.md
+                  echo '```' >> /tmp/carto_functionality.md
+                fi
+              fi
+            done
+
+            echo "" >> /tmp/carto_functionality.md
+            echo "---" >> /tmp/carto_functionality.md
+          done
+
+          echo "[Resolver] Created functionality descriptions at /tmp/carto_functionality.md"
+          echo "::endgroup::"
+
       - name: Build CARTO feature context
         id: carto-context
         run: |
@@ -868,6 +956,67 @@ jobs:
 
             ---
 
+            ## PHASE 2: CARTO FEATURE ANALYSIS (After Resolution)
+
+            After resolving all conflicts and verification passes, analyze each CARTO customization
+            to document what happened to each feature.
+
+            Read /tmp/carto_functionality.md for the list of CARTO features with their details.
+
+            For each feature, determine its status:
+
+            | Decision | When to Use |
+            |----------|-------------|
+            | **UPSTREAM_SUBSTITUTES** | Upstream code now provides the same functionality as CARTO customization |
+            | **CUSTOMIZED_UPSTREAM** | Used upstream as base but added/kept CARTO-specific behavior |
+            | **PRESERVED_CARTO** | Full CARTO implementation kept because upstream doesn't provide equivalent |
+
+            Write your analysis to `/tmp/feature_analysis.json` in this format:
+
+            ```json
+            {
+              "features": [
+                {
+                  "pr": 70,
+                  "title": "fix(azure): Strip operation suffixes",
+                  "category": "Azure",
+                  "decision": "UPSTREAM_SUBSTITUTES",
+                  "reason": "Upstream v1.81.0 added strip_operation_suffix() function that provides identical functionality",
+                  "files_affected": ["litellm/llms/azure/common_utils.py"],
+                  "confidence": "high"
+                }
+              ],
+              "summary": {
+                "upstream_substitutes": 5,
+                "customized_upstream": 3,
+                "preserved_carto": 2,
+                "total": 10
+              }
+            }
+            ```
+
+            ### How to write the analysis file:
+
+            ```bash
+            cat > /tmp/feature_analysis.json << 'ANALYSIS_EOF'
+            {
+              "features": [
+                ... your analysis for each PR ...
+              ],
+              "summary": {
+                "upstream_substitutes": X,
+                "customized_upstream": Y,
+                "preserved_carto": Z,
+                "total": N
+              }
+            }
+            ANALYSIS_EOF
+            ```
+
+            Say **"FEATURE ANALYSIS COMPLETE"** after writing the file.
+
+            ---
+
             ## WORKFLOW HANDLES THESE (DO NOT RUN)
 
             - ❌ `git commit` - Workflow does this
@@ -878,9 +1027,16 @@ jobs:
 
             ## SAY "RESOLUTION COMPLETE" WHEN DONE
 
-            When all conflicts are resolved and verification passes, say exactly:
+            When all conflicts are resolved, verification passes, AND feature analysis is written, say exactly:
 
             **"RESOLUTION COMPLETE"**
+
+            Checklist before saying this:
+            1. ✅ All conflicts resolved
+            2. ✅ Docker build passes
+            3. ✅ No conflict markers remain
+            4. ✅ CARTO features verified
+            5. ✅ /tmp/feature_analysis.json written with analysis
 
             The workflow will then stage, commit, and push to this PR.
 
@@ -913,6 +1069,47 @@ jobs:
           else
             echo "✅ No conflict markers found"
             echo "has-issues=false" >> $GITHUB_OUTPUT
+          fi
+
+          echo "::endgroup::"
+
+      - name: Verify CARTO features analysis exists
+        id: feature-status
+        run: |
+          echo "::group::Checking CARTO feature analysis"
+
+          if [ -f /tmp/feature_analysis.json ]; then
+            echo "[Resolver] ✅ Feature analysis file found"
+
+            # Validate JSON structure
+            if jq empty /tmp/feature_analysis.json 2>/dev/null; then
+              # Extract summary counts
+              UPSTREAM=$(jq -r '.summary.upstream_substitutes // 0' /tmp/feature_analysis.json)
+              CUSTOMIZED=$(jq -r '.summary.customized_upstream // 0' /tmp/feature_analysis.json)
+              PRESERVED=$(jq -r '.summary.preserved_carto // 0' /tmp/feature_analysis.json)
+              TOTAL=$(jq -r '.summary.total // 0' /tmp/feature_analysis.json)
+
+              echo "[Resolver] Feature analysis summary:"
+              echo "  - Upstream substitutes: ${UPSTREAM}"
+              echo "  - Customized upstream: ${CUSTOMIZED}"
+              echo "  - Preserved CARTO: ${PRESERVED}"
+              echo "  - Total: ${TOTAL}"
+
+              echo "upstream_substitutes=${UPSTREAM}" >> $GITHUB_OUTPUT
+              echo "customized_upstream=${CUSTOMIZED}" >> $GITHUB_OUTPUT
+              echo "preserved_carto=${PRESERVED}" >> $GITHUB_OUTPUT
+              echo "total=${TOTAL}" >> $GITHUB_OUTPUT
+              echo "analysis_exists=true" >> $GITHUB_OUTPUT
+
+              # Save for later use in PR updates
+              cp /tmp/feature_analysis.json /tmp/feature_analysis_backup.json
+            else
+              echo "[Resolver] ⚠️ Feature analysis JSON is invalid"
+              echo "analysis_exists=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "[Resolver] ⚠️ Feature analysis not generated by Claude"
+            echo "analysis_exists=false" >> $GITHUB_OUTPUT
           fi
 
           echo "::endgroup::"
@@ -1193,6 +1390,148 @@ jobs:
           >
           > _Squashing destroys upstream history and breaks future syncs (see PR #26)._"
           echo "[Resolver] ✅ Merge warning comment added"
+
+      - name: Update PR description with CARTO features status
+        if: steps.push-resolution.outcome == 'success' && steps.feature-status.outputs.analysis_exists == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          echo "::group::Updating PR description with CARTO features status"
+
+          PR_NUMBER="${{ needs.check-eligibility.outputs.pr-number }}"
+
+          # Get current PR body
+          CURRENT_BODY=$(gh pr view $PR_NUMBER --repo ${{ github.repository }} --json body --jq '.body')
+
+          # Remove existing CARTO features section if present
+          CLEAN_BODY=$(echo "$CURRENT_BODY" | sed '/<!-- CARTO_FEATURES_START -->/,/<!-- CARTO_FEATURES_END -->/d')
+
+          # Build CARTO features status section from Claude's analysis
+          cat > /tmp/carto_section.md << 'SECTION_HEADER'
+          <!-- CARTO_FEATURES_START -->
+
+          ## 🔧 CARTO Customizations Analysis
+
+          <details>
+          <summary>📊 Decision Summary (click to expand)</summary>
+
+          | Decision | Count | Description |
+          |----------|-------|-------------|
+          SECTION_HEADER
+
+          # Add counts from analysis
+          echo "| ✅ **Upstream Substitutes** | ${{ steps.feature-status.outputs.upstream_substitutes }} | Upstream provides equivalent functionality |" >> /tmp/carto_section.md
+          echo "| 🔧 **Customized Upstream** | ${{ steps.feature-status.outputs.customized_upstream }} | Upstream enhanced with CARTO-specific behavior |" >> /tmp/carto_section.md
+          echo "| 🔒 **Preserved CARTO** | ${{ steps.feature-status.outputs.preserved_carto }} | Full CARTO implementation kept |" >> /tmp/carto_section.md
+          echo "| **Total** | **${{ steps.feature-status.outputs.total }}** | |" >> /tmp/carto_section.md
+
+          cat >> /tmp/carto_section.md << 'SECTION_MIDDLE'
+
+          </details>
+
+          <details>
+          <summary>📦 CARTO Features by Category (click to expand)</summary>
+
+          SECTION_MIDDLE
+
+          # Add features grouped by category from the analysis
+          if [ -f /tmp/feature_analysis_backup.json ]; then
+            for CATEGORY in "Azure" "Snowflake" "Databricks" "OCI" "Responses API" "Streaming" "Infrastructure" "CI/CD" "Core"; do
+              CATEGORY_FEATURES=$(jq -r --arg cat "$CATEGORY" '
+                .features | map(select(.category == $cat)) |
+                if length > 0 then
+                  "### " + $cat + "\n\n| Decision | PR | Feature | Reason |\n|----------|-----|---------|--------|\n" +
+                  (map(
+                    "| " +
+                    (if .decision == "UPSTREAM_SUBSTITUTES" then "✅ Upstream"
+                     elif .decision == "CUSTOMIZED_UPSTREAM" then "🔧 Customized"
+                     else "🔒 Preserved" end) +
+                    " | #" + (.pr | tostring) +
+                    " | " + (.title | .[0:50]) +
+                    " | " + ((.reason // "N/A") | .[0:60]) + "... |"
+                  ) | join("\n")) + "\n"
+                else
+                  empty
+                end
+              ' /tmp/feature_analysis_backup.json 2>/dev/null || echo "")
+
+              if [ -n "$CATEGORY_FEATURES" ]; then
+                echo "$CATEGORY_FEATURES" >> /tmp/carto_section.md
+              fi
+            done
+          fi
+
+          cat >> /tmp/carto_section.md << EOF
+
+          </details>
+
+          <details>
+          <summary>🔍 Analysis Details (click to expand)</summary>
+
+          **Last Updated:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          **Workflow Run:** [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          **Analysis Method:** Claude Code (Opus 4.5) semantic analysis
+
+          </details>
+
+          <!-- CARTO_FEATURES_END -->
+          EOF
+
+          # Combine and update PR
+          NEW_BODY="${CLEAN_BODY}
+
+          $(cat /tmp/carto_section.md)"
+
+          gh pr edit $PR_NUMBER --repo ${{ github.repository }} --body "$NEW_BODY"
+
+          echo "[Resolver] ✅ PR description updated with CARTO features status"
+          echo "::endgroup::"
+
+      - name: Post CARTO features analysis comment
+        if: steps.push-resolution.outcome == 'success' && steps.feature-status.outputs.analysis_exists == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          PR_NUMBER="${{ needs.check-eligibility.outputs.pr-number }}"
+
+          cat > /tmp/carto_comment.md << 'COMMENT_HEADER'
+          ## 🔧 CARTO Customizations Analysis Report
+
+          ### Summary
+
+          | Decision | Count |
+          |----------|-------|
+          COMMENT_HEADER
+
+          echo "| ✅ Upstream Substitutes | ${{ steps.feature-status.outputs.upstream_substitutes }} |" >> /tmp/carto_comment.md
+          echo "| 🔧 Customized Upstream | ${{ steps.feature-status.outputs.customized_upstream }} |" >> /tmp/carto_comment.md
+          echo "| 🔒 Preserved CARTO | ${{ steps.feature-status.outputs.preserved_carto }} |" >> /tmp/carto_comment.md
+
+          cat >> /tmp/carto_comment.md << 'COMMENT_MIDDLE'
+
+          ### Feature Details
+
+          COMMENT_MIDDLE
+
+          # Add full feature analysis
+          if [ -f /tmp/feature_analysis_backup.json ]; then
+            jq -r '.features[] |
+              "**PR #\(.pr):** \(.title)\n" +
+              "- Decision: " + (if .decision == "UPSTREAM_SUBSTITUTES" then "✅ Upstream Substitutes" elif .decision == "CUSTOMIZED_UPSTREAM" then "🔧 Customized Upstream" else "🔒 Preserved CARTO" end) + "\n" +
+              "- Reason: \(.reason // "N/A")\n" +
+              "- Files: \((.files_affected // []) | join(", "))\n"
+            ' /tmp/feature_analysis_backup.json >> /tmp/carto_comment.md 2>/dev/null || echo "No feature details available" >> /tmp/carto_comment.md
+          fi
+
+          cat >> /tmp/carto_comment.md << EOF
+
+          ---
+          **Workflow Run:** [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          EOF
+
+          gh pr comment $PR_NUMBER --repo ${{ github.repository }} --body "$(cat /tmp/carto_comment.md)"
+
+          echo "[Resolver] ✅ CARTO features analysis comment posted"
 
   # Job 4: Verify-only mode - Check CARTO LiteLLM code features are preserved
   verify-carto-features:
