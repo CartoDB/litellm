@@ -1137,22 +1137,9 @@ jobs:
 
           echo "::endgroup::"
 
-      - name: Trigger feature analysis
-        if: steps.push-resolution.outcome == 'success' && steps.check-remaining.outputs.retriggered != 'true'
-        env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
-        run: |
-          echo "::group::Triggering feature analyzer workflow"
-
-          PR_NUMBER="${{ needs.check-eligibility.outputs.pr-number }}"
-
-          echo "[Resolver] Triggering CARTO feature analyzer for PR #${PR_NUMBER}..."
-          gh workflow run carto-upstream-sync-feature-analyzer.yml \
-            --repo ${{ github.repository }} \
-            -f pr-number=${PR_NUMBER}
-
-          echo "[Resolver] Feature analyzer workflow triggered"
-          echo "::endgroup::"
+      # NOTE: Feature analyzer is now triggered automatically when CI passes
+      # See carto-upstream-sync-feature-analyzer.yml workflow_run trigger
+      # This ensures CI-fixer has a chance to fix build errors first
 
       - name: Summary
         if: always()

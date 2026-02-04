@@ -1,46 +1,208 @@
 name: CARTO Upstream Sync - Feature Analyzer
 
-# Standalone workflow to analyze CARTO feature preservation decisions.
-# Can be triggered manually on any upstream-sync PR to understand
-# how each CARTO customization was handled during conflict resolution.
+# Multi-mode workflow to analyze and optionally fix CARTO feature preservation.
+# Triggered automatically when CI passes on upstream-sync PRs, or manually.
+#
+# Modes:
+#   - analyze: Read-only analysis, reports to PR description
+#   - analyze-and-fix: Analyze + fix INCORRECTLY_DROPPED features
+#   - fix-only: Skip analysis, use previous analysis to fix
 #
 # Usage:
+#   # Analysis only (default)
 #   gh workflow run carto-upstream-sync-feature-analyzer.yml \
 #     --repo CartoDB/litellm \
-#     -f pr-number=88
+#     -f pr-number=88 \
+#     -f mode=analyze
+#
+#   # Analyze and fix
+#   gh workflow run carto-upstream-sync-feature-analyzer.yml \
+#     --repo CartoDB/litellm \
+#     -f pr-number=88 \
+#     -f mode=analyze-and-fix
+#
+#   # Fix only (use previous analysis)
+#   gh workflow run carto-upstream-sync-feature-analyzer.yml \
+#     --repo CartoDB/litellm \
+#     -f pr-number=88 \
+#     -f mode=fix-only
 
 on:
+  # Manual trigger
   workflow_dispatch:
     inputs:
       pr-number:
-        description: "PR number to analyze"
+        description: "PR number to analyze/fix"
         required: true
+      mode:
+        description: "Operation mode"
+        type: choice
+        options:
+          - analyze           # Analysis only (read-only)
+          - analyze-and-fix   # Analyze + fix if issues found
+          - fix-only          # Skip analysis, use existing to fix
+        default: "analyze"
       debug:
         description: "Enable debug logging"
         type: boolean
         default: false
 
-  # Can also be called from resolver workflow after resolution
+  # Automatic trigger - runs when CI checks pass on upstream-sync branches
+  workflow_run:
+    workflows:
+      - "LiteLLM Mock Tests (folder - tests/test_litellm)"
+      - "CARTO - Deploy Docker Image (CI)"
+      - "LiteLLM Linting"
+    types:
+      - completed
+    branches:
+      - 'upstream-sync/**'
+
+  # Can still be called directly via workflow_call
   workflow_call:
     inputs:
       pr-number:
-        description: "PR number to analyze"
+        description: "PR number to analyze/fix"
         required: true
         type: string
+      mode:
+        description: "Operation mode: analyze, analyze-and-fix, fix-only"
+        required: false
+        type: string
+        default: "analyze-and-fix"
 
 concurrency:
-  group: feature-analyzer-${{ github.event.inputs.pr-number || inputs.pr-number }}
+  group: feature-analyzer-${{ github.event.workflow_run.pull_requests[0].number || github.event.inputs.pr-number || inputs.pr-number || github.run_id }}
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  contents: write
   pull-requests: write
+  actions: read
 
 jobs:
+  # Job 0: Check if we should run and determine mode
+  check-trigger:
+    name: Check Trigger Conditions
+    runs-on: ubuntu-latest
+    outputs:
+      should-run: ${{ steps.check.outputs.should-run }}
+      pr-number: ${{ steps.check.outputs.pr-number }}
+      branch-name: ${{ steps.check.outputs.branch-name }}
+      mode: ${{ steps.check.outputs.mode }}
+
+    steps:
+      - name: Determine trigger and mode
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          echo "::group::Checking trigger conditions"
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            # Manual trigger
+            PR_NUMBER="${{ github.event.inputs.pr-number }}"
+            MODE="${{ github.event.inputs.mode }}"
+            echo "[Analyzer] Manual trigger: PR #${PR_NUMBER}, mode=${MODE}"
+
+          elif [[ "${{ github.event_name }}" == "workflow_run" ]]; then
+            # Automatic trigger - ONLY run on SUCCESS
+            if [[ "${{ github.event.workflow_run.conclusion }}" != "success" ]]; then
+              echo "[Analyzer] CI did not succeed - skipping (ci-fixer will handle failures)"
+              echo "should-run=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+
+            # Check if this is an upstream-sync PR
+            BRANCH_NAME="${{ github.event.workflow_run.head_branch }}"
+            PR_JSON=$(gh pr list --repo ${{ github.repository }} --head "${BRANCH_NAME}" --json number,labels --jq '.[0]')
+
+            if [[ -z "${PR_JSON}" || "${PR_JSON}" == "null" ]]; then
+              echo "[Analyzer] No PR found for branch ${BRANCH_NAME}"
+              echo "should-run=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+
+            PR_NUMBER=$(echo "${PR_JSON}" | jq -r '.number')
+            HAS_UPSTREAM_SYNC=$(echo "${PR_JSON}" | jq '[.labels[].name] | any(. == "upstream-sync")')
+
+            if [[ "${HAS_UPSTREAM_SYNC}" != "true" ]]; then
+              echo "[Analyzer] Not an upstream-sync PR - skipping"
+              echo "should-run=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+
+            MODE="analyze-and-fix"  # Default for automatic triggers
+            echo "[Analyzer] Auto-trigger on CI success: PR #${PR_NUMBER}"
+
+          else
+            # workflow_call
+            PR_NUMBER="${{ inputs.pr-number }}"
+            MODE="${{ inputs.mode }}"
+            if [[ -z "${MODE}" ]]; then
+              MODE="analyze-and-fix"
+            fi
+            echo "[Analyzer] workflow_call: PR #${PR_NUMBER}, mode=${MODE}"
+          fi
+
+          # Get branch name
+          PR_INFO=$(gh pr view ${PR_NUMBER} --repo ${{ github.repository }} --json headRefName)
+          BRANCH_NAME=$(echo "${PR_INFO}" | jq -r '.headRefName')
+
+          echo "[Analyzer] PR #${PR_NUMBER} on branch ${BRANCH_NAME}, mode=${MODE}"
+          echo "should-run=true" >> $GITHUB_OUTPUT
+          echo "pr-number=${PR_NUMBER}" >> $GITHUB_OUTPUT
+          echo "branch-name=${BRANCH_NAME}" >> $GITHUB_OUTPUT
+          echo "mode=${MODE}" >> $GITHUB_OUTPUT
+
+          echo "::endgroup::"
+
+      - name: Check for recent duplicate runs
+        if: steps.check.outputs.should-run == 'true'
+        id: dedup
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          BRANCH_NAME="${{ steps.check.outputs.branch-name }}"
+
+          # Skip dedup check for manual triggers or fix-only mode
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "[Analyzer] Manual trigger - skipping dedup check"
+            exit 0
+          fi
+
+          # Check if this exact workflow already ran successfully in the last 10 minutes
+          # Use date command compatible with both GNU and BSD date
+          TEN_MIN_AGO=$(date -u -v-10M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '10 minutes ago' +%Y-%m-%dT%H:%M:%SZ)
+
+          RECENT_RUNS=$(gh run list \
+            --repo ${{ github.repository }} \
+            --workflow "carto-upstream-sync-feature-analyzer.yml" \
+            --status completed \
+            --limit 10 \
+            --json conclusion,headBranch,createdAt \
+            --jq "[.[] | select(.headBranch == \"${BRANCH_NAME}\" and .conclusion == \"success\" and .createdAt > \"${TEN_MIN_AGO}\")] | length")
+
+          if [[ "${RECENT_RUNS}" -gt 0 ]]; then
+            echo "[Analyzer] Already analyzed successfully in the last 10 minutes - skipping"
+            echo "should-run=false" >> $GITHUB_OUTPUT
+          fi
+
+  # Job 1: Analyze CARTO features (runs unless mode=fix-only)
   analyze-carto-features:
     name: Analyze CARTO Feature Preservation
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    needs: check-trigger
+    if: |
+      needs.check-trigger.outputs.should-run == 'true' &&
+      needs.check-trigger.outputs.mode != 'fix-only'
+
+    outputs:
+      incorrectly_dropped: ${{ steps.verify-analysis.outputs.incorrectly_dropped }}
+      pr-number: ${{ steps.pr-info.outputs.pr-number }}
+      head-ref: ${{ steps.pr-info.outputs.head-ref }}
+      analysis_exists: ${{ steps.verify-analysis.outputs.analysis_exists }}
 
     steps:
       - name: Get PR info
@@ -50,7 +212,7 @@ jobs:
         run: |
           set -eu
 
-          PR_NUMBER="${{ github.event.inputs.pr-number || inputs.pr-number }}"
+          PR_NUMBER="${{ needs.check-trigger.outputs.pr-number }}"
           echo "::group::Fetching PR #${PR_NUMBER} info"
 
           PR_JSON=$(gh pr view ${PR_NUMBER} --repo ${{ github.repository }} --json headRefName,baseRefName,title,labels)
@@ -66,11 +228,11 @@ jobs:
           echo "pr-title=${PR_TITLE}" >> $GITHUB_OUTPUT
           echo "is-upstream-sync=${HAS_UPSTREAM_SYNC}" >> $GITHUB_OUTPUT
 
-          # Extract upstream TAG from PR title (format: "Upstream Sync: vX.Y.Z → carto/main")
+          # Extract upstream TAG from PR title (format: "Upstream Sync: vX.Y.Z -> carto/main")
           UPSTREAM_TAG=$(echo "$PR_TITLE" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+[a-z0-9.-]*' | head -1 || echo "")
           echo "upstream-tag=${UPSTREAM_TAG}" >> $GITHUB_OUTPUT
 
-          echo "[Analyzer] PR #${PR_NUMBER}: ${HEAD_REF} → ${BASE_REF}"
+          echo "[Analyzer] PR #${PR_NUMBER}: ${HEAD_REF} -> ${BASE_REF}"
           echo "[Analyzer] Title: ${PR_TITLE}"
           echo "[Analyzer] Upstream TAG: ${UPSTREAM_TAG:-not found}"
           echo "[Analyzer] Is upstream-sync PR: ${HAS_UPSTREAM_SYNC}"
@@ -98,11 +260,18 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
         run: |
+          MODE="${{ needs.check-trigger.outputs.mode }}"
+          if [[ "${MODE}" == "analyze-and-fix" ]]; then
+            MODE_DESC="Analysis + Auto-fix if issues found"
+          else
+            MODE_DESC="Analysis only (read-only)"
+          fi
+
           gh pr comment ${{ steps.pr-info.outputs.pr-number }} \
             --repo ${{ github.repository }} \
             --body "## 📊 CARTO Feature Analysis Started
 
-          **Mode:** Standalone analysis
+          **Mode:** ${MODE_DESC}
 
           Analyzing how each CARTO customization was handled during conflict resolution.
           This will explain WHY each decision was made.
@@ -133,7 +302,7 @@ jobs:
             ORG_MEMBERS="Cartofante|mateo-di"
           fi
 
-          # Fetch merged PRs to carto/main, filter by org members
+          # Fetch merged PRs to carto/main
           echo "[Analyzer] Fetching PRs merged to carto/main..."
           gh pr list \
             --repo ${{ github.repository }} \
@@ -143,6 +312,27 @@ jobs:
             --json number,title,author,mergedAt,files,body,labels \
             > "${OUTPUT_PATH}/all_prs.json" 2>/dev/null || echo "[]" > "${OUTPUT_PATH}/all_prs.json"
 
+          # Add legacy PRs that were merged to 'main' before branch rename
+          # These are hardcoded because they predate carto/main convention
+          echo "[Analyzer] Fetching legacy PRs merged to main (hardcoded: #4, #5, #7, #11)..."
+          LEGACY_PRS="[]"
+          for PR_NUM in 4 5 7 11; do
+            PR_DATA=$(gh pr view ${PR_NUM} --repo ${{ github.repository }} \
+              --json number,title,author,mergedAt,files,body,labels 2>/dev/null || echo "null")
+            if [[ "${PR_DATA}" != "null" ]]; then
+              LEGACY_PRS=$(echo "${LEGACY_PRS}" | jq --argjson pr "${PR_DATA}" '. + [$pr]')
+            fi
+          done
+
+          # Merge carto/main PRs with legacy PRs
+          echo "${LEGACY_PRS}" > "${OUTPUT_PATH}/legacy_prs.json"
+          jq -s 'add | unique_by(.number)' \
+            "${OUTPUT_PATH}/all_prs.json" \
+            "${OUTPUT_PATH}/legacy_prs.json" \
+            > "${OUTPUT_PATH}/merged_prs.json"
+
+          echo "[Analyzer] Total PRs (including legacy): $(jq 'length' "${OUTPUT_PATH}/merged_prs.json")"
+
           # Filter to CARTO org members, excluding upstream-sync PRs
           jq --arg pattern "$ORG_MEMBERS" '
             [.[] |
@@ -151,12 +341,12 @@ jobs:
               select(.title | test("^(sync:|upstream sync:|fix: resolve.*upstream|fix: resolve conflicts|fix\\(ci\\):|merge:)"; "i") | not) |
               select(.title | test("Upstream Sync:"; "i") | not)
             ]
-          ' "${OUTPUT_PATH}/all_prs.json" > "${OUTPUT_PATH}/carto_prs.json"
+          ' "${OUTPUT_PATH}/merged_prs.json" > "${OUTPUT_PATH}/carto_prs.json"
 
           CARTO_PRS=$(jq 'length' "${OUTPUT_PATH}/carto_prs.json")
           echo "[Analyzer] Found ${CARTO_PRS} CARTO feature PRs"
 
-          rm -f "${OUTPUT_PATH}/all_prs.json"
+          rm -f "${OUTPUT_PATH}/all_prs.json" "${OUTPUT_PATH}/legacy_prs.json" "${OUTPUT_PATH}/merged_prs.json"
           echo "::endgroup::"
 
       - name: Build CARTO features inventory with code snapshots
@@ -502,10 +692,12 @@ jobs:
             else
               echo "[Analyzer] Feature analysis JSON is invalid"
               echo "analysis_exists=false" >> $GITHUB_OUTPUT
+              echo "incorrectly_dropped=0" >> $GITHUB_OUTPUT
             fi
           else
             echo "[Analyzer] Feature analysis not generated"
             echo "analysis_exists=false" >> $GITHUB_OUTPUT
+            echo "incorrectly_dropped=0" >> $GITHUB_OUTPUT
           fi
 
           if [ -f /tmp/analysis_summary.md ]; then
@@ -517,6 +709,17 @@ jobs:
           fi
 
           echo "::endgroup::"
+
+      - name: Upload analysis artifact
+        if: steps.verify-analysis.outputs.analysis_exists == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: feature-analysis
+          path: |
+            /tmp/feature_analysis.json
+            /tmp/analysis_summary.md
+            /tmp/carto_inventory.json
+          retention-days: 7
 
       - name: Update PR description with full analysis
         if: steps.verify-analysis.outputs.analysis_exists == 'true'
@@ -589,12 +792,13 @@ jobs:
             ' /tmp/feature_analysis.json >> /tmp/carto_section.md 2>/dev/null || echo "Could not parse features" >> /tmp/carto_section.md
           fi
 
-          # Add metadata footer
+          # Add metadata footer with artifact link
           cat >> /tmp/carto_section.md << METADATA_EOF
 
           ---
           **Analyzed:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")
           **Workflow Run:** [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          **Analysis Artifacts:** [Download JSON/MD](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}#artifacts)
           **Method:** Claude Code (Opus 4.5) post-resolution semantic analysis
 
           <!-- CARTO_FEATURES_END -->
@@ -616,13 +820,25 @@ jobs:
           GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
         run: |
           PR_NUMBER="${{ steps.pr-info.outputs.pr-number }}"
+          MODE="${{ needs.check-trigger.outputs.mode }}"
 
           # Build SHORT summary comment
           ASSESSMENT="${{ steps.verify-analysis.outputs.assessment }}"
+          DROPPED="${{ steps.verify-analysis.outputs.incorrectly_dropped }}"
+
           if [ "$ASSESSMENT" == "PASS" ]; then
             HEADER="## ✅ CARTO Feature Analysis Complete"
           else
             HEADER="## ⚠️ CARTO Feature Analysis - Attention Needed"
+          fi
+
+          # Add fix status if in analyze-and-fix mode
+          if [[ "${MODE}" == "analyze-and-fix" && "${DROPPED}" -gt 0 ]]; then
+            FIX_NOTE="
+
+          > 🔧 **Auto-fix enabled:** The fix job will run next to restore dropped features."
+          else
+            FIX_NOTE=""
           fi
 
           cat > /tmp/analysis_comment.md << COMMENT_EOF
@@ -635,12 +851,12 @@ jobs:
           | Preserved CARTO | ${{ steps.verify-analysis.outputs.preserved_carto }} |
           | Incorrectly Dropped | ${{ steps.verify-analysis.outputs.incorrectly_dropped }} |
 
-          **Overall Assessment:** ${ASSESSMENT}
+          **Overall Assessment:** ${ASSESSMENT}${FIX_NOTE}
 
           📋 **Full details in PR description above.**
 
           ---
-          [View workflow run →](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          [View workflow run →](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) | [Download analysis artifacts →](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}#artifacts)
           COMMENT_EOF
 
           gh pr comment $PR_NUMBER --repo ${{ github.repository }} --body "$(cat /tmp/analysis_comment.md)"
@@ -671,6 +887,7 @@ jobs:
           **PR:** #${{ steps.pr-info.outputs.pr-number }}
           **Title:** ${{ steps.pr-info.outputs.pr-title }}
           **Upstream Reference:** ${{ steps.pr-info.outputs.upstream-tag || 'origin/main' }}
+          **Mode:** ${{ needs.check-trigger.outputs.mode }}
 
           ### Analysis Results
 
@@ -682,5 +899,386 @@ jobs:
           | Preserved CARTO | ${{ steps.verify-analysis.outputs.preserved_carto || 'N/A' }} |
           | Incorrectly Dropped | ${{ steps.verify-analysis.outputs.incorrectly_dropped || 'N/A' }} |
           | **Overall Assessment** | ${{ steps.verify-analysis.outputs.assessment || 'N/A' }} |
+
+          EOF
+
+  # Job 2: Fix INCORRECTLY_DROPPED features
+  fix-dropped-features:
+    name: Fix INCORRECTLY_DROPPED Features
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: [check-trigger, analyze-carto-features]
+    if: |
+      always() &&
+      needs.check-trigger.outputs.should-run == 'true' &&
+      (
+        (needs.check-trigger.outputs.mode == 'analyze-and-fix' &&
+         needs.analyze-carto-features.outputs.incorrectly_dropped > 0) ||
+        needs.check-trigger.outputs.mode == 'fix-only'
+      )
+
+    steps:
+      - name: Get PR info for fix job
+        id: fix-pr-info
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          # Get PR number from either analyze job output or check-trigger
+          if [[ "${{ needs.check-trigger.outputs.mode }}" == "fix-only" ]]; then
+            PR_NUMBER="${{ needs.check-trigger.outputs.pr-number }}"
+          else
+            PR_NUMBER="${{ needs.analyze-carto-features.outputs.pr-number }}"
+          fi
+
+          PR_INFO=$(gh pr view ${PR_NUMBER} --repo ${{ github.repository }} --json headRefName)
+          HEAD_REF=$(echo "${PR_INFO}" | jq -r '.headRefName')
+
+          echo "pr-number=${PR_NUMBER}" >> $GITHUB_OUTPUT
+          echo "head-ref=${HEAD_REF}" >> $GITHUB_OUTPUT
+
+          echo "[Fixer] PR #${PR_NUMBER} on branch ${HEAD_REF}"
+
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.fix-pr-info.outputs.head-ref }}
+          fetch-depth: 0
+          token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+
+      - name: Configure git
+        run: |
+          git config --global user.name "Cartofante"
+          git config --global user.email "cartofante@carto.com"
+
+      - name: Download analysis artifacts (fix-only mode)
+        if: needs.check-trigger.outputs.mode == 'fix-only'
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          echo "::group::Downloading analysis from previous run"
+
+          BRANCH_NAME="${{ steps.fix-pr-info.outputs.head-ref }}"
+
+          # Find most recent successful analyzer run for this branch
+          RUN_ID=$(gh run list \
+            --repo ${{ github.repository }} \
+            --workflow "carto-upstream-sync-feature-analyzer.yml" \
+            --status success \
+            --limit 20 \
+            --json databaseId,headBranch \
+            --jq "[.[] | select(.headBranch == \"${BRANCH_NAME}\")] | .[0].databaseId")
+
+          if [[ -n "${RUN_ID}" && "${RUN_ID}" != "null" ]]; then
+            gh run download ${RUN_ID} \
+              --repo ${{ github.repository }} \
+              --name feature-analysis \
+              --dir /tmp/
+            echo "[Fixer] Downloaded analysis from run #${RUN_ID}"
+          else
+            echo "::error::No previous analysis found for fix-only mode on branch ${BRANCH_NAME}"
+            exit 1
+          fi
+
+          echo "::endgroup::"
+
+      - name: Download analysis artifacts (analyze-and-fix mode)
+        if: needs.check-trigger.outputs.mode == 'analyze-and-fix'
+        uses: actions/download-artifact@v4
+        with:
+          name: feature-analysis
+          path: /tmp/
+
+      - name: Verify analysis exists
+        run: |
+          if [ ! -f /tmp/feature_analysis.json ]; then
+            echo "::error::No analysis file found at /tmp/feature_analysis.json"
+            exit 1
+          fi
+
+          DROPPED=$(jq -r '.summary.incorrectly_dropped // 0' /tmp/feature_analysis.json)
+          echo "[Fixer] Found ${DROPPED} incorrectly dropped features to fix"
+
+          if [[ "${DROPPED}" -eq 0 ]]; then
+            echo "[Fixer] No features to fix - exiting successfully"
+            exit 0
+          fi
+
+      - name: Comment on PR - Starting fix
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          DROPPED=$(jq -r '.summary.incorrectly_dropped // 0' /tmp/feature_analysis.json)
+
+          gh pr comment ${{ steps.fix-pr-info.outputs.pr-number }} \
+            --repo ${{ github.repository }} \
+            --body "## 🔧 CARTO Feature Fix Started
+
+          Restoring **${DROPPED}** incorrectly dropped CARTO feature(s).
+
+          [View workflow →](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+
+      - name: Setup GCP credentials for Vertex AI
+        run: |
+          echo '${{ secrets.CI_RESOURCES_SERVICE_ACCOUNT }}' > /tmp/gcp-sa.json
+          echo "GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-sa.json" >> $GITHUB_ENV
+
+      - name: Run Claude Code to fix dropped features
+        id: claude-fix
+        uses: anthropics/claude-code-action@v1
+        with:
+          use_vertex: "true"
+          github_token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          show_full_output: true
+          claude_args: "--model claude-opus-4-5@20251101 --max-turns 150"
+          prompt: |
+            # Fix INCORRECTLY_DROPPED CARTO Features
+
+            ## CONTEXT
+
+            **PR:** #${{ steps.fix-pr-info.outputs.pr-number }}
+            **Branch:** `${{ steps.fix-pr-info.outputs.head-ref }}`
+
+            The feature analysis found INCORRECTLY_DROPPED features that need fixing.
+
+            ---
+
+            ## STEP 1: Read the analysis
+
+            ```bash
+            cat /tmp/feature_analysis.json | jq '.features[] | select(.decision == "INCORRECTLY_DROPPED")'
+            ```
+
+            This shows you which features were lost and need to be restored.
+
+            ---
+
+            ## STEP 2: For each dropped feature, restore it
+
+            For each INCORRECTLY_DROPPED feature:
+
+            1. **Read the carto/main version** of the affected files:
+               ```bash
+               git show origin/carto/main:path/to/file.py
+               ```
+
+            2. **Read the current resolved version** to understand what's there now:
+               ```bash
+               cat path/to/file.py
+               ```
+
+            3. **Implement the missing functionality:**
+               - Add the CARTO-specific code that was lost
+               - Integrate it with any upstream changes
+               - Ensure you don't break existing upstream functionality
+
+            ---
+
+            ## STEP 3: Verify the fix
+
+            Run Docker build to verify the code compiles:
+            ```bash
+            docker build -t test-fix .
+            ```
+
+            ---
+
+            ## STEP 4: Commit changes
+
+            ```bash
+            git add -A
+            git commit -m "fix(carto): restore dropped CARTO features
+
+            Restored features identified as INCORRECTLY_DROPPED by analyzer."
+            git push origin HEAD
+            ```
+
+            ---
+
+            ## STEP 5: Document what you fixed
+
+            Create `/tmp/fix_report.json` with details about what you fixed:
+
+            ```bash
+            cat > /tmp/fix_report.json << 'FIX_EOF'
+            {
+              "fixed_features": [
+                {
+                  "pr": 70,
+                  "title": "Original PR title from analysis",
+                  "files_modified": ["path/to/file.py"],
+                  "decision": "Detailed explanation of what you did to restore the feature",
+                  "evidence": "How you verified the fix (e.g., 'Function now present at line 123-145')"
+                }
+              ],
+              "summary": "Restored N CARTO features that were incorrectly dropped",
+              "verification": "Docker build passed"
+            }
+            FIX_EOF
+            ```
+
+            ---
+
+            ## SAY "FIX COMPLETE" WHEN DONE
+
+            After committing and creating the report, say **"FIX COMPLETE"**.
+
+        env:
+          ANTHROPIC_VERTEX_PROJECT_ID: carto-ci-resources
+          CLOUD_ML_REGION: global
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GITHUB_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+
+      - name: Cleanup GCP credentials
+        if: always()
+        run: rm -f /tmp/gcp-sa.json
+
+      - name: Read fix report
+        id: fix-report
+        run: |
+          if [ -f /tmp/fix_report.json ]; then
+            if jq empty /tmp/fix_report.json 2>/dev/null; then
+              FIXED_COUNT=$(jq '.fixed_features | length' /tmp/fix_report.json)
+              SUMMARY=$(jq -r '.summary // "Features restored"' /tmp/fix_report.json)
+              echo "fixed_count=${FIXED_COUNT}" >> $GITHUB_OUTPUT
+              echo "summary=${SUMMARY}" >> $GITHUB_OUTPUT
+              echo "has_report=true" >> $GITHUB_OUTPUT
+            else
+              echo "[Fixer] Fix report JSON is invalid"
+              echo "has_report=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "[Fixer] No fix report generated"
+            echo "has_report=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update PR description with fix status
+        if: steps.fix-report.outputs.has_report == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          echo "::group::Updating PR description with fix status"
+
+          PR_NUMBER="${{ steps.fix-pr-info.outputs.pr-number }}"
+
+          # Get current PR body
+          CURRENT_BODY=$(gh pr view $PR_NUMBER --repo ${{ github.repository }} --json body --jq '.body')
+
+          # Remove existing fix section if present
+          CLEAN_BODY=$(echo "$CURRENT_BODY" | sed '/<!-- CARTO_FIX_START -->/,/<!-- CARTO_FIX_END -->/d')
+
+          # Build fix status section
+          FIXED_COUNT="${{ steps.fix-report.outputs.fixed_count }}"
+
+          cat > /tmp/fix_section.md << SECTION_EOF
+          <!-- CARTO_FIX_START -->
+
+          ## 🔧 CARTO Feature Fixes Applied
+
+          **Status:** ✅ Fixed
+          **Features Restored:** ${FIXED_COUNT}
+
+          SECTION_EOF
+
+          # Add feature-by-feature details
+          jq -r '.fixed_features[] |
+            "### PR #\(.pr): \(.title)\n" +
+            "- **Files:** \(.files_modified | join(", "))\n" +
+            "- **Decision:** \(.decision)\n" +
+            "- **Evidence:** \(.evidence)\n"
+          ' /tmp/fix_report.json >> /tmp/fix_section.md 2>/dev/null || echo "Could not parse fixed features" >> /tmp/fix_section.md
+
+          cat >> /tmp/fix_section.md << FOOTER_EOF
+
+          ---
+          **Fixed:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          **Workflow Run:** [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+          <!-- CARTO_FIX_END -->
+          FOOTER_EOF
+
+          # Combine and update PR
+          NEW_BODY="${CLEAN_BODY}
+
+          $(cat /tmp/fix_section.md)"
+
+          gh pr edit $PR_NUMBER --repo ${{ github.repository }} --body "$NEW_BODY"
+
+          echo "[Fixer] PR description updated with fix status"
+          echo "::endgroup::"
+
+      - name: Post detailed fix comment
+        if: steps.fix-report.outputs.has_report == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          PR_NUMBER="${{ steps.fix-pr-info.outputs.pr-number }}"
+          SUMMARY="${{ steps.fix-report.outputs.summary }}"
+
+          cat > /tmp/fix_comment.md << 'COMMENT_EOF'
+          ## 🔧 CARTO Feature Fix Complete
+
+          ### Summary
+          COMMENT_EOF
+
+          echo "${SUMMARY}" >> /tmp/fix_comment.md
+
+          cat >> /tmp/fix_comment.md << 'COMMENT_EOF'
+
+          ### Decisions Made
+
+          COMMENT_EOF
+
+          # Add detailed decisions from Claude
+          jq -r '.fixed_features[] |
+            "#### PR #\(.pr): \(.title)\n" +
+            "**Decision:** \(.decision)\n" +
+            "**Files Modified:** \(.files_modified | join(", "))\n" +
+            "**Verification:** \(.evidence)\n\n---\n"
+          ' /tmp/fix_report.json >> /tmp/fix_comment.md 2>/dev/null || echo "Could not parse fixed features" >> /tmp/fix_comment.md
+
+          cat >> /tmp/fix_comment.md << COMMENT_EOF
+
+          **Next Steps:**
+          1. Review the changes in the Files tab
+          2. CI will re-run automatically
+          3. Once CI passes, the sync-ready label will be added
+
+          [View full workflow logs →](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          COMMENT_EOF
+
+          gh pr comment $PR_NUMBER --repo ${{ github.repository }} --body "$(cat /tmp/fix_comment.md)"
+
+          echo "[Fixer] Detailed fix comment posted"
+
+      - name: Comment on PR - Fix failed
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          PR_NUMBER="${{ steps.fix-pr-info.outputs.pr-number }}"
+
+          gh pr comment ${PR_NUMBER} \
+            --repo ${{ github.repository }} \
+            --body "## ❌ CARTO Feature Fix Failed
+
+          The fix job encountered an error. Manual intervention may be required.
+
+          [View workflow logs →](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+
+      - name: Summary
+        if: always()
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          ## CARTO Feature Fix
+
+          **PR:** #${{ steps.fix-pr-info.outputs.pr-number }}
+          **Mode:** ${{ needs.check-trigger.outputs.mode }}
+
+          ### Fix Results
+
+          | Metric | Value |
+          |--------|-------|
+          | Fix Report Generated | ${{ steps.fix-report.outputs.has_report == 'true' && 'Yes' || 'No' }} |
+          | Features Fixed | ${{ steps.fix-report.outputs.fixed_count || '0' }} |
 
           EOF
