@@ -403,6 +403,32 @@ jobs:
 
             ---
 
+            ## 🔄 UPSTREAM SYNC ISSUES: FILES WITH PARTIAL CONTENT
+
+            **The upstream sync may have left files with PARTIAL content from upstream.**
+
+            When you see `ImportError: cannot import name 'X' from 'module'`:
+
+            1. **Compare file sizes:**
+            ```bash
+            echo "Upstream:" && git show upstream/main:path/to/file.py | wc -l
+            echo "Current:" && wc -l < path/to/file.py
+            ```
+
+            2. **If upstream has MORE lines, sync the entire file:**
+            ```bash
+            git show upstream/main:path/to/file.py > path/to/file.py
+            ```
+
+            3. **Common files that need full sync:**
+            - `litellm/constants.py`
+            - `litellm/llms/vertex_ai/common_utils.py`
+            - `litellm/types/utils.py`
+
+            **IMPORTANT:** If a file is NOT in the CARTO-modified list, it's safe to sync entirely from upstream.
+
+            ---
+
             ## 📋 CARTO-MODIFIED FILES REFERENCE
 
             **Check if failing files are CARTO-modified:**
