@@ -1080,15 +1080,13 @@ class LiteLLMCompletionResponsesConfig:
             if litellm.cache is None or not hasattr(litellm.cache, 'cache') or not hasattr(litellm.cache.cache, 'init_async_client'):
                 return None
 
-            # Decode response ID to get actual request ID
-            from litellm.responses.utils import ResponsesAPIRequestUtils
-            actual_request_id = ResponsesAPIRequestUtils.decode_previous_response_id_to_original_previous_response_id(
-                previous_response_id
-            )
+            # NOTE: Use the raw previous_response_id as-is (no decoding)
+            # The response_id stored in Redis is the same format as previous_response_id
+            # (both are the LiteLLM-encoded IDs containing provider/model info)
 
             # Get session data from Redis using the async Redis client
             async_redis_client = litellm.cache.cache.init_async_client()
-            session_json = await async_redis_client.get(name=f"litellm_patch:session:{actual_request_id}")
+            session_json = await async_redis_client.get(name=f"litellm_patch:session:{previous_response_id}")
 
             if session_json:
                 return json.loads(session_json)
