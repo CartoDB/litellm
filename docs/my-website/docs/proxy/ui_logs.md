@@ -25,7 +25,10 @@ View Spend, Token Usage, Key, Team Name for Each Request to LiteLLM
 
 ## Tracking - Request / Response Content in Logs Page 
 
-If you want to view request and response content on LiteLLM Logs, you need to opt in with this setting
+If you want to view request and response content on LiteLLM Logs, you can enable it in either place:
+
+- **From the UI (no restart):** Use [UI Spend Log Settings](./ui_spend_log_settings.md) — open Logs → Settings → enable "Store Prompts in Spend Logs" → Save. Takes effect immediately and overrides config.
+- **From config:** Add this to your `proxy_config.yaml` (requires restart):
 
 ```yaml
 general_settings:
@@ -57,7 +60,10 @@ general_settings:
 
 If you're storing spend logs, it might be a good idea to delete them regularly to keep the database fast.
 
-LiteLLM lets you configure this in your `proxy_config.yaml`:
+You can set the retention period in either place:
+
+- **From the UI (no restart):** [UI Spend Log Settings](./ui_spend_log_settings.md) — Logs → Settings → set Retention Period → Save.
+- **From config:** Add the following to your `proxy_config.yaml` (requires restart):
 
 ```yaml
 general_settings:
@@ -76,8 +82,6 @@ Set `SPEND_LOG_CLEANUP_BATCH_SIZE` to control how many logs are deleted per batc
 For detailed architecture and how it works, see [Spend Logs Deletion](../proxy/spend_logs_deletion).
 
 
+## What gets logged? 
 
-
-
-
-
+[Here's a schema](https://github.com/BerriAI/litellm/blob/1cdd4065a645021aea931afb9494e7694b4ec64b/schema.prisma#L285) breakdown of what gets logged.

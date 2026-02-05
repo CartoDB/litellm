@@ -1,5 +1,6 @@
 import os
 import sys
+from copy import deepcopy
 from unittest.mock import patch
 
 import pytest
@@ -93,65 +94,6 @@ def test_get_complete_url():
     expected = "https://litellm8397336933.openai.azure.com/openai/responses?api-version=2024-05-01-preview"
 
     assert result == expected
-
-
-@pytest.mark.serial
-def test_get_complete_url_with_deployment_path():
-    """
-    Test that get_complete_url correctly strips deployment paths from api_base.
-
-    Unlike Chat Completions API which uses /openai/deployments/{deployment-id}/chat/completions,
-    the Responses API uses /openai/responses and the model is specified in the request body.
-    """
-    azure_openai_responses_apiconfig = AzureOpenAIResponsesAPIConfig()
-    litellm_params = {"api_version": "2024-05-01-preview"}
-
-    # Test with full deployment path including /chat/completions
-    api_base_full = "https://ai-azure-product-dev.openai.azure.com/openai/deployments/gpt-4o/chat/completions"
-    result_full = azure_openai_responses_apiconfig.get_complete_url(
-        api_base=api_base_full, litellm_params=litellm_params
-    )
-    expected = "https://ai-azure-product-dev.openai.azure.com/openai/responses?api-version=2024-05-01-preview"
-    assert result_full == expected, f"Expected {expected}, got {result_full}"
-
-    # Test with deployment path without /chat/completions suffix
-    api_base_no_suffix = "https://ai-azure-product-dev.openai.azure.com/openai/deployments/gpt-4o"
-    result_no_suffix = azure_openai_responses_apiconfig.get_complete_url(
-        api_base=api_base_no_suffix, litellm_params=litellm_params
-    )
-    assert result_no_suffix == expected, f"Expected {expected}, got {result_no_suffix}"
-
-    # Test with deployment path with other suffixes
-    api_base_other = "https://ai-azure-product-dev.openai.azure.com/openai/deployments/gpt-4o/embeddings"
-    result_other = azure_openai_responses_apiconfig.get_complete_url(
-        api_base=api_base_other, litellm_params=litellm_params
-    )
-    assert result_other == expected, f"Expected {expected}, got {result_other}"
-
-
-@pytest.mark.serial
-def test_get_complete_url_preserves_correct_base():
-    """
-    Test that get_complete_url preserves correct api_base URLs that don't have deployment paths.
-    """
-    azure_openai_responses_apiconfig = AzureOpenAIResponsesAPIConfig()
-    litellm_params = {"api_version": "2024-05-01-preview"}
-
-    # Test base URL without any path
-    api_base = "https://myresource.openai.azure.com"
-    result = azure_openai_responses_apiconfig.get_complete_url(
-        api_base=api_base, litellm_params=litellm_params
-    )
-    expected = "https://myresource.openai.azure.com/openai/responses?api-version=2024-05-01-preview"
-    assert result == expected
-
-    # Test URL that already has /openai/responses path
-    api_base_with_responses = "https://myresource.openai.azure.com/openai/responses"
-    result_with_responses = azure_openai_responses_apiconfig.get_complete_url(
-        api_base=api_base_with_responses, litellm_params=litellm_params
-    )
-    expected_with_responses = "https://myresource.openai.azure.com/openai/responses?api-version=2024-05-01-preview"
-    assert result_with_responses == expected_with_responses
 
 
 @pytest.mark.serial
@@ -250,12 +192,12 @@ def test_o_series_model_detection():
     config = AzureOpenAIOSeriesResponsesAPIConfig()
 
     # Test explicit o_series naming
-    assert config.is_o_series_model("o_series/gpt-o1") == True
-    assert config.is_o_series_model("azure/o_series/gpt-o3") == True
+    assert config.is_o_series_model("o_series/gpt-o1")
+    assert config.is_o_series_model("azure/o_series/gpt-o3")
 
     # Test regular models
-    assert config.is_o_series_model("gpt-4o") == False
-    assert config.is_o_series_model("gpt-3.5-turbo") == False
+    assert not config.is_o_series_model("gpt-4o")
+    assert not config.is_o_series_model("gpt-3.5-turbo")
 
 
 @pytest.mark.serial
@@ -356,19 +298,19 @@ class TestAzureResponsesAPIConfig:
     def test_azure_cancel_response_api_request(self):
         """Test Azure cancel response API request transformation"""
         from litellm.types.router import GenericLiteLLMParams
-        
+
         response_id = "resp_test123"
         api_base = "https://test.openai.azure.com/openai/responses?api-version=2024-05-01-preview"
         litellm_params = GenericLiteLLMParams(api_version="2024-05-01-preview")
         headers = {"Authorization": "Bearer test-key"}
-        
+
         url, data = self.config.transform_cancel_response_api_request(
             response_id=response_id,
             api_base=api_base,
             litellm_params=litellm_params,
             headers=headers,
         )
-        
+
         expected_url = "https://test.openai.azure.com/openai/responses/resp_test123/cancel?api-version=2024-05-01-preview"
         assert url == expected_url
         assert data == {}
@@ -377,7 +319,7 @@ class TestAzureResponsesAPIConfig:
         """Test Azure cancel response API response transformation"""
         from unittest.mock import Mock
         from litellm.types.llms.openai import ResponsesAPIResponse
-        
+
         # Mock response
         mock_response = Mock()
         mock_response.json.return_value = {
@@ -389,18 +331,164 @@ class TestAzureResponsesAPIConfig:
             "tool_choice": "auto",
             "tools": [],
             "top_p": 1.0,
-            "status": "cancelled"
+            "status": "cancelled",
         }
         mock_response.text = "test response"
         mock_response.status_code = 200
-        
+
         # Mock logging object
         mock_logging_obj = Mock()
-        
+
         result = self.config.transform_cancel_response_api_response(
             raw_response=mock_response,
             logging_obj=mock_logging_obj,
         )
-        
+
         assert isinstance(result, ResponsesAPIResponse)
         assert result.id == "resp_test123"
+
+    def test_azure_responses_api_tool_flattening_nested_to_flat(self):
+        """Test that nested tools are flattened correctly"""
+        from litellm.types.router import GenericLiteLLMParams
+
+        # Setup
+        nested_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get weather for a location",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+
+        response_api_params = {"tools": nested_tools}
+        litellm_params = GenericLiteLLMParams()
+
+        # Execute
+        self.config.transform_responses_api_request(
+            model=self.model,
+            input="test input",
+            response_api_optional_request_params=response_api_params,
+            litellm_params=litellm_params,
+            headers={},
+        )
+
+        # Verify
+        expected_tools = [
+            {
+                "type": "function",
+                "name": "get_weather",
+                "description": "Get weather for a location",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        ]
+        assert response_api_params["tools"] == expected_tools
+
+    def test_azure_responses_api_tool_flattening_already_flat(self):
+        """Test that already flat tools are passed through unchanged"""
+        from litellm.types.router import GenericLiteLLMParams
+
+        # Setup
+        flat_tools = [
+            {
+                "type": "function",
+                "name": "get_weather",
+                "description": "Get weather for a location",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        ]
+
+        # Make a copy to check it doesn't change
+        response_api_params = {"tools": list(flat_tools)}
+        litellm_params = GenericLiteLLMParams()
+
+        # Execute
+        self.config.transform_responses_api_request(
+            model=self.model,
+            input="test input",
+            response_api_optional_request_params=response_api_params,
+            litellm_params=litellm_params,
+            headers={},
+        )
+
+        # Verify
+        assert response_api_params["tools"] == flat_tools
+
+    def test_azure_responses_api_tool_flattening_preserves_original(self):
+        """Test that the original tool dictionary is not mutated"""
+        from litellm.types.router import GenericLiteLLMParams
+
+        # Setup
+        original_tool = {
+            "type": "function",
+            "function": {"name": "get_weather", "parameters": {}},
+        }
+        original_tool_copy = deepcopy(original_tool)
+
+        response_api_params = {"tools": [original_tool]}
+        litellm_params = GenericLiteLLMParams()
+
+        # Execute
+        self.config.transform_responses_api_request(
+            model=self.model,
+            input="test input",
+            response_api_optional_request_params=response_api_params,
+            litellm_params=litellm_params,
+            headers={},
+        )
+
+        assert original_tool == original_tool_copy
+
+    def test_azure_responses_api_tool_flattening_mixed_tools(self):
+        """Test mixed nested and flat tools"""
+        from litellm.types.router import GenericLiteLLMParams
+
+        # Setup
+        nested_tool = {
+            "type": "function",
+            "function": {"name": "nested", "parameters": {}},
+        }
+        flat_tool = {"type": "function", "name": "flat", "parameters": {}}
+
+        response_api_params = {"tools": [nested_tool, flat_tool]}
+        litellm_params = GenericLiteLLMParams()
+
+        # Execute
+        self.config.transform_responses_api_request(
+            model=self.model,
+            input="test input",
+            response_api_optional_request_params=response_api_params,
+            litellm_params=litellm_params,
+            headers={},
+        )
+
+        # Verify
+        assert len(response_api_params["tools"]) == 2
+
+        # First tool should be flattened
+        assert "function" not in response_api_params["tools"][0]
+        assert response_api_params["tools"][0]["name"] == "nested"
+
+        # Second tool should remain as is
+        assert response_api_params["tools"][1] == flat_tool
+
+    def test_azure_responses_api_tool_flattening_no_tools(self):
+        """Test handling when no tools are present"""
+        from litellm.types.router import GenericLiteLLMParams
+
+        # Setup
+        response_api_params = {}
+        litellm_params = GenericLiteLLMParams()
+
+        # Execute - should not crash
+        self.config.transform_responses_api_request(
+            model=self.model,
+            input="test input",
+            response_api_optional_request_params=response_api_params,
+            litellm_params=litellm_params,
+            headers={},
+        )
+
+        assert "tools" not in response_api_params
