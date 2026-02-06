@@ -1,7 +1,7 @@
 import asyncio
 import time
 import uuid
-from typing import List, Optional, Union, cast
+from typing import Any, Dict, List, Optional, Union, cast
 
 import litellm
 from litellm.main import stream_chunk_builder
@@ -1062,34 +1062,118 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
     async def _store_session_in_redis(self, response_completed_event: ResponseCompletedEvent):
         """
         PATCH: Store session in Redis for streaming responses
-        This fixes the issue where Redis sessions weren't created for streaming requests
+        This fixes the issue where Redis sessions weren't created for streaming requests.
+
+        For Gemini thinking models with tool calling, we must preserve:
+        - tool_calls with provider_specific_fields (contains thought_signature)
+        - message-level provider_specific_fields
         """
         try:
             response = response_completed_event.response
             if response and response.id:
                 # Get the session ID from metadata or from the completion request
-                session_id = (self.litellm_completion_request.get("litellm_trace_id") or 
-                             self.litellm_metadata.get("litellm_trace_id") or 
+                session_id = (self.litellm_completion_request.get("litellm_trace_id") or
+                             self.litellm_metadata.get("litellm_trace_id") or
                              str(uuid.uuid4()))
-                
+
                 # Get the full messages from the completion request (includes history)
-                messages = self.litellm_completion_request.get("messages", []).copy()
-                
-                # Add the assistant response to the messages
-                if response.output and len(response.output) > 0:
-                    output_item = response.output[0]
-                    if output_item.content and len(output_item.content) > 0:
-                        content_item = output_item.content[0]
-                        if hasattr(content_item, "text"):
-                            messages.append({"role": "assistant", "content": content_item.text})
-                
+                messages = list(self.litellm_completion_request.get("messages", []))
+
+                # Extract assistant message from the reconstructed ModelResponse
+                # This preserves tool_calls with provider_specific_fields (thought_signature)
+                assistant_message = self._extract_assistant_message_for_redis()
+                if assistant_message:
+                    messages.append(assistant_message)
+
                 # Store session in Redis
                 await LiteLLMCompletionResponsesConfig._patch_store_session_in_redis(
                     response_id=response.id,
                     session_id=session_id,
                     messages=messages
                 )
-        except Exception as e:
+        except Exception:
             # Silently fail - Redis storage is a patch for timing issues
             # and shouldn't break the streaming response
             pass
+
+    def _extract_assistant_message_for_redis(self) -> Optional[Dict[str, Any]]:
+        """
+        Extract the assistant message from the reconstructed ModelResponse,
+        preserving tool_calls with provider_specific_fields.
+
+        This is critical for Gemini thinking models where thought_signature must be preserved
+        for multi-turn conversations with tool calling.
+        """
+        if not self.litellm_model_response:
+            return None
+
+        if not hasattr(self.litellm_model_response, 'choices') or not self.litellm_model_response.choices:
+            return None
+
+        choice = self.litellm_model_response.choices[0]
+        if not hasattr(choice, 'message') or not choice.message:
+            return None
+
+        msg = choice.message
+
+        assistant_message: Dict[str, Any] = {
+            "role": "assistant",
+        }
+
+        # Add content if present
+        content = getattr(msg, 'content', None)
+        if content is not None:
+            assistant_message["content"] = content
+
+        # Add tool_calls with provider_specific_fields (contains thought_signature for Gemini)
+        tool_calls = getattr(msg, 'tool_calls', None)
+        if tool_calls:
+            serialized_tool_calls = []
+            for tc in tool_calls:
+                tool_call_dict: Dict[str, Any] = {
+                    "id": getattr(tc, 'id', None) or tc.get('id') if isinstance(tc, dict) else getattr(tc, 'id', None),
+                    "type": getattr(tc, 'type', 'function') or tc.get('type', 'function') if isinstance(tc, dict) else getattr(tc, 'type', 'function'),
+                }
+
+                # Extract function details
+                fn = tc.get('function') if isinstance(tc, dict) else getattr(tc, 'function', None)
+                if fn:
+                    fn_dict: Dict[str, Any] = {
+                        "name": fn.get('name') if isinstance(fn, dict) else getattr(fn, 'name', ''),
+                        "arguments": fn.get('arguments', '') if isinstance(fn, dict) else getattr(fn, 'arguments', ''),
+                    }
+                    # Preserve function-level provider_specific_fields (contains thought_signature)
+                    fn_provider_fields = fn.get('provider_specific_fields') if isinstance(fn, dict) else getattr(fn, 'provider_specific_fields', None)
+                    if fn_provider_fields:
+                        fn_dict["provider_specific_fields"] = fn_provider_fields
+                    tool_call_dict["function"] = fn_dict
+
+                # Also check for tool_call-level provider_specific_fields
+                tc_provider_fields = tc.get('provider_specific_fields') if isinstance(tc, dict) else getattr(tc, 'provider_specific_fields', None)
+                if tc_provider_fields:
+                    tool_call_dict["provider_specific_fields"] = tc_provider_fields
+
+                serialized_tool_calls.append(tool_call_dict)
+
+            assistant_message["tool_calls"] = serialized_tool_calls
+
+        # Preserve message-level provider_specific_fields
+        msg_provider_fields = getattr(msg, 'provider_specific_fields', None)
+        if msg_provider_fields:
+            assistant_message["provider_specific_fields"] = msg_provider_fields
+
+        # Preserve thinking_blocks if present (Anthropic/Claude)
+        thinking_blocks = getattr(msg, 'thinking_blocks', None)
+        if thinking_blocks:
+            assistant_message["thinking_blocks"] = thinking_blocks
+
+        # Preserve reasoning_content if present
+        reasoning_content = getattr(msg, 'reasoning_content', None)
+        if reasoning_content:
+            assistant_message["reasoning_content"] = reasoning_content
+
+        # If we have no meaningful content, return None
+        if not content and not tool_calls:
+            return None
+
+        return assistant_message
