@@ -2275,17 +2275,17 @@ class PrismaClient:
     ) -> Optional[dict]:
         """
         Execute a query with automatic fallback for PostgreSQL cached plan errors.
-        
+
         This handles the "cached plan must not change result type" error that occurs
         during rolling deployments when schema changes are applied while old pods
         still have cached query plans expecting the old schema.
-        
+
         Args:
             sql_query: SQL query string to execute
-            
+
         Returns:
             Query result or None
-            
+
         Raises:
             Original exception if not a cached plan error
         """
@@ -2298,7 +2298,7 @@ class PrismaClient:
                 # Add a unique comment to make the query different
                 sql_query_retry = sql_query.replace(
                     "SELECT",
-                    f"SELECT /* cache_invalidated_{int(time.time() * 1000)} */"
+                    f"SELECT /* cache_invalidated_{int(time.time() * 1000)} */",
                 )
                 verbose_proxy_logger.warning(
                     "PostgreSQL cached plan error detected for token lookup, "
@@ -2640,7 +2640,9 @@ class PrismaClient:
                         WHERE v.token = '{token}'
                     """
 
-                    response = await self._query_first_with_cached_plan_fallback(sql_query)
+                    response = await self._query_first_with_cached_plan_fallback(
+                        sql_query
+                    )
 
                     if response is not None:
                         if response["team_models"] is None:
