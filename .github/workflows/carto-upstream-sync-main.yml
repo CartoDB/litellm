@@ -223,6 +223,7 @@ jobs:
       commits-behind: ${{ steps.check-sync.outputs.commits-behind }}
       pr-exists: ${{ steps.check-pr.outputs.pr-exists }}
       pr-url: ${{ steps.check-pr.outputs.pr-url }}
+      pr-version: ${{ steps.check-pr.outputs.pr-version }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -270,19 +271,24 @@ jobs:
 
           # Check if PR exists with upstream-sync label targeting carto/main
           # Head branch pattern: upstream-sync/* (e.g., upstream-sync/v1.79.3-stable)
-          PR_URL=$(gh pr list \
+          PR_DATA=$(gh pr list \
             --repo CartoDB/litellm \
             --base carto/main \
             --label upstream-sync \
             --state open \
             --json url,headRefName \
-            --jq '.[] | select(.headRefName | startswith("upstream-sync/")) | .url' 2>/dev/null | head -1 || echo "")
+            --jq '.[] | select(.headRefName | startswith("upstream-sync/")) | {url, headRefName}' 2>/dev/null | head -1 || echo "")
+
+          PR_URL=$(echo "$PR_DATA" | jq -r '.url // empty' 2>/dev/null || echo "")
+          PR_BRANCH=$(echo "$PR_DATA" | jq -r '.headRefName // empty' 2>/dev/null || echo "")
+          PR_VERSION=$(echo "$PR_BRANCH" | sed -E 's|^upstream-sync/||')
 
           if [[ -n "${PR_URL}" ]]; then
-            echo "[Sync] PR already exists: ${PR_URL}"
+            echo "[Sync] PR already exists: ${PR_URL} (branch: ${PR_BRANCH}, version: ${PR_VERSION})"
             echo "pr-exists=true" >> $GITHUB_OUTPUT
             echo "pr-url=${PR_URL}" >> $GITHUB_OUTPUT
-            echo "::notice title=PR Already Exists::${PR_URL}"
+            echo "pr-version=${PR_VERSION}" >> $GITHUB_OUTPUT
+            echo "::notice title=PR Already Exists::${PR_URL} (version: ${PR_VERSION})"
           else
             echo "[Sync] No existing PR found"
             echo "pr-exists=false" >> $GITHUB_OUTPUT
@@ -611,6 +617,7 @@ jobs:
           COMMITS_BEHIND: ${{ needs.check-carto-main-sync.outputs.commits-behind }}
           PR_EXISTS: ${{ needs.check-carto-main-sync.outputs.pr-exists }}
           EXISTING_PR_URL: ${{ needs.check-carto-main-sync.outputs.pr-url }}
+          EXISTING_PR_VERSION: ${{ needs.check-carto-main-sync.outputs.pr-version }}
           NEW_PR_URL: ${{ needs.create-sync-pr.outputs.pr-url }}
           NEW_PR_NUMBER: ${{ needs.create-sync-pr.outputs.pr-number }}
           # Job results for all dependencies
@@ -707,16 +714,34 @@ jobs:
               fi
               ;;
             true:true)
-              # PR already exists - info only
-              COLOR="#1E88E5"  # Blue - neutral/informative
-              PROGRESS=$(make_progress 2)
-              TITLE="LiteLLM Upstream Sync"
-              STEP_TEXT="PR Already Exists"
-              STEP_EMOJI=":information_source:"
-              SUMMARY="Existing sync PR is up to date"
-              VERSION_FIELD="*Version*\n\`v${CURRENT_VERSION}\` → \`v${NEW_VERSION_CLEAN}\`"
-              STATUS_FIELD="*Status*\n:white_check_mark: Ready"
-              NEXT_ACTION="Review and merge when ready."
+              # PR already exists — check if it's for the current or an older version
+              PR_VERSION_CLEAN=$(echo "${EXISTING_PR_VERSION}" | sed -E 's/^v//; s/-stable$//')
+
+              if [[ "${HAS_NEW_RELEASE}" == "true" && -n "${EXISTING_PR_VERSION}" && "${EXISTING_PR_VERSION}" != "${NEW_VERSION}" ]]; then
+                # Newer release available but PR is for an older version
+                COLOR="#FF9800"  # Orange - attention needed
+                PROGRESS=$(make_progress 2)
+                TITLE="LiteLLM Upstream Sync"
+                STEP_TEXT="New Release Queued"
+                STEP_EMOJI=":new:"
+                NEXT_MONDAY=$(date -u -d "next Monday" +"%B %d" 2>/dev/null || echo "next Monday")
+                PR_NUM=$(echo "${EXISTING_PR_URL}" | grep -oE '[0-9]+$')
+                SUMMARY="New upstream \`v${NEW_VERSION_CLEAN}\` is available, but <${EXISTING_PR_URL}|PR #${PR_NUM}> is still syncing \`${PR_VERSION_CLEAN}\`. Once that PR is merged, the next sync (_${NEXT_MONDAY}, 12:00 UTC_) will create a new PR for \`v${NEW_VERSION_CLEAN}\`."
+                VERSION_FIELD="*Latest*\n\`v${NEW_VERSION_CLEAN}\`"
+                STATUS_FIELD="*Syncing*\n\`${PR_VERSION_CLEAN}\`"
+                NEXT_ACTION="Merge the current sync PR to unblock the newer version."
+              else
+                # PR exists for the same version (or no new release) - info only
+                COLOR="#1E88E5"  # Blue - neutral/informative
+                PROGRESS=$(make_progress 2)
+                TITLE="LiteLLM Upstream Sync"
+                STEP_TEXT="PR Already Exists"
+                STEP_EMOJI=":information_source:"
+                SUMMARY="Sync PR is open for \`${PR_VERSION_CLEAN:-current version}\`. ${COMMITS_BEHIND} commits behind upstream."
+                VERSION_FIELD="*Version*\n\`v${CURRENT_VERSION}\` → \`${PR_VERSION_CLEAN:-${NEW_VERSION_CLEAN}}\`"
+                STATUS_FIELD="*Status*\n:hourglass_flowing_sand: In Progress"
+                NEXT_ACTION="Review and merge when ready."
+              fi
               ;;
             false:*)
               # Already up to date - minimal notification
