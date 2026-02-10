@@ -1,0 +1,60 @@
+# CARTO Features Manifest
+#
+# Static registry of critical CARTO customizations that must survive upstream syncs.
+# The resolver should verify all patterns exist after every sync. If any are missing,
+# re-prompt to restore them with the specific PR context.
+#
+# Usage: After sync resolution, run verification:
+#   for each feature.verification entry:
+#     grep -q "<pattern>" "<file>" || echo "MISSING: <feature.name>"
+
+features:
+  - name: "OCI Gemini Tool Call UUIDs"
+    source_prs: [68]
+    files:
+      - litellm/llms/oci/chat/transformation.py
+    verification:
+      - pattern: "uuid.uuid4().hex"
+        file: litellm/llms/oci/chat/transformation.py
+      - pattern: "_handle_tool_call_delta"
+        file: litellm/responses/litellm_completion_transformation/streaming_iterator.py
+
+  - name: "Snowflake Streaming + Tool Calling"
+    source_prs: [38, 58]
+    files:
+      - litellm/llms/snowflake/chat/transformation.py
+      - litellm/responses/litellm_completion_transformation/transformation.py
+    verification:
+      - pattern: "SnowflakeStreamingHandler"
+        file: litellm/llms/snowflake/chat/transformation.py
+      - pattern: "_transform_messages"
+        file: litellm/llms/snowflake/chat/transformation.py
+      - pattern: "tool_choice_value is None and tools"
+        file: litellm/responses/litellm_completion_transformation/transformation.py
+
+  - name: "Azure URL Suffix Stripping"
+    source_prs: [70]
+    files:
+      - litellm/llms/azure/common_utils.py
+    verification:
+      - pattern: "re.sub.*chat/completions"
+        file: litellm/llms/azure/common_utils.py
+
+  - name: "JSON Repair for Streaming Tool Calls"
+    source_prs: [54]
+    files:
+      - litellm/litellm_core_utils/streaming_chunk_builder_utils.py
+    verification:
+      - pattern: "_validate_and_repair_tool_arguments"
+        file: litellm/litellm_core_utils/streaming_chunk_builder_utils.py
+
+  - name: "Redis Session Storage"
+    source_prs: [16]
+    files:
+      - litellm/responses/litellm_completion_transformation/streaming_iterator.py
+      - litellm/responses/litellm_completion_transformation/transformation.py
+    verification:
+      - pattern: "_store_session_in_redis"
+        file: litellm/responses/litellm_completion_transformation/streaming_iterator.py
+      - pattern: "_patch_store_session_in_redis"
+        file: litellm/responses/litellm_completion_transformation/transformation.py

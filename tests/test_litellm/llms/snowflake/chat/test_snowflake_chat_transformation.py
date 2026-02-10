@@ -106,11 +106,12 @@ class TestSnowflakeToolTransformation:
 
     def test_transform_request_with_string_tool_choice(self):
         """
-        Test that string tool_choice values pass through unchanged.
+        Test that string tool_choice values are converted to Snowflake's object format.
         """
         config = SnowflakeConfig()
 
-        for value in ["auto", "required", "none"]:
+        # "auto" and "none" become {"type": "auto"} and {"type": "none"}
+        for value in ["auto", "none"]:
             optional_params = {"tool_choice": value}
 
             transformed_request = config.transform_request(
@@ -121,7 +122,18 @@ class TestSnowflakeToolTransformation:
                 headers={},
             )
 
-            assert transformed_request["tool_choice"] == value
+            assert transformed_request["tool_choice"] == {"type": value}
+
+        # "required" becomes {"type": "required"} (no tool names without tools)
+        optional_params = {"tool_choice": "required"}
+        transformed_request = config.transform_request(
+            model="claude-3-5-sonnet",
+            messages=[{"role": "user", "content": "Test"}],
+            optional_params=optional_params,
+            litellm_params={},
+            headers={},
+        )
+        assert transformed_request["tool_choice"] == {"type": "required"}
 
     def test_transform_response_with_tool_calls(self):
         """
@@ -488,7 +500,7 @@ class TestSnowflakeAuthenticationHeaders:
         config = SnowflakeConfig()
         headers = {}
 
-        with pytest.raises(ValueError, match="Missing Snowflake JWT or PAT key"):
+        with pytest.raises(ValueError, match="Missing Snowflake JWT key"):
             config.validate_environment(
                 headers=headers,
                 model="mistral-7b",

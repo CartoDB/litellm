@@ -3,12 +3,20 @@ Support for Snowflake REST API
 """
 
 import json
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
+import time
+from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, Iterator, List, Optional, Tuple, Union
 
 import httpx
 
+from litellm.llms.base_llm.base_model_iterator import BaseModelResponseIterator
 from litellm.types.llms.openai import AllMessageValues
-from litellm.types.utils import ChatCompletionMessageToolCall, Function, ModelResponse
+from litellm.types.utils import (
+    ChatCompletionDeltaToolCall,
+    ChatCompletionMessageToolCall,
+    Function,
+    ModelResponse,
+    ModelResponseStream,
+)
 
 from ...openai_like.chat.transformation import OpenAIGPTConfig
 
@@ -21,6 +29,48 @@ if TYPE_CHECKING:
     LiteLLMLoggingObj = _LiteLLMLoggingObj
 else:
     LiteLLMLoggingObj = Any
+
+
+class SnowflakeStreamingHandler(BaseModelResponseIterator):
+    """
+    Custom streaming handler for Snowflake that handles missing fields in chunk responses.
+    Snowflake's streaming responses may not include all OpenAI-expected fields like 'created'.
+    Also transforms Claude-format tool_use to OpenAI-format tool_calls.
+    """
+
+    def chunk_parser(self, chunk: dict) -> ModelResponseStream:
+        # Snowflake may not include 'created' timestamp, use current time as default
+        created = chunk.get("created", int(time.time()))
+
+        # Transform choices to convert tool_use (Claude format) to tool_calls (OpenAI format)
+        choices = chunk.get("choices", [])
+        for choice in choices:
+            delta = choice.get("delta", {})
+
+            # Check if this is a tool_use block (Claude format via Snowflake)
+            if delta.get("type") == "tool_use":
+                tool_call = ChatCompletionDeltaToolCall(
+                    id=delta.get("tool_use_id") or delta.get("id"),
+                    type="function",
+                    function=Function(
+                        name=delta.get("name"),
+                        arguments=delta.get("input", ""),
+                    ),
+                    index=choice.get("index", 0),
+                )
+                delta["tool_calls"] = [tool_call]
+                delta.pop("type", None)
+                delta.pop("tool_use_id", None)
+                delta.pop("content_list", None)
+
+        return ModelResponseStream(
+            id=chunk.get("id", ""),
+            object="chat.completion.chunk",
+            created=created,
+            model=chunk.get("model", ""),
+            choices=choices,
+            usage=chunk.get("usage"),
+        )
 
 
 class SnowflakeConfig(SnowflakeBaseConfig, OpenAIGPTConfig):
@@ -154,6 +204,22 @@ class SnowflakeConfig(SnowflakeBaseConfig, OpenAIGPTConfig):
 
         return f"{api_base}/cortex/inference:complete"
 
+    def get_model_response_iterator(
+        self,
+        streaming_response: Union[Iterator[str], AsyncIterator[str], ModelResponse],
+        sync_stream: bool,
+        json_mode: Optional[bool] = False,
+    ) -> Any:
+        """
+        Return custom streaming handler for Snowflake that handles missing 'created' field
+        and transforms Claude-format tool_use to OpenAI-format tool_calls.
+        """
+        return SnowflakeStreamingHandler(
+            streaming_response=streaming_response,
+            sync_stream=sync_stream,
+            json_mode=json_mode,
+        )
+
     def _transform_tools(self, tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Transform OpenAI tool format to Snowflake tool format.
@@ -207,28 +273,26 @@ class SnowflakeConfig(SnowflakeBaseConfig, OpenAIGPTConfig):
         return snowflake_tools
 
     def _transform_tool_choice(
-        self, tool_choice: Union[str, Dict[str, Any]]
+        self,
+        tool_choice: Union[str, Dict[str, Any]],
+        tool_names: Optional[List[str]] = None,
     ) -> Union[str, Dict[str, Any]]:
         """
         Transform OpenAI tool_choice format to Snowflake format.
 
-        Args:
-            tool_choice: Tool choice in OpenAI format (str or dict)
+        String values are converted to Snowflake's required object format:
+        - "auto" -> {"type": "auto"}
+        - "required" -> {"type": "required", "name": [tool_names]}
+        - "none" -> {"type": "none"}
 
-        Returns:
-            Tool choice in Snowflake format
-
-        OpenAI format:
-        {"type": "function", "function": {"name": "get_weather"}}
-
-        Snowflake format:
-        {"type": "tool", "name": ["get_weather"]}
-
-        Note: String values ("auto", "required", "none") pass through unchanged.
+        Dict values with function type are converted:
+        - {"type": "function", "function": {"name": "x"}} -> {"type": "tool", "name": ["x"]}
         """
         if isinstance(tool_choice, str):
-            # "auto", "required", "none" pass through as-is
-            return tool_choice
+            result: Dict[str, Any] = {"type": tool_choice}
+            if tool_names and tool_choice == "required":
+                result["name"] = tool_names
+            return result
 
         if isinstance(tool_choice, dict):
             if tool_choice.get("type") == "function":
@@ -241,6 +305,100 @@ class SnowflakeConfig(SnowflakeBaseConfig, OpenAIGPTConfig):
 
         return tool_choice
 
+    def _transform_messages(
+        self, messages: List[AllMessageValues]
+    ) -> List[Dict[str, Any]]:
+        """
+        Transform OpenAI message format to Snowflake format.
+
+        Handles:
+        - role="tool" messages -> role="user" with content_list containing tool_results
+        - role="assistant" with tool_calls -> content_list with tool_use blocks
+        - content=None -> content="" (Snowflake requires non-null content)
+        """
+        transformed_messages = []
+        tool_call_map: Dict[str, str] = {}
+
+        for message in messages:
+            msg_dict = message if isinstance(message, dict) else dict(message)
+
+            # Handle tool result messages (role="tool")
+            if msg_dict.get("role") == "tool":
+                tool_call_id = msg_dict.get("tool_call_id")
+                content = msg_dict.get("content", "")
+                tool_name = msg_dict.get("name")
+
+                if not tool_name and tool_call_id and tool_call_id in tool_call_map:
+                    tool_name = tool_call_map[tool_call_id]
+
+                tool_results: Dict[str, Any] = {
+                    "tool_use_id": tool_call_id,
+                    "content": [{"type": "text", "text": str(content)}],
+                }
+                if tool_name:
+                    tool_results["name"] = tool_name
+
+                transformed_messages.append({
+                    "role": "user",
+                    "content": "",
+                    "content_list": [
+                        {"type": "tool_results", "tool_results": tool_results}
+                    ],
+                })
+
+            # Handle assistant messages with tool_calls
+            elif msg_dict.get("role") == "assistant" and msg_dict.get("tool_calls"):
+                content_list = []
+
+                for tool_call in msg_dict.get("tool_calls", []):
+                    if tool_call.get("type") == "function":
+                        function_data = tool_call.get("function", {})
+                        tc_id = tool_call.get("id")
+                        tc_name = function_data.get("name")
+                        arguments_str = function_data.get("arguments", "{}")
+
+                        if tc_id and tc_name:
+                            tool_call_map[tc_id] = tc_name
+
+                        try:
+                            arguments = (
+                                json.loads(arguments_str)
+                                if isinstance(arguments_str, str)
+                                else arguments_str
+                            )
+                        except json.JSONDecodeError:
+                            arguments = {}
+
+                        content_list.append({
+                            "type": "tool_use",
+                            "tool_use": {
+                                "tool_use_id": tc_id,
+                                "name": tc_name,
+                                "input": arguments,
+                            },
+                        })
+
+                transformed_messages.append({
+                    "role": "assistant",
+                    "content": msg_dict.get("content") or "",
+                    "content_list": content_list,
+                })
+
+            else:
+                if isinstance(message, dict):
+                    msg_to_append = message.copy()
+                else:
+                    msg_to_append = dict(message)
+
+                content_value = msg_to_append.get("content")
+                has_content_list = "content_list" in msg_to_append and msg_to_append.get("content_list")
+                if content_value is None and not has_content_list:
+                    msg_to_append["content"] = ""
+
+                transformed_messages.append(msg_to_append)
+
+        return transformed_messages
+
     def transform_request(
         self,
         model: str,
@@ -252,20 +410,31 @@ class SnowflakeConfig(SnowflakeBaseConfig, OpenAIGPTConfig):
         stream: bool = optional_params.pop("stream", None) or False
         extra_body = optional_params.pop("extra_body", {})
 
-        ## TOOL CALLING
+        # Transform messages to handle tool results and assistant tool_calls
+        transformed_messages = self._transform_messages(messages)
+
         # Transform tools from OpenAI format to Snowflake's tool_spec format
         tools = optional_params.pop("tools", None)
+        tool_names: List[str] = []
         if tools:
-            optional_params["tools"] = self._transform_tools(tools)
+            transformed_tools = self._transform_tools(tools)
+            optional_params["tools"] = transformed_tools
+            tool_names = [
+                t.get("tool_spec", {}).get("name")
+                for t in transformed_tools
+                if t.get("tool_spec", {}).get("name")
+            ]
 
-        # Transform tool_choice from OpenAI format to Snowflake's tool name array format
+        # Transform tool_choice from OpenAI format to Snowflake's format
         tool_choice = optional_params.pop("tool_choice", None)
         if tool_choice:
-            optional_params["tool_choice"] = self._transform_tool_choice(tool_choice)
+            optional_params["tool_choice"] = self._transform_tool_choice(
+                tool_choice, tool_names
+            )
 
         return {
             "model": model,
-            "messages": messages,
+            "messages": transformed_messages,
             "stream": stream,
             **optional_params,
             **extra_body,
