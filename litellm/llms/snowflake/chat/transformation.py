@@ -197,12 +197,22 @@ class SnowflakeConfig(SnowflakeBaseConfig, OpenAIGPTConfig):
         stream: Optional[bool] = None,
     ) -> str:
         """
-        If api_base is not provided, use the default DeepSeek /chat/completions endpoint.
+        Build the Snowflake Cortex inference URL.
+
+        Handles both cases:
+        - api_base is just the domain (e.g., https://account.snowflakecomputing.com)
+        - api_base is the full endpoint URL (e.g., https://account.snowflakecomputing.com/api/v2/cortex/inference:complete)
         """
+        endpoint = "cortex/inference:complete"
+
+        # CARTO: skip path construction if api_base already contains the full endpoint
+        # (CARTO platform may pass the full Cortex URL as api_base)
+        if api_base and endpoint in api_base:
+            return api_base
 
         api_base = self._get_api_base(api_base, optional_params)
 
-        return f"{api_base}/cortex/inference:complete"
+        return f"{api_base}/{endpoint}"
 
     def get_model_response_iterator(
         self,
