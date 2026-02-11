@@ -789,6 +789,41 @@ jobs:
 
             ---
 
+            ## CARTO FEATURES MANIFEST (CRITICAL)
+
+            The features manifest lists EXACT patterns that MUST exist after resolution.
+            Read it and verify all patterns survive:
+
+            ```bash
+            cat .github/carto-features.yml
+            ```
+
+            After resolving ALL conflicts, verify each pattern:
+            ```bash
+            python3 -c "
+            import yaml, subprocess, sys
+            with open('.github/carto-features.yml') as f:
+                data = yaml.safe_load(f)
+            missing = 0
+            for feat in data.get('features', []):
+                for v in feat.get('verification', []):
+                    r = subprocess.run(['grep', '-q', v['pattern'], v['file']], capture_output=True)
+                    status = 'OK' if r.returncode == 0 else 'MISSING'
+                    print(f'{status}: {feat[\"name\"]} - {v[\"pattern\"]} in {v[\"file\"]}')
+                    if r.returncode != 0:
+                        missing += 1
+            if missing:
+                print(f'\nWARNING: {missing} pattern(s) missing!')
+                sys.exit(1)
+            else:
+                print('\nAll CARTO feature patterns verified.')
+            "
+            ```
+
+            If ANY patterns are MISSING, restore them from carto/main or re-implement.
+
+            ---
+
             ## SYNC-REQUIRED FILES (Always Accept Upstream TAG)
 
             These files MUST match upstream regardless of CARTO history:
@@ -1111,6 +1146,41 @@ jobs:
 
           echo "✅ No conflict markers found"
           echo "resolved=true" >> $GITHUB_OUTPUT
+          echo "::endgroup::"
+
+      - name: Verify CARTO features manifest
+        id: verify-manifest
+        if: steps.verify-resolution.outputs.resolved == 'true'
+        run: |
+          echo "::group::Verifying CARTO features manifest patterns"
+
+          if [ ! -f .github/carto-features.yml ]; then
+            echo "::notice::carto-features.yml not found - skipping manifest verification"
+            echo "::endgroup::"
+            exit 0
+          fi
+
+          python3 -c "
+          import yaml, subprocess
+          with open('.github/carto-features.yml') as f:
+              data = yaml.safe_load(f)
+          missing = []
+          for feat in data.get('features', []):
+              for v in feat.get('verification', []):
+                  r = subprocess.run(['grep', '-q', v['pattern'], v['file']], capture_output=True)
+                  if r.returncode == 0:
+                      print(f'OK: {feat[\"name\"]} - {v[\"pattern\"]} in {v[\"file\"]}')
+                  else:
+                      print(f'MISSING: {feat[\"name\"]} - {v[\"pattern\"]} in {v[\"file\"]}')
+                      missing.append(f'{feat[\"name\"]}: {v[\"pattern\"]} in {v[\"file\"]}')
+          if missing:
+              print(f'\n::warning::CARTO features manifest: {len(missing)} pattern(s) missing (Claude may have intentionally changed code):')
+              for m in missing:
+                  print(f'  - {m}')
+          else:
+              print('\nAll CARTO feature patterns verified.')
+          "
+
           echo "::endgroup::"
 
       - name: Complete merge commit (HARDCODED - creates merge with both parents)
