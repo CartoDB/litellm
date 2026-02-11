@@ -17,7 +17,8 @@ on:
       - "docker/**"
       - "Dockerfile"
       - "requirements.txt"
-      - ".github/workflows/ghcr_carto_deploy.yaml"
+      - ".github/workflows/carto-ghcr-deploy.yaml"
+      - ".github/workflows/docker-build-multiarch.yaml"
   pull_request:
     branches:
       - carto/main
@@ -27,16 +28,13 @@ on:
       - "docker/**"
       - "Dockerfile"
       - "requirements.txt"
-      - ".github/workflows/ghcr_carto_deploy.yaml"
+      - ".github/workflows/carto-ghcr-deploy.yaml"
+      - ".github/workflows/docker-build-multiarch.yaml"
 
 # Cancel previous runs on the same branch/PR
 concurrency:
   group: docker-build-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
-
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   print:
@@ -47,25 +45,11 @@ jobs:
           echo "SHA      : ${{ github.sha }}"
           echo "Event    : ${{ github.event_name }}"
 
-  build-and-push-image-non_root:
+  compute-tags:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
+    outputs:
+      tags: ${{ steps.tag-config.outputs.tags }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          # Checkout the release tag if provided, otherwise use default (branch that triggered the workflow)
-          ref: ${{ github.event.inputs.release_tag || github.ref }}
-
-      - name: Log in to the Container registry
-        uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Configure tags
         id: tag-config
         run: |
@@ -104,29 +88,14 @@ jobs:
 
           echo "EOF" >> $GITHUB_OUTPUT
 
-      - name: Extract metadata for tags & labels
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-non_root
-          tags: |
-            ${{ steps.tag-config.outputs.tags }}
-  
-      # Configure multi platform Docker builds
-      # - name: Set up QEMU
-      #   uses: docker/setup-qemu-action@e0e4588fad221d38ee467c0bffd91115366dc0c5
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@edfb0fe6204400c56fbfd3feba3fe9ad1adfa345
-
-      - name: Build and push non_root Docker image
-        uses: docker/build-push-action@f2a1d5e99d037542a71f64918e516c093c6f3fc4
-        with:
-          context: .
-          file: ./docker/Dockerfile.non_root
-          push: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          platforms: linux/amd64 #linux/arm64
+  docker:
+    needs: [print, compute-tags]
+    uses: ./.github/workflows/docker-build-multiarch.yaml
+    with:
+      checkout_ref: ${{ github.event.inputs.release_tag || github.ref }}
+      tags: ${{ needs.compute-tags.outputs.tags }}
+      cache_scope_prefix: build
+    permissions:
+      contents: read
+      packages: write
+    secrets: inherit
