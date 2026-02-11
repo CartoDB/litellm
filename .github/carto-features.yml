@@ -32,6 +32,15 @@ features:
       - pattern: "tool_choice_value is None and tools"
         file: litellm/responses/litellm_completion_transformation/transformation.py
 
+  - name: "Snowflake Full URL Passthrough"
+    source_prs: []
+    description: "Prevents URL duplication when api_base already contains the full Cortex endpoint path"
+    files:
+      - litellm/llms/snowflake/chat/transformation.py
+    verification:
+      - pattern: "CARTO: skip path construction if api_base already contains"
+        file: litellm/llms/snowflake/chat/transformation.py
+
   - name: "Azure URL Suffix Stripping"
     source_prs: [70]
     files:
