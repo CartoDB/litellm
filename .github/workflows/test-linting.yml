@@ -4,11 +4,6 @@ on:
   pull_request:
     branches: [ main ]
 
-# Cancel previous runs on the same PR
-concurrency:
-  group: linting-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -35,6 +30,7 @@ jobs:
 
     - name: Install dependencies
       run: |
+        poetry lock
         poetry install --with dev
         poetry run pip install openai==1.100.1
 

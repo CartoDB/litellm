@@ -2,11 +2,10 @@
 Handler for transforming responses api requests to litellm.completion requests
 """
 
+import uuid
 from typing import Any, Coroutine, Dict, Optional, Union
 
 import litellm
-# PATCH: Additional imports for Redis session storage
-import uuid
 from litellm.responses.litellm_completion_transformation.streaming_iterator import (
     LiteLLMCompletionStreamingIterator,
 )
@@ -130,7 +129,7 @@ class LiteLLMCompletionTransformationHandler:
                 )
             )
 
-            # PATCH: Store session immediately in Redis to avoid batch processing delay
+            # CARTO PATCH: Store session immediately in Redis to avoid batch processing delay
             if responses_api_response.id:
                 session_id = kwargs.get("litellm_trace_id") or str(uuid.uuid4())
                 current_messages = litellm_completion_request.get("messages", [])

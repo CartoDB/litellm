@@ -2,12 +2,7 @@ name: LiteLLM Mock Tests (folder - tests/test_litellm)
 
 on:
   pull_request:
-    branches: [ main, carto/main ]
-
-# Cancel previous runs on the same PR
-concurrency:
-  group: litellm-tests-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+    branches: [ main ]
 
 jobs:
   test:
@@ -32,17 +27,19 @@ jobs:
 
     - name: Install dependencies
       run: |
+        poetry lock
         poetry install --with dev,proxy-dev --extras "proxy semantic-router"
         poetry run pip install "pytest-retry==1.6.3"
         poetry run pip install pytest-xdist
         poetry run pip install "google-genai==1.22.0"
         poetry run pip install "google-cloud-aiplatform>=1.38"
         poetry run pip install "fastapi-offline==1.7.3"
-        poetry run pip install "python-multipart==0.0.18"
+        poetry run pip install "python-multipart==0.0.22"
+        poetry run pip install "openapi-core"
     - name: Setup litellm-enterprise as local package
       run: |
         cd enterprise
-        python -m pip install -e .
+        poetry run pip install -e .
         cd ..
     - name: Run tests
       run: |

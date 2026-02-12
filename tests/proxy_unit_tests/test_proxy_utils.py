@@ -238,7 +238,7 @@ def test_dynamic_logging_metadata_key_and_team_metadata(callback_vars):
 
     proxy_config = ProxyConfig()
     user_api_key_dict = UserAPIKeyAuth(
-        token="6f8688eaff1d37555bb9e9a6390b6d7032b3ab2526ba0152da87128eab956432",
+        token="sk-test-mock-token-789",
         key_name="sk-...63Fg",
         key_alias=None,
         spend=0.000111,
@@ -287,7 +287,7 @@ def test_dynamic_logging_metadata_key_and_team_metadata(callback_vars):
         end_user_rpm_limit=None,
         end_user_max_budget=None,
         last_refreshed_at=1726101560.967527,
-        api_key="7c305cc48fe72272700dc0d67dc691c2d1f2807490ef5eb2ee1d3a3ca86e12b1",
+        api_key="sk-test-mock-api-key-202",
         user_role=LitellmUserRoles.INTERNAL_USER,
         allowed_model_region=None,
         parent_otel_span=None,
@@ -320,7 +320,7 @@ def test_dynamic_turn_off_message_logging(callback_vars):
 
     proxy_config = ProxyConfig()
     user_api_key_dict = UserAPIKeyAuth(
-        token="6f8688eaff1d37555bb9e9a6390b6d7032b3ab2526ba0152da87128eab956432",
+        token="sk-test-mock-token-789",
         key_name="sk-...63Fg",
         key_alias=None,
         spend=0.000111,
@@ -368,7 +368,7 @@ def test_dynamic_turn_off_message_logging(callback_vars):
         end_user_rpm_limit=None,
         end_user_max_budget=None,
         last_refreshed_at=1726101560.967527,
-        api_key="7c305cc48fe72272700dc0d67dc691c2d1f2807490ef5eb2ee1d3a3ca86e12b1",
+        api_key="sk-test-mock-api-key-202",
         user_role=LitellmUserRoles.INTERNAL_USER,
         allowed_model_region=None,
         parent_otel_span=None,
@@ -677,6 +677,11 @@ async def test_prepare_key_update_data():
     data = UpdateKeyRequest(key="test_key", metadata=None)
     updated_data = await prepare_key_update_data(data, existing_key_row)
     assert updated_data["metadata"] is None
+
+    # Test duration "-1" sets expires to None (never expires)
+    data = UpdateKeyRequest(key="test_key", duration="-1")
+    updated_data = await prepare_key_update_data(data, existing_key_row)
+    assert updated_data["expires"] is None
 
 
 @pytest.mark.parametrize(
@@ -1267,7 +1272,7 @@ def test_litellm_verification_token_view_response_with_budget_table(
     from litellm.proxy._types import LiteLLM_VerificationTokenView
 
     args: Dict[str, Any] = {
-        "token": "78b627d4d14bc3acf5571ae9cb6834e661bc8794d1209318677387add7621ce1",
+        "token": "sk-test-mock-token-303",
         "key_name": "sk-...if_g",
         "key_alias": None,
         "soft_budget_cooldown": False,
@@ -1569,6 +1574,10 @@ async def test_health_check_not_called_when_disabled(monkeypatch):
     mock_prisma.health_check = AsyncMock()
     mock_prisma.check_view_exists = AsyncMock()
     mock_prisma._set_spend_logs_row_count_in_proxy_state = AsyncMock()
+    # Mock the db attribute with start_token_refresh_task for RDS IAM token refresh
+    mock_db = MagicMock()
+    mock_db.start_token_refresh_task = AsyncMock()
+    mock_prisma.db = mock_db
     # Mock PrismaClient constructor
     monkeypatch.setattr(
         "litellm.proxy.proxy_server.PrismaClient", lambda **kwargs: mock_prisma
@@ -1629,12 +1638,15 @@ async def test_end_user_transactions_reset():
 @pytest.mark.asyncio
 async def test_spend_logs_cleanup_after_error():
     # Setup test data
+    import asyncio
     mock_client = MagicMock()
     mock_client.spend_log_transactions = [
         {"id": 1, "amount": 10.0},
         {"id": 2, "amount": 20.0},
         {"id": 3, "amount": 30.0},
     ]
+    # Add lock for spend_log_transactions (matches real PrismaClient)
+    mock_client._spend_log_transactions_lock = asyncio.Lock()
     # Make the DB operation fail
     mock_client.db.litellm_spendlogs.create_many = AsyncMock(
         side_effect=Exception("DB Error")
@@ -2154,3 +2166,99 @@ async def test_post_call_failure_hook_auth_error_llm_api_route():
         # Assert that _handle_logging_proxy_only_error WAS called
         # because /v1/chat/completions is an LLM API route
         mock_handle_logging.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_during_call_hook_parallel_execution():
+    """
+    Test that multiple guardrails in during_call_hook are executed in parallel.
+    Verifies parallel execution by checking timing and execution order.
+    """
+    from litellm.caching.caching import DualCache
+    from litellm.integrations.custom_guardrail import CustomGuardrail
+    from litellm.proxy.utils import ProxyLogging
+    from litellm.types.guardrails import GuardrailEventHooks
+
+    cache = DualCache()
+    proxy_logging = ProxyLogging(user_api_key_cache=cache)
+    execution_order = []
+    
+    class TestGuardrail(CustomGuardrail):
+        def __init__(self, name):
+            super().__init__(
+                guardrail_name=name,
+                event_hook=GuardrailEventHooks.during_call,
+                default_on=True
+            )
+            self.name = name
+        
+        async def async_moderation_hook(self, data, user_api_key_dict, call_type):
+            execution_order.append(f"{self.name}_start")
+            await asyncio.sleep(0.1)
+            execution_order.append(f"{self.name}_end")
+            return data
+    
+    original_callbacks = litellm.callbacks.copy() if litellm.callbacks else []
+    
+    try:
+        litellm.callbacks = [TestGuardrail(f"g{i}") for i in range(3)]
+        
+        start_time = asyncio.get_event_loop().time()
+        result = await proxy_logging.during_call_hook(
+            data={"model": "gpt-4", "messages": [{"role": "user", "content": "test"}]},
+            user_api_key_dict=UserAPIKeyAuth(api_key="test_key", user_id="test_user"),
+            call_type="completion",
+        )
+        execution_time = asyncio.get_event_loop().time() - start_time
+        
+        # Verify parallel execution: all start before any end
+        first_end_idx = next(i for i, item in enumerate(execution_order) if "end" in item)
+        starts_before_end = sum(1 for item in execution_order[:first_end_idx] if "start" in item)
+        assert starts_before_end == 3, f"Expected 3 starts before first end, got {starts_before_end}"
+        
+        # Verify timing: parallel ~0.1s vs sequential ~0.3s
+        assert execution_time < 0.2, f"Parallel execution took {execution_time}s, expected < 0.2s"
+        assert result["model"] == "gpt-4"
+    finally:
+        litellm.callbacks = original_callbacks
+
+
+@pytest.mark.asyncio
+async def test_during_call_hook_parallel_execution_with_error():
+    """
+    Test that exceptions from guardrails are properly raised in parallel execution.
+    """
+    from litellm.caching.caching import DualCache
+    from litellm.integrations.custom_guardrail import CustomGuardrail
+    from litellm.proxy.utils import ProxyLogging
+    from litellm.types.guardrails import GuardrailEventHooks
+
+    cache = DualCache()
+    proxy_logging = ProxyLogging(user_api_key_cache=cache)
+    
+    class FailingGuardrail(CustomGuardrail):
+        def __init__(self):
+            super().__init__(
+                guardrail_name="failing_guardrail",
+                event_hook=GuardrailEventHooks.during_call,
+                default_on=True
+            )
+        
+        async def async_moderation_hook(self, data, user_api_key_dict, call_type):
+            raise ValueError("Guardrail violation detected!")
+    
+    original_callbacks = litellm.callbacks.copy() if litellm.callbacks else []
+    
+    try:
+        litellm.callbacks = [FailingGuardrail()]
+        
+        with pytest.raises(ValueError) as exc_info:
+            await proxy_logging.during_call_hook(
+                data={"model": "gpt-4", "messages": [{"role": "user", "content": "test"}]},
+                user_api_key_dict=UserAPIKeyAuth(api_key="test_key", user_id="test_user"),
+                call_type="completion",
+            )
+        
+        assert "Guardrail violation detected!" in str(exc_info.value)
+    finally:
+        litellm.callbacks = original_callbacks
