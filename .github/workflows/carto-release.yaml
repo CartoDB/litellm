@@ -544,7 +544,9 @@ jobs:
           draft: false
           prerelease: false
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Use PAT instead of GITHUB_TOKEN so the release event triggers
+          # downstream workflows (e.g. carto-n8n-notifier.yml)
+          GITHUB_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
 
       - name: Release Summary
         run: |
