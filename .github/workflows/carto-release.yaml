@@ -502,6 +502,28 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         timeout-minutes: 20
 
+      - name: Ensure release_notes.md exists
+        if: steps.manual-notes.outputs.notes_generated != 'true'
+        env:
+          CLAUDE_OUTPUT: ${{ steps.release-notes.outputs.result }}
+        run: |
+          # Claude Code Action may write files inside a sandbox that doesn't
+          # persist on the runner filesystem. If the file is missing, extract
+          # the release notes from the action's output.
+          if [ -f "release_notes.md" ] && [ -s "release_notes.md" ]; then
+            echo "✅ release_notes.md exists (written directly by Claude)"
+          elif [ -n "$CLAUDE_OUTPUT" ]; then
+            echo "⚠️ release_notes.md not found on disk — writing from Claude output"
+            printf '%s\n' "$CLAUDE_OUTPUT" > release_notes.md
+          else
+            echo "::error::Claude step produced no output and release_notes.md is missing"
+            exit 1
+          fi
+
+          echo "::group::Release notes content"
+          cat release_notes.md
+          echo "::endgroup::"
+
       - name: Cleanup GCP credentials
         if: always()
         run: rm -f /tmp/gcp-sa.json
