@@ -2,7 +2,9 @@
 Handles transforming from Responses API -> LiteLLM completion  (Chat Completion API)
 """
 
+import json
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional, Set, Tuple, Union, cast
 
 from openai.types.responses import ResponseFunctionToolCall
@@ -191,15 +193,20 @@ class LiteLLMCompletionResponsesConfig:
                 # reasoning could be a string directly
                 reasoning_effort = reasoning_param
 
+        # Default tool_choice to "auto" when tools are present but no explicit choice
+        tool_choice_value = LiteLLMCompletionResponsesConfig._transform_tool_choice(
+            responses_api_request.get("tool_choice")
+        )
+        if tool_choice_value is None and tools:
+            tool_choice_value = "auto"
+
         litellm_completion_request: dict = {
             "messages": LiteLLMCompletionResponsesConfig.transform_responses_api_input_to_messages(
                 input=input,
                 responses_api_request=responses_api_request,
             ),
             "model": model,
-            "tool_choice": LiteLLMCompletionResponsesConfig._transform_tool_choice(
-                responses_api_request.get("tool_choice")
-            ),
+            "tool_choice": tool_choice_value,
             "tools": tools,
             "top_p": responses_api_request.get("top_p"),
             "user": responses_api_request.get("user"),
@@ -282,16 +289,52 @@ class LiteLLMCompletionResponsesConfig:
     ) -> dict:
         """
         Async hook to get the chain of previous input and output pairs and return a list of Chat Completion messages
+
+        CARTO PATCH: Added Redis-first lookup to fix conversation context timing issues
         """
+        from litellm._logging import verbose_logger
+
+        verbose_logger.debug("=" * 80)
+        verbose_logger.debug("SESSION HANDLER: Loading conversation history")
+        verbose_logger.debug(f"previous_response_id: {previous_response_id}")
+        verbose_logger.debug(f"Current messages in request: {len(litellm_completion_request.get('messages', []))}")
+        verbose_logger.debug("=" * 80)
+
+        # CARTO PATCH: Try Redis first for immediate availability
+        redis_session = await LiteLLMCompletionResponsesConfig._patch_get_session_from_redis(previous_response_id)
+        verbose_logger.debug(f"Redis session found: {redis_session is not None}")
+        if redis_session:
+            _messages = litellm_completion_request.get("messages") or []
+            session_messages = redis_session.get("messages") or []
+            verbose_logger.debug(f"Redis: Loaded {len(session_messages)} session messages (before filtering)")
+
+            # FILTER: Remove empty assistant messages (safety check for Redis)
+            session_messages = LiteLLMCompletionResponsesConfig._filter_empty_assistant_messages(session_messages)
+            verbose_logger.debug(f"Redis: {len(session_messages)} messages after filtering")
+            verbose_logger.debug(f"Redis: Adding {len(_messages)} new messages")
+
+            litellm_completion_request["messages"] = session_messages + _messages
+            verbose_logger.debug(f"Redis: Total messages after merge: {len(litellm_completion_request['messages'])}")
+            litellm_completion_request["litellm_trace_id"] = redis_session.get("session_id")
+            return litellm_completion_request
+
+        # CARTO PATCH: Fallback to existing enterprise/database logic
+        verbose_logger.debug(f"Enterprise handler available: {ResponsesSessionHandler is not None}")
         chat_completion_session = ChatCompletionSession(
             messages=[], litellm_session_id=None
         )
         if previous_response_id:
+            verbose_logger.debug("Calling enterprise session handler...")
             chat_completion_session = await ResponsesSessionHandler.get_chat_completion_message_history_for_previous_response_id(
                 previous_response_id=previous_response_id
             )
+            verbose_logger.debug(f"Enterprise: Loaded {len(chat_completion_session.get('messages', []))} session messages (before filtering)")
         _messages = litellm_completion_request.get("messages") or []
         session_messages = chat_completion_session.get("messages") or []
+
+        # CARTO PATCH: Filter empty assistant messages
+        session_messages = LiteLLMCompletionResponsesConfig._filter_empty_assistant_messages(session_messages)
+        verbose_logger.debug(f"Enterprise: {len(session_messages)} messages after filtering")
         
         # If session messages are empty (e.g., no database in test environment),
         # we still need to process the new input messages
@@ -1851,3 +1894,97 @@ class LiteLLMCompletionResponsesConfig:
                     return None
 
         return None
+
+    # =============================================================================
+    # CARTO PATCH: Redis Session Storage for Conversation Context
+    # This is a fix for conversation context timing issues where sessions
+    # are not stored quickly enough for follow-up requests.
+    # =============================================================================
+
+    @staticmethod
+    def _filter_empty_assistant_messages(messages: List[Dict]) -> List[Dict]:
+        """
+        Filter out empty assistant messages that have no content and no tool_calls.
+
+        These are artifacts from Snowflake/Claude starting a response then only calling tools,
+        which creates two consecutive assistant messages (first empty, second with tool_calls).
+
+        Args:
+            messages: List of message dicts to filter
+
+        Returns:
+            Filtered list with empty assistant messages removed
+        """
+        from litellm._logging import verbose_logger
+
+        filtered_messages = []
+        for msg in messages:
+            # Skip assistant messages that have both:
+            # 1. content is None or empty
+            # 2. no tool_calls
+            if (msg.get("role") == "assistant" and
+                (msg.get("content") is None or msg.get("content") == "") and
+                not msg.get("tool_calls")):
+                verbose_logger.debug(f"FILTER: Removing empty assistant message: {msg}")
+                continue
+            filtered_messages.append(msg)
+
+        return filtered_messages
+
+    @staticmethod
+    async def _patch_store_session_in_redis(response_id: str, session_id: str, messages: List[Dict]):
+        """PATCH: Store session immediately in Redis to avoid batch processing delay"""
+        try:
+            import litellm
+            from litellm._logging import verbose_logger
+
+            if litellm.cache is None or not hasattr(litellm.cache, 'cache') or not hasattr(litellm.cache.cache, 'init_async_client'):
+                return  # No Redis - graceful fallback to existing logic
+
+            # FILTER: Remove empty assistant messages
+            filtered_messages = LiteLLMCompletionResponsesConfig._filter_empty_assistant_messages(messages)
+            verbose_logger.debug(f"REDIS STORAGE: Storing {len(filtered_messages)} messages (filtered from {len(messages)})")
+
+            session_data = {
+                "messages": filtered_messages,
+                "session_id": session_id,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+
+            # Store with 24-hour TTL using the async Redis client
+            async_redis_client = litellm.cache.cache.init_async_client()
+            await async_redis_client.set(
+                name=f"litellm_patch:session:{response_id}",
+                value=json.dumps(session_data),
+                ex=86400  # 24 hours
+            )
+
+        except Exception:
+            # PATCH: Silent fail - don't break existing functionality
+            pass
+
+    @staticmethod
+    async def _patch_get_session_from_redis(previous_response_id: str) -> Optional[Dict]:
+        """PATCH: Get session from Redis if available"""
+        try:
+            import litellm
+
+            if litellm.cache is None or not hasattr(litellm.cache, 'cache') or not hasattr(litellm.cache.cache, 'init_async_client'):
+                return None
+
+            # NOTE: Use the raw previous_response_id as-is (no decoding)
+            # The response_id stored in Redis is the same format as previous_response_id
+            # (both are the LiteLLM-encoded IDs containing provider/model info)
+
+            # Get session data from Redis using the async Redis client
+            async_redis_client = litellm.cache.cache.init_async_client()
+            session_json = await async_redis_client.get(name=f"litellm_patch:session:{previous_response_id}")
+
+            if session_json:
+                return json.loads(session_json)
+
+            return None
+
+        except Exception:
+            # PATCH: Silent fail - fallback to existing logic
+            return None

@@ -1,0 +1,749 @@
+name: CARTO Upstream Sync - CI Fixer
+
+# This workflow automatically fixes CI failures in upstream sync PRs.
+# Triggered when CI checks fail on PRs created by the upstream sync workflow
+# or the conflict resolver.
+
+on:
+  workflow_run:
+    workflows:
+      - "LiteLLM Mock Tests (folder - tests/test_litellm)"
+      - "CARTO - Deploy Docker Image (CI)"
+      - "LiteLLM Linting"
+    types:
+      - completed
+    branches:
+      - 'upstream-sync/**'
+      - 'upstream-sync-resolver/**'
+
+  workflow_dispatch:
+    inputs:
+      pr-number:
+        description: "PR number to fix CI for"
+        required: true
+        default: ""
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+
+# Prevent multiple workflows running on the same PR simultaneously
+# IMPORTANT: Uses shared concurrency group with Resolver to prevent both running simultaneously
+concurrency:
+  group: upstream-sync-${{ github.event.workflow_run.pull_requests[0].number || github.event.inputs.pr-number || github.run_id }}
+  cancel-in-progress: false  # Wait for running workflow to finish (don't cancel)
+
+jobs:
+  check-ci-status:
+    name: Check CI Status
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'failure' || github.event_name == 'workflow_dispatch'
+
+    outputs:
+      should-fix: ${{ steps.check.outputs.should-fix }}
+      pr-number: ${{ steps.check.outputs.pr-number }}
+      branch-name: ${{ steps.check.outputs.branch-name }}
+
+    steps:
+      - name: Get PR information
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          echo "::group::Determining PR and branch"
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            # Manual trigger
+            PR_NUMBER="${{ github.event.inputs.pr-number }}"
+            PR_JSON=$(gh pr view ${PR_NUMBER} --repo ${{ github.repository }} --json headRefName,labels)
+            BRANCH_NAME=$(echo "${PR_JSON}" | jq -r '.headRefName')
+          else
+            # Automatic trigger from workflow_run
+            BRANCH_NAME="${{ github.event.workflow_run.head_branch }}"
+
+            # Find PR for this branch
+            PR_JSON=$(gh pr list \
+              --repo ${{ github.repository }} \
+              --head "${BRANCH_NAME}" \
+              --json number,labels \
+              --jq '.[0]')
+
+            if [[ "${PR_JSON}" == "null" || -z "${PR_JSON}" ]]; then
+              echo "[Fixer] ❌ No PR found for branch ${BRANCH_NAME}"
+              echo "should-fix=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+
+            PR_NUMBER=$(echo "${PR_JSON}" | jq -r '.number')
+          fi
+
+          # Use jq for exact label matching (avoid substring matches)
+          LABELS=$(echo "${PR_JSON}" | jq -r '.labels[].name' | tr '\n' ', ' | sed 's/, $//')
+          HAS_CONFLICT_RESOLUTION=$(echo "${PR_JSON}" | jq '[.labels[].name] | any(. == "conflict-resolution")')
+          HAS_AUTOMATED=$(echo "${PR_JSON}" | jq '[.labels[].name] | any(. == "automated")')
+          HAS_UPSTREAM_SYNC=$(echo "${PR_JSON}" | jq '[.labels[].name] | any(. == "upstream-sync")')
+
+          echo "[Fixer] Branch: ${BRANCH_NAME}"
+          echo "[Fixer] PR: #${PR_NUMBER}"
+          echo "[Fixer] Labels: ${LABELS}"
+
+          # Only fix PRs with upstream sync related labels (exact match)
+          if [[ "${HAS_CONFLICT_RESOLUTION}" != "true" && "${HAS_AUTOMATED}" != "true" && "${HAS_UPSTREAM_SYNC}" != "true" ]]; then
+            echo "[Fixer] ❌ PR doesn't have required labels (need: conflict-resolution, automated, or upstream-sync) - skipping"
+            echo "should-fix=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Only fix upstream sync related branches
+          if [[ ! "${BRANCH_NAME}" =~ ^upstream-sync-resolver/ && ! "${BRANCH_NAME}" =~ ^upstream-sync/ ]]; then
+            echo "[Fixer] ❌ Not an upstream sync branch (need: upstream-sync-resolver/* or upstream-sync/*) - skipping"
+            echo "should-fix=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "should-fix=true" >> $GITHUB_OUTPUT
+          echo "pr-number=${PR_NUMBER}" >> $GITHUB_OUTPUT
+          echo "branch-name=${BRANCH_NAME}" >> $GITHUB_OUTPUT
+
+          echo "::endgroup::"
+
+  fix-ci-failures:
+    name: Fix CI Failures with Claude
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: check-ci-status
+    if: needs.check-ci-status.outputs.should-fix == 'true'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check-ci-status.outputs.branch-name }}
+          fetch-depth: 0
+          token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+
+      - name: Configure git
+        run: |
+          git config --global user.name "Cartofante"
+          git config --global user.email "cartofante@carto.com"
+
+      - name: Get failed workflow details
+        id: failures
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          echo "::group::Analyzing CI failures"
+
+          PR_NUMBER="${{ needs.check-ci-status.outputs.pr-number }}"
+
+          # Get PR head SHA
+          HEAD_SHA=$(gh pr view ${PR_NUMBER} --repo ${{ github.repository }} --json headRefOid --jq '.headRefOid')
+
+          # Get all failed workflow runs for this commit
+          gh run list \
+            --repo ${{ github.repository }} \
+            --commit ${HEAD_SHA} \
+            --status failure \
+            --json databaseId,name,url \
+            --limit 10 > /tmp/failed_runs.json
+
+          FAILED_COUNT=$(cat /tmp/failed_runs.json | jq 'length')
+
+          echo "[Fixer] Found ${FAILED_COUNT} failed workflow runs"
+          cat /tmp/failed_runs.json | jq -r '.[] | "  - \(.name): \(.url)"'
+
+          # Get check runs details (gh pr checks uses 'state' not 'conclusion')
+          gh pr checks ${PR_NUMBER} \
+            --repo ${{ github.repository }} \
+            --json name,state,link \
+            > /tmp/check_runs.json
+
+          FAILED_CHECKS=$(cat /tmp/check_runs.json | jq '[.[] | select(.state == "FAILURE" or .state == "TIMED_OUT")]')
+          echo "${FAILED_CHECKS}" > /tmp/failed_checks.json
+
+          echo "[Fixer] Failed checks:"
+          echo "${FAILED_CHECKS}" | jq -r '.[] | "  - \(.name): \(.state)"'
+
+          echo "failed-count=${FAILED_COUNT}" >> $GITHUB_OUTPUT
+          echo "head-sha=${HEAD_SHA}" >> $GITHUB_OUTPUT
+
+          echo "::endgroup::"
+
+      - name: Extract CI errors from failed runs
+        id: extract-errors
+        if: steps.failures.outputs.failed-count != '0'
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          echo "::group::Extracting actual CI errors"
+
+          PR_NUMBER="${{ needs.check-ci-status.outputs.pr-number }}"
+          BRANCH="${{ needs.check-ci-status.outputs.branch-name }}"
+
+          # Initialize error file
+          echo "# CI ERRORS - FIX THESE" > /tmp/all_errors.txt
+          echo "" >> /tmp/all_errors.txt
+
+          # Extract Docker Build errors - get the FULL failed job log
+          echo "## Docker Build Errors" >> /tmp/all_errors.txt
+          DOCKER_RUN=$(gh run list --repo ${{ github.repository }} \
+            --workflow="CARTO - Deploy Docker Image (CI)" \
+            --branch="${BRANCH}" \
+            --status=failure \
+            --json databaseId \
+            --jq '.[0].databaseId' 2>/dev/null || echo "")
+
+          if [ -n "$DOCKER_RUN" ] && [ "$DOCKER_RUN" != "null" ]; then
+            echo "[CI Fixer] Docker run ID: $DOCKER_RUN"
+            # Get FULL failed job log
+            gh run view $DOCKER_RUN --repo ${{ github.repository }} --log-failed 2>&1 > /tmp/docker_full_log.txt
+            DOCKER_LINES=$(wc -l < /tmp/docker_full_log.txt)
+            echo "[CI Fixer] Docker log: ${DOCKER_LINES} lines"
+            echo "Docker Build Run ID: $DOCKER_RUN (${DOCKER_LINES} lines)" >> /tmp/all_errors.txt
+            echo "Full log saved to: /tmp/docker_full_log.txt" >> /tmp/all_errors.txt
+          else
+            echo "No failed Docker build found" >> /tmp/all_errors.txt
+            touch /tmp/docker_full_log.txt
+          fi
+
+          # Extract Mock Tests errors - get the FULL failed job log
+          echo "" >> /tmp/all_errors.txt
+          echo "## Mock Tests Errors" >> /tmp/all_errors.txt
+          TESTS_RUN=$(gh run list --repo ${{ github.repository }} \
+            --workflow="LiteLLM Mock Tests (folder - tests/test_litellm)" \
+            --branch="${BRANCH}" \
+            --status=failure \
+            --json databaseId \
+            --jq '.[0].databaseId' 2>/dev/null || echo "")
+
+          if [ -n "$TESTS_RUN" ] && [ "$TESTS_RUN" != "null" ]; then
+            echo "[CI Fixer] Tests run ID: $TESTS_RUN"
+            # Get FULL failed job log
+            gh run view $TESTS_RUN --repo ${{ github.repository }} --log-failed 2>&1 > /tmp/tests_full_log.txt
+            TESTS_LINES=$(wc -l < /tmp/tests_full_log.txt)
+            echo "[CI Fixer] Tests log: ${TESTS_LINES} lines"
+            echo "Mock Tests Run ID: $TESTS_RUN (${TESTS_LINES} lines)" >> /tmp/all_errors.txt
+            echo "Full log saved to: /tmp/tests_full_log.txt" >> /tmp/all_errors.txt
+          else
+            echo "No failed Mock Tests found" >> /tmp/all_errors.txt
+            touch /tmp/tests_full_log.txt
+          fi
+
+          # Show extracted errors
+          echo "=== All Extracted Errors ==="
+          cat /tmp/all_errors.txt
+
+          # Output which CI workflows failed (for targeted verification)
+          if [ -n "$DOCKER_RUN" ] && [ "$DOCKER_RUN" != "null" ]; then
+            echo "docker-failed=true" >> $GITHUB_OUTPUT
+          else
+            echo "docker-failed=false" >> $GITHUB_OUTPUT
+          fi
+
+          if [ -n "$TESTS_RUN" ] && [ "$TESTS_RUN" != "null" ]; then
+            echo "tests-failed=true" >> $GITHUB_OUTPUT
+          else
+            echo "tests-failed=false" >> $GITHUB_OUTPUT
+          fi
+
+          echo "::endgroup::"
+
+      - name: Comment on PR - Starting Fix
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          PR_NUMBER="${{ needs.check-ci-status.outputs.pr-number }}"
+
+          FAILED_CHECKS=$(cat /tmp/failed_checks.json | jq -r '.[] | "- **\(.name)**: \(.state)"' | head -10)
+
+          gh pr comment ${PR_NUMBER} \
+            --repo ${{ github.repository }} \
+            --body "$(cat <<EOF
+          ## 🔧 CI Auto-Fix Started
+
+          **Status:** ⏳ In progress...
+
+          Claude Code (Opus 4.5) is analyzing and fixing CI failures.
+
+          **Failed Checks:**
+          ${FAILED_CHECKS}
+
+          | Step | Status |
+          |------|--------|
+          | 🔍 Analyze failures | In progress |
+          | ✏️ Apply fixes | Pending |
+          | 📌 Push fixes | Pending |
+
+          > [!NOTE]
+          > This may take **15-30 minutes**. Fixes will be pushed directly to this PR.
+
+          [View workflow run →](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          EOF
+          )"
+
+      - name: Setup GCP credentials for Vertex AI
+        run: |
+          echo '${{ secrets.CI_RESOURCES_SERVICE_ACCOUNT }}' > /tmp/gcp-sa.json
+          echo "GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-sa.json" >> $GITHUB_ENV
+
+      - name: Fetch PR comments for context
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          echo "::group::Fetching PR comments for previous fix context"
+
+          PR_NUMBER="${{ needs.check-ci-status.outputs.pr-number }}"
+
+          # Fetch all PR comments (includes previous fix attempts, human feedback)
+          gh pr view ${PR_NUMBER} \
+            --repo ${{ github.repository }} \
+            --json comments \
+            --jq '.comments[] | "---\n**\(.author.login)** at \(.createdAt):\n\(.body)\n"' \
+            > /tmp/pr_comments.md 2>/dev/null || echo "No comments found" > /tmp/pr_comments.md
+
+          COMMENT_COUNT=$(gh pr view ${PR_NUMBER} --repo ${{ github.repository }} --json comments --jq '.comments | length' 2>/dev/null || echo "0")
+          echo "[CI Fixer] Found ${COMMENT_COUNT} PR comments for context"
+
+          echo "::endgroup::"
+
+      # =========================================================================
+      # CARTO PR Analysis - Identify files modified by CARTO org members
+      # (Inlined because sync branches don't have .github/actions/)
+      # =========================================================================
+      - name: Analyze CARTO PRs
+        id: carto-analysis
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          echo "::group::Analyzing CARTO PRs"
+
+          OUTPUT_PATH="/tmp/carto-analysis"
+          mkdir -p "${OUTPUT_PATH}"
+
+          # Fetch CartoDB org members
+          ORG_MEMBERS=$(gh api "orgs/CartoDB/members" --paginate --jq '.[].login' 2>/dev/null | tr '\n' '|' | sed 's/|$//')
+          if [ -z "$ORG_MEMBERS" ]; then
+            ORG_MEMBERS="Cartofante|mateo-di"
+          fi
+
+          # Fetch ALL merged PRs (any branch) to capture all CARTO customizations
+          # IMPORTANT: Also fetch labels for exclusion filtering
+          gh pr list \
+            --repo ${{ github.repository }} \
+            --state merged \
+            --limit 1000 \
+            --json number,title,author,files,labels \
+            > "${OUTPUT_PATH}/all_prs.json" 2>/dev/null || echo "[]" > "${OUTPUT_PATH}/all_prs.json"
+
+          echo "[CI Fixer] Total merged PRs: $(jq 'length' "${OUTPUT_PATH}/all_prs.json")"
+
+          # Filter to CARTO org members, excluding upstream-sync PRs
+          # IMPORTANT: Exclude upstream-sync PRs (they sync upstream code, not CARTO customizations)
+          # This prevents files touched by previous syncs from being incorrectly marked as "CARTO-modified"
+          jq --arg pattern "$ORG_MEMBERS" '
+            [.[] |
+              select(.author.login | test("^(" + $pattern + ")$"; "i")) |
+              # Exclude PRs with upstream-sync label
+              # Use (.labels // []) to handle PRs with no labels (null check)
+              select(([(.labels // [])[].name] | any(. == "upstream-sync")) | not) |
+              # Exclude PRs with sync/resolve/CI-fixer titles
+              select(.title | test("^(sync:|upstream sync:|fix: resolve.*upstream|fix: resolve conflicts|fix\\(ci\\):|merge:)"; "i") | not) |
+              # Also exclude PRs containing "Upstream Sync:"
+              select(.title | test("Upstream Sync:"; "i") | not)
+            ]
+          ' "${OUTPUT_PATH}/all_prs.json" > "${OUTPUT_PATH}/carto_prs.json"
+
+          # Extract unique file paths
+          jq -r '[.[] | .files[].path] | unique | .[]' "${OUTPUT_PATH}/carto_prs.json" > "${OUTPUT_PATH}/carto_files.txt"
+
+          FILE_COUNT=$(wc -l < "${OUTPUT_PATH}/carto_files.txt" | tr -d ' ')
+          echo "[CI Fixer] Found ${FILE_COUNT} CARTO-modified files (excluding upstream-sync PRs)"
+
+          rm -f "${OUTPUT_PATH}/all_prs.json"
+          echo "::endgroup::"
+
+      - name: Extract CARTO key patterns from carto/main
+        run: |
+          echo "::group::Extracting key patterns from CARTO files"
+
+          > /tmp/carto_patterns.md
+          echo "# CARTO Key Patterns (function/class definitions from carto/main)" >> /tmp/carto_patterns.md
+          echo "" >> /tmp/carto_patterns.md
+          echo "These patterns MUST exist in CARTO-modified files." >> /tmp/carto_patterns.md
+          echo "" >> /tmp/carto_patterns.md
+
+          # Extract patterns for CARTO-modified files
+          for FILE in $(cat /tmp/carto-analysis/carto_files.txt 2>/dev/null | head -30); do
+            if git show origin/carto/main:"$FILE" &>/dev/null; then
+              PATTERNS=$(git show origin/carto/main:"$FILE" 2>/dev/null | grep -E "^\s*(def |class |async def )" | sed 's/(.*//;s/^\s*//' | head -10)
+              if [ -n "$PATTERNS" ]; then
+                echo "### \`$FILE\`" >> /tmp/carto_patterns.md
+                echo '```' >> /tmp/carto_patterns.md
+                echo "$PATTERNS" >> /tmp/carto_patterns.md
+                echo '```' >> /tmp/carto_patterns.md
+                echo "" >> /tmp/carto_patterns.md
+              fi
+            fi
+          done
+
+          PATTERN_COUNT=$(grep -c "^### " /tmp/carto_patterns.md 2>/dev/null || echo "0")
+          echo "[CI Fixer] Extracted key patterns from ${PATTERN_COUNT} files to /tmp/carto_patterns.md"
+
+          echo "::endgroup::"
+
+      - name: Run Claude Code to fix failures
+        id: claude-fix
+        uses: anthropics/claude-code-action@v1
+        with:
+          use_vertex: "true"
+          github_token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          show_full_output: true
+          claude_args: "--model claude-opus-4-5@20251101 --max-turns 200 --allowedTools Read,Write,Edit,Bash,Grep,Glob"
+          prompt: |
+            # CI Failure Auto-Fix
+
+            ## YOUR PRIMARY GOAL
+
+            **Make CI pass.** Fix the errors, verify locally, push, and end session.
+
+            ---
+
+            ## CONTEXT
+
+            **PR:** #${{ needs.check-ci-status.outputs.pr-number }}
+            **Branch:** `${{ needs.check-ci-status.outputs.branch-name }}`
+            **Docker Build Failed:** ${{ steps.extract-errors.outputs.docker-failed }}
+            **Mock Tests Failed:** ${{ steps.extract-errors.outputs.tests-failed }}
+
+            **Key insight:** The upstream TAG code is TESTED and WORKING. If something is "missing",
+            the conflict resolver likely kept an old carto/main version instead of the new upstream TAG.
+
+            ---
+
+            ## STEP 0: FIX LOOP DETECTION (DO THIS FIRST!)
+
+            Check for fix loops before doing anything:
+
+            ```bash
+            cat /tmp/pr_comments.md | grep -iE "Added.*function|sync.*file|ImportError|fix:" | head -15
+            ```
+
+            **If same file appears 3+ times → SYNC ENTIRE FILE from upstream TAG:**
+            ```bash
+            # ORIG_HEAD = upstream TAG version (pre-merge state)
+            git show ORIG_HEAD:path/to/problematic_file.py > path/to/problematic_file.py
+            git add path/to/problematic_file.py
+            ```
+
+            ---
+
+            ## STEP 1: READ CI LOGS
+
+            ```bash
+            # Read Docker build errors (if Docker failed)
+            if [ -s /tmp/docker_full_log.txt ]; then
+              echo "=== DOCKER BUILD ERRORS (filtered) ==="
+              # Show errors, warnings, and failed lines
+              grep -iE "error|failed|Error:|TypeError|ImportError|ModuleNotFound|Cannot find" /tmp/docker_full_log.txt | tail -50
+              echo ""
+              echo "=== DOCKER BUILD LOG (last 100 lines for context) ==="
+              tail -100 /tmp/docker_full_log.txt
+            fi
+
+            # Read test errors (if tests failed)
+            if [ -s /tmp/tests_full_log.txt ]; then
+              echo ""
+              echo "=== MOCK TEST ERRORS (filtered) ==="
+              grep -iE "FAILED|ERROR|AssertionError|ImportError|Exception" /tmp/tests_full_log.txt | tail -30
+              echo ""
+              echo "=== TEST LOG (last 100 lines for context) ==="
+              tail -100 /tmp/tests_full_log.txt
+            fi
+            ```
+
+            ---
+
+            ## STEP 2: TARGETED VERIFICATION
+
+            **Run the verification that matches the failed CI:**
+
+            ### If Docker Build Failed:
+            ```bash
+            docker build -f docker/Dockerfile.non_root . 2>&1 | tail -100
+            ```
+
+            For UI-only errors (faster):
+            ```bash
+            cd ui/litellm-dashboard && npm install --legacy-peer-deps && npm run build 2>&1 | tail -50
+            ```
+
+            ### If Mock Tests Failed:
+            ```bash
+            pip install -e ".[dev]" -q
+            pytest tests/test_litellm/ -v --tb=short 2>&1 | tail -100
+            ```
+
+            **Iterate:** Fix error → Run verification → Repeat until success.
+
+            ---
+
+            ## ERROR PATTERN REFERENCE
+
+            | Error Pattern | Root Cause | Fix |
+            |--------------|------------|-----|
+            | `ImportError: cannot import name 'X'` | File outdated | `git show ORIG_HEAD:<file> > <file>` |
+            | `Cannot find module 'X'` | File missing/renamed | Check ORIG_HEAD or carto/main |
+            | `Type error: Expected X arguments` | Signature changed | Update call site |
+            | `'Prisma' object has no attribute` | schema.prisma outdated | `git show ORIG_HEAD:schema.prisma > schema.prisma` |
+            | `SyntaxError` | Conflict markers | Search for `<<<<<<<` |
+            | `FAILED tests/...` | Test assertion | Update test expectation |
+
+            ---
+
+            ## GIT COMMANDS REFERENCE
+
+            ```bash
+            # Get upstream TAG version (ORIG_HEAD = pre-merge state):
+            git show ORIG_HEAD:path/to/file.py > path/to/file.py
+
+            # Get carto/main version:
+            git checkout origin/carto/main -- path/to/file.py
+
+            # Compare file sizes:
+            echo "TAG:" && git show ORIG_HEAD:path/to/file.py 2>/dev/null | wc -l
+            echo "Current:" && wc -l < path/to/file.py
+
+            # Check if file is CARTO-modified:
+            grep "path/to/file.py" /tmp/carto-analysis/carto_files.txt
+            ```
+
+            **Decision:**
+            - File in CARTO list? → Preserve CARTO code, fix around it
+            - File NOT in CARTO list? → Safe to sync from ORIG_HEAD
+
+            ---
+
+            ## CARTO FEATURE CHECK (Before Syncing Files)
+
+            Before syncing a file from upstream, verify CARTO features are preserved:
+
+            ```bash
+            cat /tmp/carto_patterns.md
+            ```
+
+            **If the file you're fixing has CARTO patterns:**
+            1. Read the current file
+            2. Note which CARTO patterns exist (functions, classes)
+            3. After syncing from upstream, **re-implement the CARTO patterns**
+            4. Don't blindly sync - understand what CARTO functionality needs to stay
+
+            **Example workflow for CARTO file:**
+            ```bash
+            # 1. Check if file has CARTO patterns
+            grep "path/to/file.py" /tmp/carto_patterns.md
+
+            # 2. If yes, save CARTO version first
+            cp path/to/file.py /tmp/carto_backup.py
+
+            # 3. Sync from upstream
+            git show ORIG_HEAD:path/to/file.py > path/to/file.py
+
+            # 4. Re-add CARTO functionality to the upstream version
+            # (read /tmp/carto_backup.py and integrate needed functions)
+            ```
+
+            ---
+
+            ## STEP 3: FIX AND VERIFY
+
+            1. Read the failing file
+            2. Apply fix
+            3. Run targeted verification (Docker or pytest)
+            4. Repeat until verification passes
+
+            ---
+
+            ## STEP 4: COMMIT AND PUSH
+
+            ```bash
+            git add -A
+
+            LAST_MSG=$(git log -1 --pretty=%s)
+            LAST_AUTHOR=$(git log -1 --pretty=%an)
+
+            if [[ "$LAST_MSG" == fix\(ci\):* ]] && [[ "$LAST_AUTHOR" == "claude[bot]" || "$LAST_AUTHOR" == "Cartofante" ]]; then
+              git commit --amend --no-edit
+              git push --force-with-lease origin ${{ needs.check-ci-status.outputs.branch-name }}
+            else
+              git commit -m "fix(ci): resolve CI failures from upstream sync"
+              git push origin ${{ needs.check-ci-status.outputs.branch-name }}
+            fi
+            ```
+
+            ---
+
+            ## STEP 5: WRITE DECISION LOG AND COMMENT ON PR
+
+            Before saying "FIX COMPLETE", write your decision log:
+
+            ```bash
+            cat > /tmp/carto_decisions.md << 'DECISIONS_EOF'
+            ## CI Fix Decisions
+
+            ### What Was Fixed
+            | Error | Fix Applied |
+            |-------|-------------|
+            | [error type] | [what you did] |
+
+            ### CARTO Customization Handling
+            | Decision | Files |
+            |----------|-------|
+            | Synced from upstream | [list or "None"] |
+            | Preserved CARTO code | [list or "None"] |
+            | Merged both sources | [list or "None"] |
+
+            ### Detailed Decisions
+            [For each significant file change, explain what you did and why]
+
+            ### Fix Loop Interventions
+            [Note if any files were synced entirely due to repeated failures, or "None"]
+
+            DECISIONS_EOF
+            ```
+
+            Then comment on PR with summary:
+            ```bash
+            gh pr comment ${{ needs.check-ci-status.outputs.pr-number }} --repo ${{ github.repository }} --body "## 🔧 CI Fix Applied
+
+            **Error:** [ONE LINE SUMMARY]
+            **Fix:** [FILE:LINE] - [WHAT CHANGED]
+            **Verification:** [Docker build / pytest] passed locally"
+            ```
+
+            ---
+
+            ## SAY "FIX COMPLETE" WHEN DONE
+
+            After pushing, say **"FIX COMPLETE"** and end session.
+            CI will run. If it fails again, a new session starts with new error logs.
+
+            > Note: CARTO feature analysis is done by a separate job after CI passes.
+        env:
+          ANTHROPIC_VERTEX_PROJECT_ID: carto-ci-resources
+          CLOUD_ML_REGION: global
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GITHUB_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+
+      - name: Cleanup GCP credentials
+        if: always()
+        run: rm -f /tmp/gcp-sa.json
+
+      - name: Read CARTO decision log
+        id: read-decisions
+        if: steps.claude-fix.outcome == 'success'
+        run: |
+          echo "::group::Reading CARTO decision log"
+          if [ -f /tmp/carto_decisions.md ]; then
+            echo "[CI-Fixer] ✅ Decision log found"
+            cat /tmp/carto_decisions.md
+            echo "decisions_exist=true" >> $GITHUB_OUTPUT
+          else
+            echo "[CI-Fixer] ⚠️ No decision log found"
+            echo "decisions_exist=false" >> $GITHUB_OUTPUT
+            cat > /tmp/carto_decisions.md << 'EOF'
+          _Decision log not generated by Claude._
+          EOF
+          fi
+          echo "::endgroup::"
+
+      - name: Comment on PR - Result
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          PR_NUMBER="${{ needs.check-ci-status.outputs.pr-number }}"
+
+          if [ "${{ steps.claude-fix.outcome }}" == "success" ]; then
+            # Build the comment with decision log
+            cat > /tmp/completion_comment.md << 'HEADER_EOF'
+          ## ✅ CI Fix Complete
+
+          Fixes applied and pushed to this PR.
+
+          | Step | Status |
+          |------|--------|
+          | 🔍 Analyze failures | ✅ Complete |
+          | ✏️ Apply fixes | ✅ Complete |
+          | 📌 Push fixes | ✅ Complete |
+
+          > [!NOTE]
+          > CI will re-run automatically. Monitor check results below.
+
+          ---
+
+          HEADER_EOF
+
+            # Add CARTO decisions section
+            if [ -f /tmp/carto_decisions.md ]; then
+              cat /tmp/carto_decisions.md >> /tmp/completion_comment.md
+            fi
+
+            cat >> /tmp/completion_comment.md << 'FOOTER_EOF'
+
+          ---
+
+          ### Next Steps
+
+          1. Wait for CI checks to complete
+          2. Review the fix decisions above
+          3. Merge when all checks pass
+
+          <details>
+          <summary>🔧 Workflow Details (click to expand)</summary>
+
+          FOOTER_EOF
+
+            echo "**Workflow Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" >> /tmp/completion_comment.md
+            echo "" >> /tmp/completion_comment.md
+            echo "</details>" >> /tmp/completion_comment.md
+
+            gh pr comment ${PR_NUMBER} \
+              --repo ${{ github.repository }} \
+              --body "$(cat /tmp/completion_comment.md)"
+          else
+            gh pr comment ${PR_NUMBER} \
+              --repo ${{ github.repository }} \
+              --body "$(cat <<EOF
+          ## ❌ CI Fix Failed
+
+          The automated fix encountered an error.
+
+          | Step | Status |
+          |------|--------|
+          | 🔍 Analyze failures | ${{ steps.claude-fix.outcome }} |
+          | ✏️ Apply fixes | - |
+          | 📌 Push fixes | - |
+
+          > [!WARNING]
+          > Manual intervention required. Check the workflow logs below.
+
+          <details>
+          <summary>🔧 Troubleshooting (click to expand)</summary>
+
+          **Common issues:**
+          - Complex merge conflicts requiring human judgment
+          - Multiple interrelated failures
+          - Test failures requiring code logic changes
+
+          **Manual fix steps:**
+          1. Check the workflow logs
+          2. Review error messages
+          3. Fix issues locally and push
+
+          </details>
+
+          [View workflow logs →](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          EOF
+          )"
+          fi
