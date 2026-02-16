@@ -117,6 +117,9 @@ from litellm.router_utils.pre_call_checks.prompt_caching_deployment_check import
 from litellm.router_utils.pre_call_checks.responses_api_deployment_check import (
     ResponsesApiDeploymentCheck,
 )
+from litellm.router_utils.pre_call_checks.model_rate_limit_check import (
+    ModelRateLimitingCheck,
+)
 from litellm.router_utils.router_callbacks.track_deployment_metrics import (
     increment_deployment_failures_for_current_minute,
     increment_deployment_successes_for_current_minute,
@@ -224,6 +227,7 @@ class Router:
         redis_host: Optional[str] = None,
         redis_port: Optional[int] = None,
         redis_password: Optional[str] = None,
+        redis_db: Optional[int] = None,
         cache_responses: Optional[bool] = False,
         cache_kwargs: dict = {},  # additional kwargs to pass to RedisCache (see caching.py)
         caching_groups: Optional[
@@ -409,6 +413,12 @@ class Router:
 
             if redis_password is not None:
                 cache_config["password"] = redis_password
+
+            if redis_db is not None:
+                verbose_router_logger.warning(
+                    "Deprecated 'redis_db' argument used. Please remove 'redis_db' from your config/database and use 'cache_kwargs' instead."
+                )
+                cache_config["db"] = str(redis_db)
 
             # Add additional key-value pairs from cache_kwargs
             cache_config.update(cache_kwargs)
@@ -1187,6 +1197,8 @@ class Router:
                     )
                 elif pre_call_check == "responses_api_deployment_check":
                     _callback = ResponsesApiDeploymentCheck()
+                elif pre_call_check == "enforce_model_rate_limits":
+                    _callback = ModelRateLimitingCheck(dual_cache=self.cache)
                 if _callback is not None:
                     if self.optional_callbacks is None:
                         self.optional_callbacks = []
@@ -1267,9 +1279,7 @@ class Router:
 
             self._update_kwargs_with_deployment(deployment=deployment, kwargs=kwargs)
             kwargs.pop("silent_model", None)  # Ensure it's not in kwargs either
-            # No copy needed - data is only read and spread into new dict below
-            data = litellm_params.copy()  # Use the local copy of litellm_params
-            model_name = data["model"]
+            model_name = litellm_params["model"]
             potential_model_client = self._get_client(
                 deployment=deployment, kwargs=kwargs
             )
@@ -1290,7 +1300,7 @@ class Router:
                 self.routing_strategy_pre_call_checks(deployment=deployment)
 
             input_kwargs = {
-                **data,
+                **litellm_params,
                 "messages": messages,
                 "caching": self.cache_responses,
                 "client": model_client,
@@ -1678,10 +1688,8 @@ class Router:
 
             self._update_kwargs_with_deployment(deployment=deployment, kwargs=kwargs)
             kwargs.pop("silent_model", None)  # Ensure it's not in kwargs either
-            # No copy needed - data is only read and spread into new dict below
-            data = litellm_params.copy()  # Use the local copy of litellm_params
 
-            model_name = data["model"]
+            model_name = litellm_params["model"]
 
             model_client = self._get_async_openai_model_client(
                 deployment=deployment,
@@ -1690,7 +1698,7 @@ class Router:
             self.total_calls[model_name] += 1
 
             input_kwargs = {
-                **data,
+                **litellm_params,
                 "messages": messages,
                 "caching": self.cache_responses,
                 "client": model_client,
@@ -3657,7 +3665,7 @@ class Router:
             )
             raise e
 
-    async def _acreate_file(
+    async def _acreate_file( # noqa: PLR0915
         self,
         model: str,
         **kwargs,
@@ -3718,7 +3726,8 @@ class Router:
                     )
 
                     kwargs_copy["file"] = file
-
+                if "gcs_bucket_name" in data:  # TODO: Remove this once we have a better way to handle GCS bucket name:  Problem is that we need to pass the gcs_bucket_name to the router for the create_file call but it doesn't show up there
+                    kwargs_copy.setdefault("litellm_metadata", {})["gcs_bucket_name"] = data["gcs_bucket_name"]
                 response = litellm.acreate_file(
                     **{
                         **data,
@@ -4803,7 +4812,8 @@ class Router:
                 )
             else:
                 response = await self.async_function_with_retries(*args, **kwargs)
-            verbose_router_logger.debug(f"Async Response: {response}")
+            if verbose_router_logger.isEnabledFor(logging.DEBUG):
+                verbose_router_logger.debug(f"Async Response: {response}")
             response = add_fallback_headers_to_response(
                 response=response,
                 attempted_fallbacks=0,
@@ -4880,6 +4890,10 @@ class Router:
         content_policy_fallbacks = kwargs.pop(
             "content_policy_fallbacks", self.content_policy_fallbacks
         )
+        # Support per-request model_group_retry_policy override (from key/team settings)
+        model_group_retry_policy = kwargs.pop(
+            "model_group_retry_policy", self.model_group_retry_policy
+        )
         model_group: Optional[str] = kwargs.get("model")
         num_retries = kwargs.pop("num_retries")
 
@@ -4928,7 +4942,7 @@ class Router:
             _retry_policy_applies = False
             if (
                 self.retry_policy is not None
-                or self.model_group_retry_policy is not None
+                or model_group_retry_policy is not None
             ):
                 # get num_retries from retry policy
                 # Use the model_group captured at the start of the function, or get it from metadata
@@ -4936,9 +4950,12 @@ class Router:
                 _model_group_for_retry_policy = (
                     model_group or _metadata.get("model_group") or kwargs.get("model")
                 )
-                _retry_policy_retries = self.get_num_retries_from_retry_policy(
+                # Use per-request model_group_retry_policy if provided, otherwise use self
+                _retry_policy_retries = _get_num_retries_from_retry_policy(
                     exception=original_exception,
                     model_group=_model_group_for_retry_policy,
+                    model_group_retry_policy=model_group_retry_policy,
+                    retry_policy=self.retry_policy,
                 )
                 if _retry_policy_retries is not None:
                     num_retries = _retry_policy_retries
@@ -7993,9 +8010,10 @@ class Router:
             # check if the user sent in a deployment name instead
             healthy_deployments = self._get_deployment_by_litellm_model(model=model)
 
-        verbose_router_logger.debug(
-            f"initial list of deployments: {healthy_deployments}"
-        )
+        if verbose_router_logger.isEnabledFor(logging.DEBUG):
+            verbose_router_logger.debug(
+                f"initial list of deployments: {healthy_deployments}"
+            )
 
         if len(healthy_deployments) == 0:
             # Check for default fallbacks if no deployments are found for the requested model
@@ -8066,18 +8084,20 @@ class Router:
             request_kwargs=request_kwargs,
         )
 
-        verbose_router_logger.debug(
-            f"healthy_deployments after team filter: {healthy_deployments}"
-        )
+        if verbose_router_logger.isEnabledFor(logging.DEBUG):
+            verbose_router_logger.debug(
+                f"healthy_deployments after team filter: {healthy_deployments}"
+            )
 
         healthy_deployments = filter_web_search_deployments(
             healthy_deployments=healthy_deployments,
             request_kwargs=request_kwargs,
         )
 
-        verbose_router_logger.debug(
-            f"healthy_deployments after web search filter: {healthy_deployments}"
-        )
+        if verbose_router_logger.isEnabledFor(logging.DEBUG):
+            verbose_router_logger.debug(
+                f"healthy_deployments after web search filter: {healthy_deployments}"
+            )
 
         if isinstance(healthy_deployments, dict):
             return healthy_deployments
@@ -8085,10 +8105,10 @@ class Router:
         cooldown_deployments = await _async_get_cooldown_deployments(
             litellm_router_instance=self, parent_otel_span=parent_otel_span
         )
-        verbose_router_logger.debug(
-            f"async cooldown deployments: {cooldown_deployments}"
-        )
-        verbose_router_logger.debug(f"cooldown_deployments: {cooldown_deployments}")
+        if verbose_router_logger.isEnabledFor(logging.DEBUG):
+            verbose_router_logger.debug(
+                f"cooldown deployments: {cooldown_deployments}"
+            )
         healthy_deployments = self._filter_cooldown_deployments(
             healthy_deployments=healthy_deployments,
             cooldown_deployments=cooldown_deployments,
@@ -8764,7 +8784,8 @@ class Router:
         Returns:
             List of healthy deployments
         """
-        verbose_router_logger.debug(f"cooldown deployments: {cooldown_deployments}")
+        if verbose_router_logger.isEnabledFor(logging.DEBUG):
+            verbose_router_logger.debug(f"cooldown deployments: {cooldown_deployments}")
         # Convert to set for O(1) lookup and use list comprehension for O(n) filtering
         cooldown_set = set(cooldown_deployments)
         return [
@@ -8927,3 +8948,4 @@ class Router:
         litellm._async_failure_callback = []
         self.retry_policy = None
         self.flush_cache()
+

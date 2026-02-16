@@ -599,8 +599,15 @@ async def acompletion(  # noqa: PLR0915
         # Add the context to the function
         ctx = contextvars.copy_context()
         func_with_context = partial(ctx.run, func)
-            
-        init_response = await loop.run_in_executor(None, func_with_context)
+
+        if timeout is not None and isinstance(timeout, (int, float)):
+            timeout_value = float(timeout)
+            init_response = await asyncio.wait_for(
+                loop.run_in_executor(None, func_with_context), timeout=timeout_value
+            )
+        else:
+            init_response = await loop.run_in_executor(None, func_with_context)
+
         if isinstance(init_response, dict) or isinstance(
             init_response, ModelResponse
         ):  ## CACHING SCENARIO
@@ -625,6 +632,15 @@ async def acompletion(  # noqa: PLR0915
                 loop=loop
             )  # sets the logging event loop if the user does sync streaming (e.g. on proxy for sagemaker calls)
         return response
+    except asyncio.TimeoutError:
+        custom_llm_provider = custom_llm_provider or "openai"
+        from litellm.exceptions import Timeout
+
+        raise Timeout(
+            message=f"Request timed out after {timeout} seconds",
+            model=model,
+            llm_provider=custom_llm_provider,
+        )
     except Exception as e:
         custom_llm_provider = custom_llm_provider or "openai"
         raise exception_type(
@@ -1199,6 +1215,13 @@ def completion(  # type: ignore # noqa: PLR0915
         headers = {}
     if extra_headers is not None:
         headers.update(extra_headers)
+    # Inject proxy auth headers if configured
+    if litellm.proxy_auth is not None:
+        try:
+            proxy_headers = litellm.proxy_auth.get_auth_headers()
+            headers.update(proxy_headers)
+        except Exception as e:
+            verbose_logger.warning(f"Failed to get proxy auth headers: {e}")
     num_retries = kwargs.get(
         "num_retries", None
     )  ## alt. param for 'max_retries'. Use this to pass retries w/ instructor.
@@ -2199,6 +2222,48 @@ def completion(  # type: ignore # noqa: PLR0915
                 logging_obj=logging,  # model call logging done inside the class as we make need to modify I/O to fit aleph alpha's requirements
                 client=client,
             )
+        elif custom_llm_provider == "a2a":
+            # A2A (Agent-to-Agent) Protocol
+            # Resolve agent configuration from registry if model format is "a2a/<agent-name>"
+            api_base, api_key, headers = litellm.A2AConfig.resolve_agent_config_from_registry(
+                model=model,
+                api_base=api_base,
+                api_key=api_key,
+                headers=headers,
+                optional_params=optional_params,
+            )
+            
+            # Fall back to environment variables and defaults
+            api_base = api_base or litellm.api_base or get_secret_str("A2A_API_BASE")
+            
+            if api_base is None:
+                raise Exception(
+                    "api_base is required for A2A provider. "
+                    "Either provide api_base parameter, set A2A_API_BASE environment variable, "
+                    "or register the agent in the proxy with model='a2a/<agent-name>'."
+                )
+
+            headers = headers or litellm.headers
+
+            response = base_llm_http_handler.completion(
+                model=model,
+                stream=stream,
+                messages=messages,
+                acompletion=acompletion,
+                api_base=api_base,
+                model_response=model_response,
+                optional_params=optional_params,
+                litellm_params=litellm_params,
+                shared_session=shared_session,
+                custom_llm_provider=custom_llm_provider,
+                timeout=timeout,
+                headers=headers,
+                encoding=_get_encoding(),
+                api_key=api_key,
+                logging_obj=logging,
+                client=client,
+                provider_config=provider_config,
+            )
         elif custom_llm_provider == "gigachat":
             # GigaChat - Sber AI's LLM (Russia)
             api_key = (
@@ -2454,6 +2519,20 @@ def completion(  # type: ignore # noqa: PLR0915
             )
 
             headers = headers or litellm.headers
+
+            # Add GitHub Copilot headers (same as /responses endpoint does)
+            if custom_llm_provider == "github_copilot":
+                from litellm.llms.github_copilot.common_utils import (
+                    get_copilot_default_headers,
+                )
+                from litellm.llms.github_copilot.authenticator import Authenticator
+
+                copilot_auth = Authenticator()
+                copilot_api_key = copilot_auth.get_api_key()
+                copilot_headers = get_copilot_default_headers(copilot_api_key)
+                if extra_headers:
+                    copilot_headers.update(extra_headers)
+                extra_headers = copilot_headers
 
             if extra_headers is not None:
                 optional_params["extra_headers"] = extra_headers
@@ -3113,8 +3192,8 @@ def completion(  # type: ignore # noqa: PLR0915
                 api_key
                 or litellm.api_key
                 or litellm.openrouter_key
-                or get_secret("OPENROUTER_API_KEY")
-                or get_secret("OR_API_KEY")
+                or get_secret_str("OPENROUTER_API_KEY")
+                or get_secret_str("OR_API_KEY")
             )
 
             openrouter_site_url = get_secret("OR_SITE_URL") or "https://litellm.ai"
@@ -4555,6 +4634,13 @@ def embedding(  # noqa: PLR0915
         headers = {}
     if extra_headers is not None:
         headers.update(extra_headers)
+    # Inject proxy auth headers if configured
+    if litellm.proxy_auth is not None:
+        try:
+            proxy_headers = litellm.proxy_auth.get_auth_headers()
+            headers.update(proxy_headers)
+        except Exception as e:
+            verbose_logger.warning(f"Failed to get proxy auth headers: {e}")
     ### CUSTOM MODEL COST ###
     input_cost_per_token = kwargs.get("input_cost_per_token", None)
     output_cost_per_token = kwargs.get("output_cost_per_token", None)
@@ -4709,11 +4795,11 @@ def embedding(  # noqa: PLR0915
                 litellm_params=litellm_params_dict,
             )
         elif (
-            model in litellm.open_ai_embedding_models
-            or custom_llm_provider == "openai"
+            custom_llm_provider == "openai"
             or custom_llm_provider == "together_ai"
             or custom_llm_provider == "nvidia_nim"
             or custom_llm_provider == "litellm_proxy"
+            or (model in litellm.open_ai_embedding_models and custom_llm_provider is None)
         ):
             api_base = (
                 api_base
@@ -4884,8 +4970,8 @@ def embedding(  # noqa: PLR0915
                 api_key
                 or litellm.api_key
                 or litellm.openrouter_key
-                or get_secret("OPENROUTER_API_KEY")
-                or get_secret("OR_API_KEY")
+                or get_secret_str("OPENROUTER_API_KEY")
+                or get_secret_str("OR_API_KEY")
             )
 
             openrouter_site_url = get_secret("OR_SITE_URL") or "https://litellm.ai"

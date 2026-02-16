@@ -201,10 +201,6 @@ DEFINED_PROMETHEUS_METRICS = Literal[
     "litellm_cached_tokens_metric",
     "litellm_deployment_tpm_limit",
     "litellm_deployment_rpm_limit",
-    "litellm_remaining_api_key_requests_for_model",
-    "litellm_remaining_api_key_tokens_for_model",
-    "litellm_llm_api_failed_requests_metric",
-    "litellm_callback_logging_failures_metric",
 ]
 
 
