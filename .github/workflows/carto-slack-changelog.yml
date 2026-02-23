@@ -219,24 +219,16 @@ jobs:
           cat > /tmp/slack_payload.json << EOF
           {
             "channel": "${{ env.SLACK_CHANNEL }}",
-            "text": "${EMOJI} ${TYPE}: ${TITLE_ESCAPED}",
             "attachments": [
               {
                 "color": "${COLOR}",
+                "fallback": "${EMOJI} ${TYPE}: ${TITLE_ESCAPED}",
                 "blocks": [
-                  {
-                    "type": "header",
-                    "text": {
-                      "type": "plain_text",
-                      "text": "${EMOJI} ${TYPE}: PR #${PR_NUM}",
-                      "emoji": true
-                    }
-                  },
                   {
                     "type": "section",
                     "text": {
                       "type": "mrkdwn",
-                      "text": "*${TITLE_ESCAPED}*"
+                      "text": "*${EMOJI} ${TYPE}:* PR #${PR_NUM} — ${TITLE_ESCAPED}"
                     }
                   },
                   {
@@ -330,24 +322,16 @@ jobs:
           cat > /tmp/slack_payload.json << EOF
           {
             "channel": "${{ env.SLACK_CHANNEL }}",
-            "text": "${EMOJI} ${TYPE}: ${TAG}",
             "attachments": [
               {
                 "color": "${COLOR}",
+                "fallback": "${EMOJI} ${TYPE}: ${TAG}",
                 "blocks": [
-                  {
-                    "type": "header",
-                    "text": {
-                      "type": "plain_text",
-                      "text": "${EMOJI} ${TYPE}: ${TAG}",
-                      "emoji": true
-                    }
-                  },
                   {
                     "type": "section",
                     "text": {
                       "type": "mrkdwn",
-                      "text": "*${NAME_ESCAPED}*"
+                      "text": "*${EMOJI} ${TYPE}:* ${TAG} — ${NAME_ESCAPED}"
                     }
                   },
                   {

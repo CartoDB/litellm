@@ -816,23 +816,22 @@ jobs:
                       }'
           fi
 
-          # Build improved Block Kit payload with colored sidebar and better visual hierarchy
+          # Build Block Kit payload with colored sidebar
           cat > /tmp/slack_payload.json << EOF
           {
             "channel": "${SLACK_CHANNEL_LITELLM}",
-            "text": "${TITLE}: ${STEP_TEXT}",
             "unfurl_links": false,
             "unfurl_media": false,
             "attachments": [
               {
                 "color": "${COLOR}",
+                "fallback": "${TITLE}: ${STEP_TEXT}",
                 "blocks": [
                   {
-                    "type": "header",
+                    "type": "section",
                     "text": {
-                      "type": "plain_text",
-                      "text": "${STEP_EMOJI} ${TITLE}",
-                      "emoji": true
+                      "type": "mrkdwn",
+                      "text": "*${STEP_EMOJI} ${TITLE}*"
                     }
                   },
                   {
