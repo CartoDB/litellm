@@ -619,68 +619,106 @@ jobs:
           esac
 
           # Extract key highlights from release notes (first 3 bullet points from Features/Fixes sections)
-          HIGHLIGHTS=""
+          HIGHLIGHTS_TEXT=""
           if [ -f "release_notes.md" ]; then
-            # Get CARTO-specific features and fixes (limit to 3 most important)
             FEATURES=$(grep -A 5 "### ✨" release_notes.md 2>/dev/null | grep "^-" | head -2 | sed 's/^- /• /' || echo "")
             FIXES=$(grep -A 5 "### 🐛" release_notes.md 2>/dev/null | grep "^-" | head -1 | sed 's/^- /• /' || echo "")
 
             if [ -n "$FEATURES" ] || [ -n "$FIXES" ]; then
-              HIGHLIGHTS=$'\n\n*Key Highlights:*\n'
-              [ -n "$FEATURES" ] && HIGHLIGHTS+="${FEATURES}"$'\n'
-              [ -n "$FIXES" ] && HIGHLIGHTS+="${FIXES}"
+              HIGHLIGHTS_TEXT="\n*Key Highlights:*\n"
+              [ -n "$FEATURES" ] && HIGHLIGHTS_TEXT+="${FEATURES}\n"
+              [ -n "$FIXES" ] && HIGHLIGHTS_TEXT+="${FIXES}"
             fi
           fi
 
-          # Build concise Slack message
-          MESSAGE="━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-          ${EMOJI} *LiteLLM CARTO Release* \`${RELEASE_TAG}\`
-          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-          :label: *Type:* ${TYPE_LABEL}${VERSION_CHANGE:+ ($VERSION_CHANGE)}
-          :package: *CARTO Version:* ${CARTO_VERSION}
-          :gear: *Upstream Base:* LiteLLM v${UPSTREAM_VERSION}${HIGHLIGHTS}
-
-          :link: <${RELEASE_URL}|View Release Notes>
-          :whale: \`${DOCKER_IMAGE}\`"
+          # Determine color based on release type
+          case "$RELEASE_TYPE" in
+            upstream_sync) RELEASE_COLOR="#1E88E5" ;;
+            feature) RELEASE_COLOR="#36a64f" ;;
+            patch) RELEASE_COLOR="#FFA500" ;;
+            *) RELEASE_COLOR="#808080" ;;
+          esac
 
           echo "[Slack] Sending notification to channel ${SLACK_CHANNEL}"
           echo "::endgroup::"
 
           echo "::group::Posting to Slack"
 
+          # Build Block Kit payload
+          cat > /tmp/slack_payload.json << EOF
+          {
+            "channel": "${SLACK_CHANNEL}",
+            "attachments": [
+              {
+                "color": "${RELEASE_COLOR}",
+                "fallback": "${EMOJI} LiteLLM CARTO Release ${RELEASE_TAG}",
+                "blocks": [
+                  {
+                    "type": "section",
+                    "text": {
+                      "type": "mrkdwn",
+                      "text": "*${EMOJI} LiteLLM CARTO Release* — \`${RELEASE_TAG}\`\n${TYPE_LABEL}${VERSION_CHANGE:+ ($VERSION_CHANGE)}${HIGHLIGHTS_TEXT}"
+                    }
+                  },
+                  {
+                    "type": "section",
+                    "fields": [
+                      { "type": "mrkdwn", "text": "*CARTO Version:*\n${CARTO_VERSION}" },
+                      { "type": "mrkdwn", "text": "*Upstream Base:*\nv${UPSTREAM_VERSION}" }
+                    ]
+                  },
+                  {
+                    "type": "context",
+                    "elements": [
+                      { "type": "mrkdwn", "text": ":whale: \`${DOCKER_IMAGE}\`" }
+                    ]
+                  },
+                  {
+                    "type": "actions",
+                    "elements": [
+                      {
+                        "type": "button",
+                        "text": { "type": "plain_text", "text": "View Release", "emoji": true },
+                        "style": "primary",
+                        "url": "${RELEASE_URL}"
+                      },
+                      {
+                        "type": "button",
+                        "text": { "type": "plain_text", "text": "View Logs", "emoji": true },
+                        "url": "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+          EOF
+
+          # Validate JSON
+          if ! jq empty /tmp/slack_payload.json 2>/dev/null; then
+            echo "::error::Invalid JSON payload"
+            cat /tmp/slack_payload.json
+            exit 1
+          fi
+
           # Retry logic (up to 3 attempts)
           SUCCESS=false
           for attempt in 1 2 3; do
             echo "[Slack] Attempt ${attempt}/3..."
 
-            # Send to Slack API
-            RESPONSE=$(curl -s -w "\n%{http_code}" \
-              -F "text=${MESSAGE}" \
-              -F "channel=${SLACK_CHANNEL}" \
+            RESPONSE=$(curl -s -X POST https://slack.com/api/chat.postMessage \
               -H "Authorization: Bearer ${{ secrets.SLACK_KEY }}" \
-              -X POST https://slack.com/api/chat.postMessage)
+              -H "Content-Type: application/json" \
+              -d @/tmp/slack_payload.json)
 
-            # Extract HTTP code and body
-            HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
-            BODY=$(echo "$RESPONSE" | head -n-1)
-
-            echo "[Slack] HTTP ${HTTP_CODE}"
-            echo "[Slack] Response: ${BODY}"
-
-            # Check if successful
-            if [ "$HTTP_CODE" = "200" ]; then
-              # Check Slack API response
-              if echo "$BODY" | grep -q '"ok":true'; then
-                echo "✅ [Slack] Release notification sent successfully"
-                SUCCESS=true
-                break
-              else
-                ERROR=$(echo "$BODY" | grep -o '"error":"[^"]*"' || echo "unknown error")
-                echo "⚠️ [Slack] Slack API error: ${ERROR}"
-              fi
+            if echo "$RESPONSE" | jq -e '.ok == true' > /dev/null 2>&1; then
+              echo "✅ [Slack] Release notification sent successfully"
+              SUCCESS=true
+              break
             else
-              echo "⚠️ [Slack] HTTP error: ${HTTP_CODE}"
+              ERROR=$(echo "$RESPONSE" | jq -r '.error // "unknown"')
+              echo "⚠️ [Slack] Slack API error: ${ERROR}"
             fi
 
             # Wait before retry

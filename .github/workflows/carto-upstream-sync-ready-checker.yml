@@ -186,24 +186,23 @@ jobs:
           # Build compare URL for upstream changes
           COMPARE_URL="https://github.com/BerriAI/litellm/releases/tag/${VERSION}"
 
-          # Build improved Block Kit payload with colored sidebar
+          # Build Block Kit payload with colored sidebar
           cat > /tmp/slack_payload.json << EOF
           {
             "channel": "${SLACK_CHANNEL_LITELLM}",
             ${THREAD_PARAM}
-            "text": "✅ LiteLLM Upstream Sync: Tests Passed",
             "unfurl_links": false,
             "unfurl_media": false,
             "attachments": [
               {
                 "color": "#1E88E5",
+                "fallback": "LiteLLM Upstream Sync: Tests Passed (v${VERSION_CLEAN})",
                 "blocks": [
                   {
-                    "type": "header",
+                    "type": "section",
                     "text": {
-                      "type": "plain_text",
-                      "text": "✅ LiteLLM Upstream Sync",
-                      "emoji": true
+                      "type": "mrkdwn",
+                      "text": "*:white_check_mark: LiteLLM Upstream Sync*"
                     }
                   },
                   {
@@ -211,7 +210,7 @@ jobs:
                     "elements": [
                       {
                         "type": "mrkdwn",
-                        "text": "${PROGRESS}  *Step 4 of 4: Tests Passed*"
+                        "text": "${PROGRESS}  *Step 4/4: Tests Passed*"
                       }
                     ]
                   },
@@ -219,11 +218,8 @@ jobs:
                     "type": "section",
                     "text": {
                       "type": "mrkdwn",
-                      "text": "All CI checks completed successfully. PR is ready for review and merge."
+                      "text": "All CI checks passed. PR ready for review and merge."
                     }
-                  },
-                  {
-                    "type": "divider"
                   },
                   {
                     "type": "section",
@@ -235,15 +231,6 @@ jobs:
                       {
                         "type": "mrkdwn",
                         "text": "*Status*\n:white_check_mark: Ready to merge"
-                      }
-                    ]
-                  },
-                  {
-                    "type": "context",
-                    "elements": [
-                      {
-                        "type": "mrkdwn",
-                        "text": ":arrow_right: Review changes and merge to deploy the update."
                       }
                     ]
                   },
