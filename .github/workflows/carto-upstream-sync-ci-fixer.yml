@@ -421,6 +421,18 @@ jobs:
 
             ---
 
+            ## CARTO FEATURES MANIFEST
+
+            Before making ANY changes, read the features manifest:
+            ```bash
+            cat .github/carto-features.yml 2>/dev/null || echo "No manifest found"
+            ```
+
+            These patterns MUST still exist after your fixes. If a fix would remove a
+            pattern, find an alternative approach that preserves the CARTO feature.
+
+            ---
+
             ## STEP 0: FIX LOOP DETECTION (DO THIS FIRST!)
 
             Check for fix loops before doing anything:
