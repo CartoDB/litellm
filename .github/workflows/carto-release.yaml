@@ -28,9 +28,9 @@ name: CARTO - Create Release
 #
 # Security measures:
 # - Actor authorization check (Cartofante, mateo-di only)
-# - Read-only tools for Claude (Bash, Read, Grep, Glob)
+# - Scoped tools for Claude (Read, Write, Bash, Grep, Glob) — Write needed for release_notes.md
 # - Rate limiting: max-turns: 50, 20-min timeout (~$0.50-2 per release)
-# - No write access to repository during notes generation
+# - No git push from notes generation step (ephemeral runner)
 #
 # Uses X_GITHUB_SUPERCARTOFANTE token where workflow modifications are needed.
 
@@ -286,7 +286,7 @@ jobs:
           use_vertex: "true"
           github_token: ${{ secrets.GITHUB_TOKEN }}
           show_full_output: false
-          claude_args: "--model claude-sonnet-4-5@20250929 --max-turns 50 --allowedTools Read,Bash,Grep,Glob"
+          claude_args: "--model claude-sonnet-4-5@20250929 --max-turns 50 --allowedTools Read,Write,Bash,Grep,Glob"
           prompt: |
             # Intelligent Release Notes Generation with Upstream Sync Detection
 
@@ -502,21 +502,16 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         timeout-minutes: 20
 
-      - name: Ensure release_notes.md exists
+      - name: Verify release_notes.md exists
         if: steps.manual-notes.outputs.notes_generated != 'true'
-        env:
-          CLAUDE_OUTPUT: ${{ steps.release-notes.outputs.result }}
         run: |
-          # Claude Code Action may write files inside a sandbox that doesn't
-          # persist on the runner filesystem. If the file is missing, extract
-          # the release notes from the action's output.
+          # Claude writes release_notes.md directly via the Write tool.
+          # NOTE: outputs.result does not exist in claude-code-action@v1
+          # (it was a v0 API). The Write tool is the reliable mechanism.
           if [ -f "release_notes.md" ] && [ -s "release_notes.md" ]; then
-            echo "✅ release_notes.md exists (written directly by Claude)"
-          elif [ -n "$CLAUDE_OUTPUT" ]; then
-            echo "⚠️ release_notes.md not found on disk — writing from Claude output"
-            printf '%s\n' "$CLAUDE_OUTPUT" > release_notes.md
+            echo "✅ release_notes.md exists"
           else
-            echo "::error::Claude step produced no output and release_notes.md is missing"
+            echo "::error::release_notes.md is missing or empty — Claude failed to write it"
             exit 1
           fi
 
@@ -566,7 +561,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 🔒 Security" >> $GITHUB_STEP_SUMMARY
           echo "- ✅ Actor authorization verified" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Claude Code used read-only tools" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Claude Code used scoped tools (no git push)" >> $GITHUB_STEP_SUMMARY
           echo "- ✅ Rate limited (max 50 turns, 20-min timeout)" >> $GITHUB_STEP_SUMMARY
 
       - name: Notify Slack of new release
