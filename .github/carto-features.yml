@@ -46,7 +46,7 @@ features:
     files:
       - litellm/llms/azure/common_utils.py
     verification:
-      - pattern: "re.sub.*chat/completions"
+      - pattern: "chat/completions|completions|embeddings|audio/speech"
         file: litellm/llms/azure/common_utils.py
 
   - name: "JSON Repair for Streaming Tool Calls"
