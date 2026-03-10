@@ -161,44 +161,84 @@ jobs:
 
           # Use merge strategy that accepts all upstream changes on conflict
           # This preserves the full commit history with original SHAs
-          git merge "${NEW_VERSION}" --no-edit -X theirs -m "sync: merge ${NEW_VERSION} tag
+          #
+          # IMPORTANT: The merge command MUST be inside an `if` condition.
+          # With `set -eu`, a standalone `git merge` that exits non-zero (due to
+          # conflicts) would terminate the script before the fallback logic runs.
+          # Placing it in `if` prevents `set -e` from triggering on the exit code.
+          if git merge "${NEW_VERSION}" --no-edit -X theirs -m "sync: merge ${NEW_VERSION} tag
 
           Automatic sync from upstream BerriAI/litellm tag ${NEW_VERSION}
 
-          Strategy: Merge with history preservation (main syncs to stable tag)"
-
-          if [ $? -eq 0 ]; then
+          Strategy: Merge with history preservation (main syncs to stable tag)"; then
             echo "[Sync] ✅ Merge successful with preserved history"
           else
-            # If -X theirs still has conflicts, use more aggressive approach
-            echo "[Sync] ⚠️ Conflicts detected, resolving by accepting all upstream changes..."
+            # -X theirs resolves content conflicts but NOT structural conflicts
+            # (rename/delete, rename/rename). These are common in build artifact
+            # files like _experimental/out/ where Next.js hashes change each build.
+            echo "[Sync] ⚠️ Merge has unresolved conflicts, resolving by accepting all upstream changes..."
 
-            # Get list of conflicted files
-            CONFLICTS=$(git diff --name-only --diff-filter=U)
+            # Step 1: Auto-resolve build artifacts first (these always conflict due to hash changes)
+            # CARTO never customizes these files — always safe to accept upstream.
+            AUTO_RESOLVE_DIRS=(
+              "litellm/proxy/_experimental/out/"
+              "ui/litellm-dashboard/out/"
+            )
+            AUTO_RESOLVED=0
+            for dir in "${AUTO_RESOLVE_DIRS[@]}"; do
+              while IFS= read -r file; do
+                [ -z "$file" ] && continue
+                echo "  - [auto-resolve] Accepting upstream build artifact: $file"
+                git checkout --theirs "$file" 2>/dev/null || git rm --force "$file" 2>/dev/null || true
+                git add "$file" 2>/dev/null || true
+                AUTO_RESOLVED=$((AUTO_RESOLVED + 1))
+              done < <(git diff --name-only --diff-filter=U 2>/dev/null | grep "^${dir}" || true)
+            done
+            echo "[Sync] Auto-resolved ${AUTO_RESOLVED} build artifact conflict(s)"
+
+            # Step 2: Resolve any remaining conflicts by accepting upstream version
+            CONFLICTS=$(git diff --name-only --diff-filter=U 2>/dev/null || echo "")
 
             if [ -n "$CONFLICTS" ]; then
-              echo "[Sync] Resolving conflicts in files:"
+              echo "[Sync] Resolving remaining conflicts in files:"
               echo "$CONFLICTS"
 
               # For each conflicted file, accept upstream version
+              # Use error suppression because rename/delete conflicts may cause
+              # git checkout --theirs to fail (file doesn't exist on one side)
               echo "$CONFLICTS" | while read -r file; do
+                [ -z "$file" ] && continue
                 echo "  - Accepting upstream version of: $file"
-                git checkout --theirs "$file"
-                git add "$file"
+                if ! git checkout --theirs "$file" 2>/dev/null; then
+                  # File was likely deleted in upstream (rename/delete conflict)
+                  # Accept the deletion
+                  echo "    (file deleted or renamed in upstream — removing)"
+                  git rm --force "$file" 2>/dev/null || true
+                fi
+                git add "$file" 2>/dev/null || true
               done
+            fi
 
-              # Complete the merge commit
-              git commit --no-edit -m "sync: merge ${NEW_VERSION} tag
+            # Step 3: Stage any remaining untracked/modified files from the merge
+            git add -A 2>/dev/null || true
+
+            # Step 4: Verify no unmerged files remain
+            REMAINING=$(git diff --name-only --diff-filter=U 2>/dev/null || echo "")
+            if [ -n "$REMAINING" ]; then
+              echo "[Sync] ❌ Still have unresolved conflicts after fallback:"
+              echo "$REMAINING"
+              echo "[Sync] Manual intervention needed"
+              exit 1
+            fi
+
+            # Complete the merge commit
+            git commit --no-edit -m "sync: merge ${NEW_VERSION} tag
 
           Automatic sync from upstream BerriAI/litellm tag ${NEW_VERSION}
 
-          Strategy: Merge with manual conflict resolution (accepted all tag changes)"
+          Strategy: Merge with conflict resolution (accepted all upstream tag changes)"
 
-              echo "[Sync] ✅ Conflicts resolved, merge completed with preserved history"
-            else
-              echo "[Sync] ❌ Merge failed with no conflicts detected - manual intervention needed"
-              exit 1
-            fi
+            echo "[Sync] ✅ Conflicts resolved, merge completed with preserved history"
           fi
 
           # Push to origin/main (should always be fast-forward with proper merge)
