@@ -113,6 +113,7 @@ model LiteLLM_TeamTable {
     members_with_roles Json @default("{}")
     metadata  Json  @default("{}")
     max_budget Float?
+    soft_budget Float?
     spend      Float    @default(0.0)
     models     String[]
     max_parallel_requests Int?
@@ -129,6 +130,7 @@ model LiteLLM_TeamTable {
     team_member_permissions String[] @default([])
     policies         String[] @default([])
     model_id Int? @unique // id for LiteLLM_ModelTable -> stores team-level model aliases
+    allow_team_guardrail_config Boolean @default(false) // if true, team admin can configure guardrails for this team
     litellm_organization_table LiteLLM_OrganizationTable?   @relation(fields: [organization_id], references: [organization_id])
     litellm_model_table LiteLLM_ModelTable? @relation(fields: [model_id], references: [id])
     object_permission LiteLLM_ObjectPermissionTable?   @relation(fields: [object_permission_id], references: [object_permission_id])
@@ -146,6 +148,7 @@ model LiteLLM_DeletedTeamTable {
     members_with_roles      Json     @default("{}")
     metadata                Json     @default("{}")
     max_budget              Float?
+    soft_budget             Float?
     spend                   Float    @default(0.0)
     models                  String[]
     max_parallel_requests   Int?
@@ -160,6 +163,7 @@ model LiteLLM_DeletedTeamTable {
     team_member_permissions String[] @default([])
     policies                String[] @default([])
     model_id                Int?     // id for LiteLLM_ModelTable -> stores team-level model aliases
+    allow_team_guardrail_config Boolean @default(false)
     
     // Original timestamps from team creation/updates
     created_at              DateTime? @map("created_at")
@@ -260,6 +264,7 @@ model LiteLLM_MCPServerTable {
   token_url          String?
   registration_url   String?
   allow_all_keys Boolean @default(false)
+  available_on_public_internet Boolean @default(false)
 }
 
 // Generate Tokens for Proxy

@@ -92,6 +92,7 @@ class LiteLLMCompletionTransformationHandler:
                 litellm_metadata=kwargs.get("litellm_metadata", {}),
                 litellm_completion_request=litellm_completion_request,
             )
+        raise ValueError(f"Unexpected response type: {type(litellm_completion_response)}")
 
     async def async_response_api_handler(
         self,
@@ -153,3 +154,4 @@ class LiteLLMCompletionTransformationHandler:
                 litellm_metadata=kwargs.get("litellm_metadata", {}),
                 litellm_completion_request=litellm_completion_request,
             )
+        raise ValueError(f"Unexpected response type: {type(litellm_completion_response)}")
