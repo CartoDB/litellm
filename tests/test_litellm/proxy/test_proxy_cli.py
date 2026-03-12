@@ -415,6 +415,166 @@ class TestProxyInitializationHelpers:
             result = construct_database_url_from_env_vars()
             assert result is None
 
+    @patch.dict(os.environ, {}, clear=True)
+    def test_construct_database_url_with_separate_port(self):
+        """Test DATABASE_PORT as a separate env var"""
+        from litellm.proxy.utils import construct_database_url_from_env_vars
+
+        # Port as separate env var
+        test_env = {
+            "DATABASE_HOST": "myhost.example.com",
+            "DATABASE_PORT": "5433",
+            "DATABASE_USERNAME": "testuser",
+            "DATABASE_PASSWORD": "testpass",
+            "DATABASE_NAME": "testdb",
+        }
+        with patch.dict(os.environ, test_env):
+            result = construct_database_url_from_env_vars()
+            assert result == "postgresql://testuser:testpass@myhost.example.com:5433/testdb"
+
+        # Port embedded in host — DATABASE_PORT should be ignored
+        test_env_embedded = {
+            "DATABASE_HOST": "myhost.example.com:5432",
+            "DATABASE_PORT": "9999",
+            "DATABASE_USERNAME": "testuser",
+            "DATABASE_PASSWORD": "testpass",
+            "DATABASE_NAME": "testdb",
+        }
+        with patch.dict(os.environ, test_env_embedded):
+            result = construct_database_url_from_env_vars()
+            assert result == "postgresql://testuser:testpass@myhost.example.com:5432/testdb"
+
+        # No port at all — default PostgreSQL behavior (no :port in URL)
+        test_env_no_port = {
+            "DATABASE_HOST": "myhost.example.com",
+            "DATABASE_USERNAME": "testuser",
+            "DATABASE_PASSWORD": "testpass",
+            "DATABASE_NAME": "testdb",
+        }
+        with patch.dict(os.environ, test_env_no_port):
+            result = construct_database_url_from_env_vars()
+            assert result == "postgresql://testuser:testpass@myhost.example.com/testdb"
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_construct_database_url_with_ssl_params(self):
+        """Test SSL mode and root cert query parameters"""
+        from litellm.proxy.utils import construct_database_url_from_env_vars
+
+        # sslmode only
+        test_env = {
+            "DATABASE_HOST": "myhost.example.com",
+            "DATABASE_PORT": "5432",
+            "DATABASE_USERNAME": "testuser",
+            "DATABASE_PASSWORD": "testpass",
+            "DATABASE_NAME": "testdb",
+            "DATABASE_SSL_MODE": "require",
+        }
+        with patch.dict(os.environ, test_env):
+            result = construct_database_url_from_env_vars()
+            assert result == "postgresql://testuser:testpass@myhost.example.com:5432/testdb?sslmode=require"
+
+        # sslmode + sslrootcert
+        test_env_full_ssl = {
+            "DATABASE_HOST": "myhost.example.com",
+            "DATABASE_PORT": "5432",
+            "DATABASE_USERNAME": "testuser",
+            "DATABASE_PASSWORD": "testpass",
+            "DATABASE_NAME": "testdb",
+            "DATABASE_SSL_MODE": "verify-ca",
+            "DATABASE_SSL_ROOT_CERT": "/certs/ca.pem",
+        }
+        with patch.dict(os.environ, test_env_full_ssl):
+            result = construct_database_url_from_env_vars()
+            assert result == "postgresql://testuser:testpass@myhost.example.com:5432/testdb?sslmode=verify-ca&sslrootcert=/certs/ca.pem"
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_construct_database_url_with_schema_encoded(self):
+        """Test that DATABASE_SCHEMA is properly URL-encoded"""
+        from litellm.proxy.utils import construct_database_url_from_env_vars
+
+        # Schema with special characters
+        test_env = {
+            "DATABASE_HOST": "localhost:5432",
+            "DATABASE_USERNAME": "testuser",
+            "DATABASE_PASSWORD": "testpass",
+            "DATABASE_NAME": "testdb",
+            "DATABASE_SCHEMA": "my schema",
+        }
+        with patch.dict(os.environ, test_env):
+            result = construct_database_url_from_env_vars()
+            assert result == "postgresql://testuser:testpass@localhost:5432/testdb?schema=my%20schema"
+
+        # Normal schema (no encoding needed)
+        test_env_normal = {
+            "DATABASE_HOST": "localhost:5432",
+            "DATABASE_USERNAME": "testuser",
+            "DATABASE_PASSWORD": "testpass",
+            "DATABASE_NAME": "testdb",
+            "DATABASE_SCHEMA": "public",
+        }
+        with patch.dict(os.environ, test_env_normal):
+            result = construct_database_url_from_env_vars()
+            assert result == "postgresql://testuser:testpass@localhost:5432/testdb?schema=public"
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_construct_database_url_multiple_query_params(self):
+        """Test combining schema + SSL query parameters"""
+        from litellm.proxy.utils import construct_database_url_from_env_vars
+
+        test_env = {
+            "DATABASE_HOST": "prod-db.example.com",
+            "DATABASE_PORT": "5432",
+            "DATABASE_USERNAME": "appuser",
+            "DATABASE_PASSWORD": "secret",
+            "DATABASE_NAME": "mydb",
+            "DATABASE_SCHEMA": "app",
+            "DATABASE_SSL_MODE": "verify-full",
+            "DATABASE_SSL_ROOT_CERT": "/etc/ssl/certs/rds-ca.pem",
+        }
+        with patch.dict(os.environ, test_env):
+            result = construct_database_url_from_env_vars()
+            assert result == (
+                "postgresql://appuser:secret@prod-db.example.com:5432/mydb"
+                "?schema=app&sslmode=verify-full&sslrootcert=/etc/ssl/certs/rds-ca.pem"
+            )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_construct_database_url_heavy_special_chars_password(self):
+        """Test password with URI-special characters that broke selfhosted deployments"""
+        from litellm.proxy.utils import construct_database_url_from_env_vars
+
+        # Real-world case: password with @, #, $, !
+        test_env = {
+            "DATABASE_HOST": "pgsql-prod.postgres.database.azure.com",
+            "DATABASE_PORT": "5432",
+            "DATABASE_USERNAME": "admin",
+            "DATABASE_PASSWORD": "pgHgsh@gh4#Mj$!",
+            "DATABASE_NAME": "litellm",
+            "DATABASE_SSL_MODE": "require",
+        }
+        with patch.dict(os.environ, test_env):
+            result = construct_database_url_from_env_vars()
+            assert result == (
+                "postgresql://admin:pgHgsh%40gh4%23Mj%24%21"
+                "@pgsql-prod.postgres.database.azure.com:5432/litellm"
+                "?sslmode=require"
+            )
+
+        # Edge case: password with all problematic URI chars
+        test_env_extreme = {
+            "DATABASE_HOST": "localhost",
+            "DATABASE_PORT": "5432",
+            "DATABASE_USERNAME": "user",
+            "DATABASE_PASSWORD": "p@ss:w0rd/with?q=1&a=2#frag%20",
+            "DATABASE_NAME": "testdb",
+        }
+        with patch.dict(os.environ, test_env_extreme):
+            result = construct_database_url_from_env_vars()
+            assert result == (
+                "postgresql://user:p%40ss%3Aw0rd%2Fwith%3Fq%3D1%26a%3D2%23frag%2520"
+                "@localhost:5432/testdb"
+            )
+
     @patch("uvicorn.run")
     @patch("builtins.print")
     def test_run_server_no_config_passed(self, mock_print, mock_uvicorn_run):

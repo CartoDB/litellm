@@ -4342,38 +4342,70 @@ def is_valid_api_key(key: str) -> bool:
 def construct_database_url_from_env_vars() -> Optional[str]:
     """
     Construct a DATABASE_URL from individual environment variables.
+
+    Required env vars:
+        DATABASE_HOST     - hostname (may include :port)
+        DATABASE_USERNAME - database user
+        DATABASE_NAME     - database name
+
+    Optional env vars:
+        DATABASE_PASSWORD      - database password
+        DATABASE_PORT          - port number (ignored if host already contains :port)
+        DATABASE_SCHEMA        - schema name (appended as ?schema=...)
+        DATABASE_SSL_MODE      - PostgreSQL sslmode (disable|allow|prefer|require|verify-ca|verify-full)
+        DATABASE_SSL_ROOT_CERT - path to CA certificate file for SSL verification
+
     Returns:
         Optional[str]: The constructed DATABASE_URL or None if required variables are missing
     """
     import urllib.parse
 
-    # Check if all required variables are provided
     database_host = os.getenv("DATABASE_HOST")
     database_username = os.getenv("DATABASE_USERNAME")
     database_password = os.getenv("DATABASE_PASSWORD")
     database_name = os.getenv("DATABASE_NAME")
+    database_port = os.getenv("DATABASE_PORT")
     database_schema = os.getenv("DATABASE_SCHEMA")
+    database_ssl_mode = os.getenv("DATABASE_SSL_MODE")
+    database_ssl_root_cert = os.getenv("DATABASE_SSL_ROOT_CERT")
 
-    if database_host and database_username and database_name:
-        # Handle the problem of special character escaping in the database URL
-        database_username_enc = urllib.parse.quote_plus(database_username)
-        database_password_enc = (
-            urllib.parse.quote_plus(database_password) if database_password else ""
-        )
-        database_name_enc = urllib.parse.quote_plus(database_name)
+    if not (database_host and database_username and database_name):
+        return None
 
-        # Construct DATABASE_URL from the provided variables
-        if database_password:
-            database_url = f"postgresql://{database_username_enc}:{database_password_enc}@{database_host}/{database_name_enc}"
-        else:
-            database_url = f"postgresql://{database_username_enc}@{database_host}/{database_name_enc}"
+    # RFC 3986 percent-encoding for URI userinfo and path components
+    _enc = lambda s: urllib.parse.quote(s, safe="")
 
-        if database_schema:
-            database_url += f"?schema={database_schema}"
+    username_enc = _enc(database_username)
+    password_enc = _enc(database_password) if database_password else ""
+    database_name_enc = _enc(database_name)
 
-        return database_url
+    # Build host[:port] — DATABASE_PORT is used only when the host
+    # does not already contain a port (e.g. "myhost:5432").
+    host_part = database_host
+    if database_port and ":" not in database_host:
+        host_part = f"{database_host}:{database_port}"
 
-    return None
+    # Build authority section (user[:pass]@host[:port])
+    if database_password:
+        authority = f"{username_enc}:{password_enc}@{host_part}"
+    else:
+        authority = f"{username_enc}@{host_part}"
+
+    database_url = f"postgresql://{authority}/{database_name_enc}"
+
+    # Collect query parameters
+    query_params: list[str] = []
+    if database_schema:
+        query_params.append(f"schema={_enc(database_schema)}")
+    if database_ssl_mode:
+        query_params.append(f"sslmode={_enc(database_ssl_mode)}")
+    if database_ssl_root_cert:
+        query_params.append(f"sslrootcert={database_ssl_root_cert}")
+
+    if query_params:
+        database_url += "?" + "&".join(query_params)
+
+    return database_url
 
 
 async def get_available_models_for_user(
