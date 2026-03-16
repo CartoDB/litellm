@@ -2,6 +2,7 @@
 Handler for transforming responses api requests to litellm.completion requests
 """
 
+import uuid
 from typing import Any, Coroutine, Dict, Optional, Union
 
 import litellm
@@ -89,6 +90,7 @@ class LiteLLMCompletionTransformationHandler:
                 responses_api_request=responses_api_request,
                 custom_llm_provider=custom_llm_provider,
                 litellm_metadata=kwargs.get("litellm_metadata", {}),
+                litellm_completion_request=litellm_completion_request,
             )
         raise ValueError(f"Unexpected response type: {type(litellm_completion_response)}")
 
@@ -128,6 +130,16 @@ class LiteLLMCompletionTransformationHandler:
                 )
             )
 
+            # CARTO PATCH: Store session immediately in Redis to avoid batch processing delay
+            if responses_api_response.id:
+                session_id = kwargs.get("litellm_trace_id") or str(uuid.uuid4())
+                current_messages = litellm_completion_request.get("messages", [])
+                await LiteLLMCompletionResponsesConfig._patch_store_session_in_redis(
+                    response_id=responses_api_response.id,
+                    session_id=session_id,
+                    messages=current_messages
+                )
+
             return responses_api_response
 
         elif isinstance(litellm_completion_response, litellm.CustomStreamWrapper):
@@ -140,5 +152,6 @@ class LiteLLMCompletionTransformationHandler:
                     "custom_llm_provider"
                 ),
                 litellm_metadata=kwargs.get("litellm_metadata", {}),
+                litellm_completion_request=litellm_completion_request,
             )
         raise ValueError(f"Unexpected response type: {type(litellm_completion_response)}")
