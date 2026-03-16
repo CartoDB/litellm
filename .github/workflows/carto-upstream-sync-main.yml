@@ -159,46 +159,108 @@ jobs:
           # database tables not present in the stable release schema.
           echo "[Sync] Merging tag ${NEW_VERSION} with -X theirs strategy (preserves commit history)..."
 
-          # Use merge strategy that accepts all upstream changes on conflict
-          # This preserves the full commit history with original SHAs
-          git merge "${NEW_VERSION}" --no-edit -X theirs -m "sync: merge ${NEW_VERSION} tag
+          # Attempt merge - capture output and exit code.
+          # The || prevents set -e from killing the script before fallback runs.
+          # -X theirs resolves content-level conflicts (both sides modified same lines)
+          # but CANNOT resolve tree-level conflicts (rename/rename, modify/delete, rename/delete).
+          MERGE_RESULT=0
+          MERGE_OUTPUT=$(git merge "${NEW_VERSION}" --no-edit -X theirs -m "sync: merge ${NEW_VERSION} tag
 
           Automatic sync from upstream BerriAI/litellm tag ${NEW_VERSION}
 
-          Strategy: Merge with history preservation (main syncs to stable tag)"
+          Strategy: Merge with history preservation (main syncs to stable tag)" 2>&1) || MERGE_RESULT=$?
 
-          if [ $? -eq 0 ]; then
+          # Always show merge output so Auto-merging lines appear in logs
+          echo "$MERGE_OUTPUT"
+
+          if [ $MERGE_RESULT -eq 0 ]; then
             echo "[Sync] ✅ Merge successful with preserved history"
           else
-            # If -X theirs still has conflicts, use more aggressive approach
-            echo "[Sync] ⚠️ Conflicts detected, resolving by accepting all upstream changes..."
+            # Tree-level conflicts (rename/rename, modify/delete, rename/delete) need
+            # explicit resolution. These commonly occur in litellm/proxy/_experimental/out/
+            # where Next.js build artifacts have hashed filenames that change between builds.
+            echo "[Sync] ⚠️ Merge had tree-level conflicts, resolving by accepting upstream..."
 
-            # Get list of conflicted files
-            CONFLICTS=$(git diff --name-only --diff-filter=U)
+            # --- Conflict Classification ---
+            # Parse conflict types from merge output for observability.
+            echo "::group::Conflict Classification"
 
-            if [ -n "$CONFLICTS" ]; then
-              echo "[Sync] Resolving conflicts in files:"
-              echo "$CONFLICTS"
+            RENAME_RENAME=$(echo "$MERGE_OUTPUT" | grep -c "CONFLICT (rename/rename)" || true)
+            MODIFY_DELETE=$(echo "$MERGE_OUTPUT" | grep -c "CONFLICT (modify/delete)" || true)
+            RENAME_DELETE=$(echo "$MERGE_OUTPUT" | grep -c "CONFLICT (rename/delete)" || true)
+            CONTENT_CONFLICTS=$(echo "$MERGE_OUTPUT" | grep -c "CONFLICT (content)" || true)
 
-              # For each conflicted file, accept upstream version
-              echo "$CONFLICTS" | while read -r file; do
-                echo "  - Accepting upstream version of: $file"
-                git checkout --theirs "$file"
-                git add "$file"
-              done
+            echo "[Sync] Conflict types:"
+            [ "$RENAME_RENAME" -gt 0 ] && echo "  rename/rename:  ${RENAME_RENAME}"
+            [ "$MODIFY_DELETE" -gt 0 ] && echo "  modify/delete:  ${MODIFY_DELETE}"
+            [ "$RENAME_DELETE" -gt 0 ] && echo "  rename/delete:  ${RENAME_DELETE}"
+            [ "$CONTENT_CONFLICTS" -gt 0 ] && echo "  content:        ${CONTENT_CONFLICTS}"
 
-              # Complete the merge commit
-              git commit --no-edit -m "sync: merge ${NEW_VERSION} tag
+            echo "::endgroup::"
+
+            # --- Detect Unmerged Paths ---
+            # git ls-files --unmerged captures every conflict type (unlike --diff-filter=U):
+            #   content, modify/delete, rename/rename, rename/delete
+            UNMERGED_FILES=$(git ls-files --unmerged | awk '{print $4}' | sort -u)
+
+            if [ -z "$UNMERGED_FILES" ]; then
+              echo "[Sync] ❌ Merge failed with no unmerged files detected - unexpected error"
+              exit 1
+            fi
+
+            CONFLICT_COUNT=$(echo "$UNMERGED_FILES" | wc -l | tr -d ' ')
+
+            # Group unmerged files by top-level directory
+            echo "::group::Affected Directories (${CONFLICT_COUNT} files)"
+            echo "$UNMERGED_FILES" | awk -F/ '{
+              if (NF >= 3) print $1"/"$2"/"$3"/";
+              else if (NF == 2) print $1"/"$2"/";
+              else print $1"/";
+            }' | sort | uniq -c | sort -rn | while read -r count dir; do
+              echo "  ${dir} ${count} files"
+            done
+            echo "::endgroup::"
+
+            # --- Resolve Conflicts ---
+            echo "::group::Resolving ${CONFLICT_COUNT} conflicts"
+
+            # For each unmerged path: if it exists in the upstream tag (MERGE_HEAD),
+            # accept their version; if deleted in upstream, remove from our tree.
+            echo "$UNMERGED_FILES" | while read -r file; do
+              if git cat-file -e "MERGE_HEAD:${file}" 2>/dev/null; then
+                echo "  - Accepting upstream: ${file}"
+                git checkout MERGE_HEAD -- "${file}" 2>/dev/null || true
+              else
+                echo "  - Removing (deleted upstream): ${file}"
+                git rm -f "${file}" 2>/dev/null || true
+              fi
+            done
+
+            # Stage remaining unstaged changes (e.g., orphaned files from
+            # rename/rename conflicts where HEAD's rename destination must be cleaned up)
+            git add -A
+
+            echo "::endgroup::"
+
+            # --- Post-Resolution Validation ---
+            REMAINING=$(git ls-files --unmerged | wc -l | tr -d ' ')
+            if [ "$REMAINING" -gt 0 ]; then
+              echo "[Sync] ❌ ${REMAINING} unmerged entries remain after resolution:"
+              git ls-files --unmerged | head -20
+              echo "[Sync] Manual intervention required"
+              exit 1
+            fi
+            echo "[Sync] ✅ Validation passed: no unmerged files remain"
+
+            # Complete the merge commit
+            git commit --no-edit -m "sync: merge ${NEW_VERSION} tag
 
           Automatic sync from upstream BerriAI/litellm tag ${NEW_VERSION}
 
-          Strategy: Merge with manual conflict resolution (accepted all tag changes)"
+          Strategy: Merge with tree-level conflict resolution (accepted all upstream changes)
+          Conflicts resolved: ${CONFLICT_COUNT} files (${RENAME_RENAME} rename/rename, ${MODIFY_DELETE} modify/delete, ${RENAME_DELETE} rename/delete, ${CONTENT_CONFLICTS} content)"
 
-              echo "[Sync] ✅ Conflicts resolved, merge completed with preserved history"
-            else
-              echo "[Sync] ❌ Merge failed with no conflicts detected - manual intervention needed"
-              exit 1
-            fi
+            echo "[Sync] ✅ Tree-level conflicts resolved, merge completed with preserved history"
           fi
 
           # Push to origin/main (should always be fast-forward with proper merge)
