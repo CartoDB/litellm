@@ -1,16 +1,21 @@
+import { act, fireEvent, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderWithProviders, screen } from "../../../tests/test-utils";
 import CreateKey from "./create_key_button";
 
-const mockKeyCreateCall = vi.fn().mockResolvedValue({
-  key: "test-api-key",
-  soft_budget: null,
+const { mockKeyCreateCall } = vi.hoisted(() => {
+  const fn = vi.fn().mockResolvedValue({
+    key: "test-api-key",
+    soft_budget: null,
+  });
+  return { mockKeyCreateCall: fn };
 });
 
-vi.mock("./networking", () => ({
+vi.mock("../networking", () => ({
   keyCreateCall: mockKeyCreateCall,
-  modelAvailableCall: vi.fn().mockResolvedValue({ data: [] }),
+  modelAvailableCall: vi.fn().mockResolvedValue({ data: [{ id: "gpt-4" }, { id: "gpt-3.5-turbo" }] }),
   getGuardrailsList: vi.fn().mockResolvedValue({ guardrails: [] }),
+  getPoliciesList: vi.fn().mockResolvedValue({ policies: [] }),
   getPromptsList: vi.fn().mockResolvedValue({ prompts: [] }),
   proxyBaseUrl: "http://localhost:4000",
   getPossibleUserRoles: vi.fn().mockResolvedValue({
@@ -23,9 +28,10 @@ vi.mock("./networking", () => ({
     soft_budget: null,
   }),
   fetchMCPAccessGroups: vi.fn().mockResolvedValue([]),
+  getAgentsList: vi.fn().mockResolvedValue({ agents: [] }),
 }));
 
-vi.mock("./molecules/notifications_manager", () => ({
+vi.mock("../molecules/notifications_manager", () => ({
   default: {
     success: vi.fn(),
     fromBackend: vi.fn(),
@@ -36,16 +42,36 @@ vi.mock("./molecules/notifications_manager", () => ({
   },
 }));
 
+vi.mock("@/app/(dashboard)/hooks/projects/useProjects", () => ({
+  useProjects: vi.fn().mockReturnValue({ data: [], isLoading: false }),
+}));
+
+vi.mock("../common_components/ProjectDropdown", () => ({
+  default: ({ value, onChange }: { value?: string; onChange?: (v: string) => void }) => (
+    <input
+      data-testid="project-dropdown"
+      value={value || ""}
+      onChange={(e) => onChange?.(e.target.value)}
+    />
+  ),
+}));
+
+vi.mock("../common_components/AccessGroupSelector", () => ({
+  default: ({ value = [], onChange }: { value?: string[]; onChange?: (v: string[]) => void }) => (
+    <input
+      data-testid="access-group-selector"
+      value={Array.isArray(value) ? value.join(",") : ""}
+      onChange={(e) => onChange?.(e.target.value ? e.target.value.split(",").map((s) => s.trim()) : [])}
+    />
+  ),
+}));
+
 describe("CreateKey", () => {
   const defaultProps = {
-    userID: "test-user-id",
     team: null,
-    userRole: "Admin",
-    accessToken: "test-token",
     data: [],
     teams: [],
     addKey: vi.fn(),
-    premiumUser: false,
   };
 
   beforeEach(() => {
@@ -60,6 +86,37 @@ describe("CreateKey", () => {
   it("should render the CreateKey component", () => {
     renderWithProviders(<CreateKey {...defaultProps} />);
     expect(screen.getByRole("button", { name: /create new key/i })).toBeInTheDocument();
+  });
+
+  it("should display 'AI APIs' label for the llm_api key type option", async () => {
+    renderWithProviders(<CreateKey {...defaultProps} />);
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: /create new key/i }));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Key Type")).toBeInTheDocument();
+    });
+
+    // Open the Key Type dropdown
+    const keyTypeSection = screen.getByText("Key Type").closest(".ant-form-item")!;
+    const selectElement = keyTypeSection.querySelector(".ant-select-selector")!;
+    act(() => {
+      fireEvent.mouseDown(selectElement);
+    });
+
+    await waitFor(() => {
+      // Verify "AI APIs" appears as an option
+      const options = document.querySelectorAll(".ant-select-item-option");
+      const optionTexts = Array.from(options).map((el) => el.textContent);
+      const hasAIAPIs = optionTexts.some((text) => text?.includes("AI APIs"));
+      expect(hasAIAPIs).toBe(true);
+
+      // Verify old "LLM API" label does NOT appear
+      const hasLLMAPI = optionTexts.some((text) => text?.includes("LLM API"));
+      expect(hasLLMAPI).toBe(false);
+    });
   });
 
   it("should include access_group_ids in keyCreateCall payload when access groups are selected", async () => {

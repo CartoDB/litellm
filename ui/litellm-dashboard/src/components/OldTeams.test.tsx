@@ -14,7 +14,8 @@ vi.mock("./networking", () => ({
   teamDeleteCall: vi.fn(),
   fetchMCPAccessGroups: vi.fn(),
   v2TeamListCall: vi.fn(),
-  getGuardrailsList: vi.fn(),
+  getGuardrailsList: vi.fn().mockResolvedValue({ guardrails: [] }),
+  getPoliciesList: vi.fn().mockResolvedValue({ policies: [] }),
 }));
 
 vi.mock("./common_components/fetch_teams", () => ({
@@ -70,7 +71,6 @@ vi.mock("./ModelSelect/ModelSelect", () => {
         data-testid={dataTestId || "model-select"}
         value={Array.isArray(value) ? value.join(", ") : ""}
         onChange={(e) => {
-          // Mock onChange - in real usage this would be handled by Ant Design Select
           if (onChange) {
             const newVal = e.target.value
               ? e.target.value
@@ -81,7 +81,6 @@ vi.mock("./ModelSelect/ModelSelect", () => {
             onChange(newVal);
           }
         }}
-        readOnly
       />
     );
   });
@@ -93,6 +92,27 @@ vi.mock("./ModelSelect/ModelSelect", () => {
 
 vi.mock("@/app/(dashboard)/hooks/organizations/useOrganizations", () => ({
   useOrganizations: () => mockUseOrganizations(),
+}));
+
+vi.mock("@/app/(dashboard)/hooks/accessGroups/useAccessGroups", () => ({
+  useAccessGroups: vi.fn().mockReturnValue({
+    data: [
+      { access_group_id: "ag-1", access_group_name: "Group 1" },
+      { access_group_id: "ag-2", access_group_name: "Group 2" },
+    ],
+    isLoading: false,
+    isError: false,
+  }),
+}));
+
+vi.mock("./common_components/AccessGroupSelector", () => ({
+  default: ({ value = [], onChange }: { value?: string[]; onChange?: (v: string[]) => void }) => (
+    <input
+      data-testid="access-group-selector"
+      value={Array.isArray(value) ? value.join(",") : ""}
+      onChange={(e) => onChange?.(e.target.value ? e.target.value.split(",").map((s) => s.trim()) : [])}
+    />
+  ),
 }));
 
 const createQueryClient = () => {
