@@ -118,7 +118,7 @@ jobs:
       packages: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ github.event.inputs.branch }}
           fetch-depth: 0  # Fetch all history for tags
@@ -281,7 +281,7 @@ jobs:
       - name: Generate intelligent release notes with Claude
         id: release-notes
         if: steps.manual-notes.outputs.notes_generated != 'true'
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@673eb13aa77026be5c507eda12322c1a58b80f0b # v1
         with:
           use_vertex: "true"
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -531,7 +531,7 @@ jobs:
           git push origin "${{ steps.calc-version.outputs.release_tag }}"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@26994186c0ac3ef5cae75ac16aa32e8153525f77 # v1
         with:
           tag_name: ${{ steps.calc-version.outputs.release_tag }}
           name: ${{ steps.calc-version.outputs.release_tag }}

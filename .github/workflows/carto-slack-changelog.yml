@@ -34,7 +34,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
 
@@ -431,7 +431,7 @@ jobs:
         id: insight
         if: steps.slack_pr.outputs.success == 'true' || steps.slack_release.outputs.success == 'true'
         continue-on-error: true  # If Claude fails, we still posted the main message
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@673eb13aa77026be5c507eda12322c1a58b80f0b # v1
         with:
           use_vertex: "true"
           github_token: ${{ secrets.GITHUB_TOKEN }}

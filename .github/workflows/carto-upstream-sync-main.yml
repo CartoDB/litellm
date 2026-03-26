@@ -52,7 +52,7 @@ jobs:
       # Checkout carto/main to check what version we currently have in production
       # NOT main (which has unstable upstream dev code that's always ahead of stable)
       - name: Checkout carto/main branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: carto/main
           fetch-depth: 0
@@ -128,7 +128,7 @@ jobs:
     if: needs.check-new-release.outputs.has-new-release == 'true'
     steps:
       - name: Checkout main branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: main
           fetch-depth: 0
@@ -288,7 +288,7 @@ jobs:
       pr-version: ${{ steps.check-pr.outputs.pr-version }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
 
@@ -375,7 +375,7 @@ jobs:
       sync-branch: ${{ steps.create-sync-branch.outputs.branch-name }}
     steps:
       - name: Checkout main branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: main
           fetch-depth: 0
@@ -460,6 +460,13 @@ jobs:
           - [ ] CI checks pass (lint, tests, Docker build)
           - [ ] CARTO customizations preserved
           - [ ] \`pyproject.toml\` version matches upstream
+
+          ### 🔒 Supply Chain Security
+
+          - [ ] Supply chain security scan passed ([GuardDog](https://github.com/DataDog/guarddog) + wheel audit)
+          - [ ] No unexpected files in built wheel (allowlist: \`litellm/\` + \`dist-info/\` only)
+          - [ ] No suspicious dependency changes in \`requirements.txt\`
+          - [ ] \`pyproject.toml\` build config unchanged or reviewed
 
           ---
 

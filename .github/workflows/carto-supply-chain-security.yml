@@ -1,0 +1,202 @@
+################################################################################
+# CARTO - Supply Chain Security Scan
+################################################################################
+#
+# Automated supply chain security gate for PRs targeting carto/main.
+# Responds to the litellm v1.82.8 PyPI compromise (BerriAI/litellm#24512).
+#
+# Layers:
+#   1. GuardDog (Datadog/OpenSSF) — Semgrep-powered malicious pattern detection
+#   2. Wheel allowlist — only litellm/ and dist-info/ files allowed
+#   3. GuardDog wheel verify — scan built wheel for malicious code
+#   4. pip-audit (PyPA) — known vulnerability scanning (advisory)
+#   5. Structural integrity — setup.py guard, dependency source check
+#
+# Tools are pinned by version to prevent self-compromise.
+#
+# Reference: https://github.com/BerriAI/litellm/issues/24512
+# Ticket: https://app.shortcut.com/cartoteam/story/543659
+
+name: CARTO - Supply Chain Security Scan
+
+on:
+  pull_request:
+    branches:
+      - carto/main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write  # For SARIF upload to GitHub Security tab
+
+jobs:
+  supply-chain-scan:
+    name: Supply Chain Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+
+      # ── Tool Installation (pinned versions) ────────────────────────────────
+      - name: Install security tools
+        run: |
+          set -eu
+          echo "::group::Installing security scanning tools"
+          pip install "guarddog==2.9.0" "pip-audit==2.10.0" build
+          echo "GuardDog version: $(guarddog --version 2>/dev/null || echo 'installed')"
+          echo "pip-audit version: $(pip-audit --version)"
+          echo "::endgroup::"
+
+      # ── Layer 1: GuardDog source scan ──────────────────────────────────────
+      - name: "Scan source for malicious patterns (GuardDog)"
+        id: guarddog-source
+        run: |
+          set -eu
+          echo "::group::GuardDog source scan"
+
+          # Generate SARIF report for GitHub Security tab
+          guarddog pypi scan . --output-format sarif > guarddog-source.sarif 2>&1 || true
+
+          # Human-readable output for PR checks
+          echo "Running GuardDog scan on source code..."
+          guarddog pypi scan . --output-format text || {
+            echo "::error::GuardDog detected suspicious patterns in source code"
+            exit 1
+          }
+
+          echo "::endgroup::"
+
+      # ── Layer 2: Wheel build + allowlist audit ─────────────────────────────
+      - name: "Build wheel and audit contents"
+        id: wheel-audit
+        run: |
+          set -eu
+          echo "::group::Wheel build and allowlist audit"
+
+          # Build wheel from source (no network isolation — uses local source only)
+          python -m build --wheel --no-isolation 2>&1 || {
+            echo "::warning::Wheel build failed — skipping wheel audit"
+            echo "wheel_built=false" >> $GITHUB_OUTPUT
+            echo "::endgroup::"
+            exit 0
+          }
+
+          WHEEL=$(ls dist/*.whl | head -1)
+          echo "Built wheel: $WHEEL"
+          echo "wheel_built=true" >> $GITHUB_OUTPUT
+
+          # Allowlist audit: only litellm/ and dist-info/ files should exist
+          python3 << 'PYEOF'
+          import zipfile, sys, glob
+
+          whl = glob.glob("dist/*.whl")[0]
+          print(f"Auditing wheel: {whl}")
+
+          with zipfile.ZipFile(whl) as z:
+              files = z.namelist()
+              print(f"Total files in wheel: {len(files)}")
+
+              # Allowlisted prefixes — anything else is suspicious
+              allowed_prefixes = ("litellm/", "litellm-", "litellm_")
+              unexpected = [f for f in files if not any(f.startswith(p) for p in allowed_prefixes)]
+
+              # Defense in depth: explicit .pth check
+              pth_files = [f for f in files if f.endswith(".pth")]
+
+              if pth_files:
+                  print("\n❌ CRITICAL: .pth files detected in wheel!")
+                  print("This is the exact attack vector from litellm v1.82.8 (BerriAI/litellm#24512)")
+                  for f in pth_files:
+                      print(f"  🚨 {f}")
+                  sys.exit(1)
+
+              if unexpected:
+                  print(f"\n❌ FAIL: {len(unexpected)} unexpected files in wheel:")
+                  for f in unexpected:
+                      print(f"  ⚠️  {f}")
+                  print("\nOnly files under litellm/ and litellm-*.dist-info/ are allowed.")
+                  sys.exit(1)
+
+              print(f"\n✅ Wheel OK: {len(files)} files, all under allowed prefixes")
+          PYEOF
+
+          echo "::endgroup::"
+
+      # ── Layer 3: GuardDog wheel scan ───────────────────────────────────────
+      - name: "Scan built wheel for malicious patterns"
+        if: steps.wheel-audit.outputs.wheel_built == 'true'
+        run: |
+          set -eu
+          echo "::group::GuardDog wheel verification"
+          guarddog pypi verify dist/*.whl || {
+            echo "::error::GuardDog detected suspicious patterns in the built wheel"
+            exit 1
+          }
+          echo "::endgroup::"
+
+      # ── Layer 4: pip-audit (known CVEs) ────────────────────────────────────
+      - name: "Audit dependencies for known vulnerabilities (advisory)"
+        continue-on-error: true  # Advisory — deps may lag behind CVE fixes
+        run: |
+          set -eu
+          echo "::group::pip-audit dependency scan"
+          pip-audit -r requirements.txt --progress-spinner off --output-format columns || {
+            echo "::warning::pip-audit found known vulnerabilities in dependencies"
+            echo "This is advisory — review the findings above"
+          }
+          echo "::endgroup::"
+
+      # ── Layer 5: Structural integrity checks ───────────────────────────────
+      - name: "Check structural integrity"
+        run: |
+          set -eu
+          echo "::group::Structural integrity checks"
+          FAIL=0
+
+          # Check 1: setup.py should NOT exist (we use Poetry exclusively)
+          if [ -f setup.py ]; then
+            echo "❌ FAIL: setup.py detected — this repo uses Poetry exclusively"
+            echo "A setup.py file appearing is a supply chain attack indicator"
+            echo "::error::setup.py detected — possible supply chain injection"
+            FAIL=1
+          else
+            echo "✅ No setup.py (Poetry-only repo)"
+          fi
+
+          # Check 2: No non-PyPI dependency sources
+          if grep -qE '(git\+|https?://|file://)' requirements.txt 2>/dev/null; then
+            echo "❌ FAIL: Non-PyPI dependency sources detected in requirements.txt:"
+            grep -nE '(git\+|https?://|file://)' requirements.txt
+            echo "::error::Non-PyPI dependency sources in requirements.txt"
+            FAIL=1
+          else
+            echo "✅ All dependencies use standard PyPI sources"
+          fi
+
+          # Check 3: No suspicious build hooks in pyproject.toml
+          if grep -qiE '(cmdclass|post_install|pre_install|data_files)' pyproject.toml 2>/dev/null; then
+            echo "⚠️  WARN: Build hooks or data_files detected in pyproject.toml"
+            grep -niE '(cmdclass|post_install|pre_install|data_files)' pyproject.toml
+            echo "::warning::Build hooks or data_files in pyproject.toml — manual review required"
+          else
+            echo "✅ No suspicious build hooks in pyproject.toml"
+          fi
+
+          echo "::endgroup::"
+          exit $FAIL
+
+      # ── Upload SARIF for GitHub Security tab ───────────────────────────────
+      - name: Upload GuardDog SARIF results
+        if: always() && hashFiles('guarddog-source.sarif') != ''
+        uses: github/codeql-action/upload-sarif@480db559a14342288b67e54bd959dd52dc3ee68f # v3
+        with:
+          sarif_file: guarddog-source.sarif
+          category: guarddog-supply-chain
+        continue-on-error: true  # Don't fail the workflow if SARIF upload fails
