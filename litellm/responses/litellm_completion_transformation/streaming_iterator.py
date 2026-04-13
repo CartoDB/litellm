@@ -26,6 +26,7 @@ from litellm.types.llms.openai import (
     OutputTextAnnotationAddedEvent,
     ReasoningSummaryPartDoneEvent,
     ReasoningSummaryTextDeltaEvent,
+    ReasoningSummaryTextDoneEvent,
     ResponseCompletedEvent,
     ResponseCreatedEvent,
     ResponseInProgressEvent,
