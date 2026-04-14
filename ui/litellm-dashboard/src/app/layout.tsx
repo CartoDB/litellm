@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
+import { FeatureFlagsProvider } from "@/hooks/useFeatureFlags";
 
 import AntdGlobalProvider from "@/contexts/AntdGlobalProvider";
 import ReactQueryProvider from "@/contexts/ReactQueryProvider";
@@ -22,7 +23,9 @@ export default function RootLayout({
     <html lang="en">
       <body className={inter.className}>
         <ReactQueryProvider>
-          <AntdGlobalProvider>{children}</AntdGlobalProvider>
+          <FeatureFlagsProvider>
+            <AntdGlobalProvider>{children}</AntdGlobalProvider>
+          </FeatureFlagsProvider>
         </ReactQueryProvider>
       </body>
     </html>
