@@ -4,6 +4,7 @@ import "./globals.css";
 import { FeatureFlagsProvider } from "@/hooks/useFeatureFlags";
 
 import AntdGlobalProvider from "@/contexts/AntdGlobalProvider";
+import ReactQueryProvider from "@/contexts/ReactQueryProvider";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -21,9 +22,11 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={inter.className}>
-        <FeatureFlagsProvider>
-          <AntdGlobalProvider>{children}</AntdGlobalProvider>
-        </FeatureFlagsProvider>
+        <ReactQueryProvider>
+          <FeatureFlagsProvider>
+            <AntdGlobalProvider>{children}</AntdGlobalProvider>
+          </FeatureFlagsProvider>
+        </ReactQueryProvider>
       </body>
     </html>
   );

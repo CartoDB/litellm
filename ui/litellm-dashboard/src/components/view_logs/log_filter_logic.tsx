@@ -3,12 +3,13 @@ import { useCallback, useEffect, useState, useRef, useMemo } from "react";
 import { uiSpendLogsCall } from "../networking";
 import { Team } from "../key_team_helpers/key_list";
 import { useQuery } from "@tanstack/react-query";
-import { fetchAllKeyAliases, fetchAllTeams } from "../../components/key_team_helpers/filter_helpers";
+import { fetchAllTeams } from "../../components/key_team_helpers/filter_helpers";
 import { debounce } from "lodash";
 import { defaultPageSize } from "../constants";
 import { PaginatedResponse } from ".";
+import type { LogsSortField } from "./columns";
 
-export const FILTER_KEYS = {
+const FILTER_KEYS = {
   TEAM_ID: "Team ID",
   KEY_HASH: "Key Hash",
   REQUEST_ID: "Request ID",
@@ -34,6 +35,9 @@ export function useLogFilterLogic({
   setCurrentPage,
   userID,
   userRole,
+  sortBy = "startTime",
+  sortOrder = "desc",
+  currentPage = 1,
 }: {
   logs: PaginatedResponse;
   accessToken: string | null;
@@ -44,6 +48,9 @@ export function useLogFilterLogic({
   setCurrentPage: (page: number) => void;
   userID: string | null;
   userRole: string | null;
+  sortBy?: LogsSortField;
+  sortOrder?: "asc" | "desc";
+  currentPage?: number;
 }) {
   const defaultFilters = useMemo<LogFilterState>(
     () => ({
@@ -62,13 +69,7 @@ export function useLogFilterLogic({
   );
 
   const [filters, setFilters] = useState<LogFilterState>(defaultFilters);
-  const [backendFilteredLogs, setBackendFilteredLogs] = useState<PaginatedResponse>({
-    data: [],
-    total: 0,
-    page: 1,
-    page_size: 50,
-    total_pages: 0,
-  });
+  const [backendFilteredLogs, setBackendFilteredLogs] = useState<PaginatedResponse | null>(null);
   const lastSearchTimestamp = useRef(0);
   const performSearch = useCallback(
     async (filters: LogFilterState, page = 1) => {
@@ -84,32 +85,46 @@ export function useLogFilterLogic({
         : moment().utc().format("YYYY-MM-DD HH:mm:ss");
 
       try {
-        const response = await uiSpendLogsCall(
+        const response = await uiSpendLogsCall({
           accessToken,
-          filters[FILTER_KEYS.KEY_HASH] || undefined,
-          filters[FILTER_KEYS.TEAM_ID] || undefined,
-          filters[FILTER_KEYS.REQUEST_ID] || undefined,
-          formattedStartTime,
-          formattedEndTime,
+          start_date: formattedStartTime,
+          end_date: formattedEndTime,
           page,
-          pageSize,
-          filters[FILTER_KEYS.USER_ID] || undefined,
-          filters[FILTER_KEYS.END_USER] || undefined,
-          filters[FILTER_KEYS.STATUS] || undefined,
-          filters[FILTER_KEYS.MODEL] || undefined,
-          filters[FILTER_KEYS.KEY_ALIAS] || undefined,
-          filters[FILTER_KEYS.ERROR_CODE] || undefined,
-          filters[FILTER_KEYS.ERROR_MESSAGE] || undefined,
-        );
+          page_size: pageSize,
+          params: {
+            api_key: filters[FILTER_KEYS.KEY_HASH] || undefined,
+            team_id: filters[FILTER_KEYS.TEAM_ID] || undefined,
+            request_id: filters[FILTER_KEYS.REQUEST_ID] || undefined,
+            user_id: filters[FILTER_KEYS.USER_ID] || undefined,
+            end_user: filters[FILTER_KEYS.END_USER] || undefined,
+            status_filter: filters[FILTER_KEYS.STATUS] || undefined,
+            model_id: filters[FILTER_KEYS.MODEL] || undefined,
+            key_alias: filters[FILTER_KEYS.KEY_ALIAS] || undefined,
+            error_code: filters[FILTER_KEYS.ERROR_CODE] || undefined,
+            error_message: filters[FILTER_KEYS.ERROR_MESSAGE] || undefined,
+            sort_by: sortBy,
+            sort_order: sortOrder,
+          },
+        });
 
-        if (currentTimestamp === lastSearchTimestamp.current && response.data) {
-          setBackendFilteredLogs(response);
+        if (currentTimestamp === lastSearchTimestamp.current) {
+          setBackendFilteredLogs({
+            ...response,
+            data: response.data ?? [],
+          });
         }
       } catch (error) {
         console.error("Error searching users:", error);
+        setBackendFilteredLogs({
+          data: [],
+          total: 0,
+          page: 1,
+          page_size: pageSize,
+          total_pages: 0,
+        });
       }
     },
-    [accessToken, startTime, endTime, isCustomDate, pageSize],
+    [accessToken, startTime, endTime, isCustomDate, pageSize, sortBy, sortOrder],
   );
 
   const debouncedSearch = useMemo(
@@ -121,16 +136,6 @@ export function useLogFilterLogic({
     return () => debouncedSearch.cancel();
   }, [debouncedSearch]);
 
-  const queryAllKeysQuery = useQuery({
-    queryKey: ["allKeys"],
-    queryFn: async () => {
-      if (!accessToken) throw new Error("Access token required");
-      return await fetchAllKeyAliases(accessToken);
-    },
-    enabled: !!accessToken,
-  });
-  const allKeyAliases = queryAllKeysQuery.data || [];
-
   // Determine when backend filters are active (server-side filtering)
   const hasBackendFilters = useMemo(
     () =>
@@ -141,10 +146,26 @@ export function useLogFilterLogic({
         filters[FILTER_KEYS.USER_ID] ||
         filters[FILTER_KEYS.END_USER] ||
         filters[FILTER_KEYS.ERROR_CODE] ||
-        filters[FILTER_KEYS.ERROR_MESSAGE]
+        filters[FILTER_KEYS.ERROR_MESSAGE] ||
+        filters[FILTER_KEYS.MODEL]
       ),
     [filters],
   );
+
+  // Refetch when sort, page, or time range changes (backend filters use their own fetch, not the main query)
+  useEffect(() => {
+    if (hasBackendFilters && accessToken) {
+      // Cancel any pending debounced search to prevent it from overwriting this page's results
+      debouncedSearch.cancel();
+      performSearch(filters, currentPage);
+    }
+    // Intentionally omitted from deps:
+    // - `filters` / `debouncedSearch` / `performSearch`: filter changes are handled by
+    //   handleFilterChange → debouncedSearch; adding them here would double-fetch on filter apply.
+    // - `hasBackendFilters` / `accessToken`: stable across sort/page/time changes; including them
+    //   would cause spurious re-runs when the filter state first becomes active.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sortBy, sortOrder, currentPage, startTime, endTime, isCustomDate]);
 
   // Compute client-side filtered logs directly from incoming logs and filters
   const clientDerivedFilteredLogs: PaginatedResponse = useMemo(() => {
@@ -153,7 +174,7 @@ export function useLogFilterLogic({
         data: [],
         total: 0,
         page: 1,
-        page_size: 50,
+        page_size: pageSize,
         total_pages: 0,
       };
     }
@@ -179,7 +200,7 @@ export function useLogFilterLogic({
     }
 
     if (filters[FILTER_KEYS.MODEL]) {
-      filteredData = filteredData.filter((log) => log.model === filters[FILTER_KEYS.MODEL]);
+      filteredData = filteredData.filter((log) => log.model_id === filters[FILTER_KEYS.MODEL]);
     }
 
     if (filters[FILTER_KEYS.KEY_HASH]) {
@@ -210,22 +231,23 @@ export function useLogFilterLogic({
   // Choose which filtered logs to expose: backend result when active, otherwise client-derived
   const filteredLogs: PaginatedResponse = useMemo(() => {
     if (hasBackendFilters) {
-      // Prefer backend result if present; otherwise fall back to latest logs
-      if (backendFilteredLogs && backendFilteredLogs.data && backendFilteredLogs.data.length > 0) {
+      // When backend filters are active, only show backend results.
+      // If search hasn't completed yet (null), show empty state rather than
+      // falling back to unfiltered logs — that caused filtered views to
+      // display mismatched data when the filter matched zero rows.
+      if (backendFilteredLogs !== null) {
         return backendFilteredLogs;
       }
-      return (
-        logs || {
-          data: [],
-          total: 0,
-          page: 1,
-          page_size: 50,
-          total_pages: 0,
-        }
-      );
+      return {
+        data: [],
+        total: 0,
+        page: 1,
+        page_size: pageSize,
+        total_pages: 0,
+      };
     }
     return clientDerivedFilteredLogs;
-  }, [hasBackendFilters, backendFilteredLogs, clientDerivedFilteredLogs, logs]);
+  }, [hasBackendFilters, backendFilteredLogs, clientDerivedFilteredLogs]);
 
   // Fetch all teams and users for potential filter dropdowns (optional, can be adapted)
   const { data: allTeams } = useQuery<Team[], Error>({
@@ -255,6 +277,7 @@ export function useLogFilterLogic({
       // Only call debouncedSearch if filters have actually changed
       if (JSON.stringify(updatedFilters) !== JSON.stringify(prev)) {
         setCurrentPage(1);
+        setBackendFilteredLogs(null);
         debouncedSearch(updatedFilters, 1);
       }
 
@@ -267,22 +290,19 @@ export function useLogFilterLogic({
     setFilters(defaultFilters);
 
     // Clear backend filtered logs to ensure fresh render
-    setBackendFilteredLogs({
-      data: [],
-      total: 0,
-      page: 1,
-      page_size: 50,
-      total_pages: 0,
-    });
+    setBackendFilteredLogs(null);
 
-    // Reset selections
-    debouncedSearch(defaultFilters, 1);
+    // Cancel any in-flight debounced search
+    debouncedSearch.cancel();
+
+    // Reset to first page so the unfiltered view starts at page 1
+    setCurrentPage(1);
   };
 
   return {
     filters,
     filteredLogs,
-    allKeyAliases,
+    hasBackendFilters,
     allTeams,
     handleFilterChange,
     handleFilterReset,

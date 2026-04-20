@@ -380,8 +380,9 @@ async def test_model_armor_api_error_handling():
                 call_type="completion"
             )
 
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 400
         assert "Model Armor API error" in str(exc_info.value.detail)
+        assert "upstream 500" in str(exc_info.value.detail)
 
 
 @pytest.mark.asyncio
@@ -484,6 +485,128 @@ async def test_model_armor_streaming_response():
         # Should have processed the chunks through Model Armor
         assert len(result_chunks) > 0
         mock_post.assert_called()
+
+@pytest.mark.asyncio
+async def test_model_armor_streaming_block_yields_sse_error():
+    """Test that streaming content block yields SSE error event instead of raising HTTPException."""
+    mock_user_api_key_dict = UserAPIKeyAuth()
+
+    guardrail = ModelArmorGuardrail(
+        template_id="test-template",
+        project_id="test-project",
+        location="us-central1",
+        guardrail_name="model-armor-test",
+    )
+
+    # Mock Model Armor API response that triggers a block (SDP MATCH_FOUND)
+    mock_response = AsyncMock()
+    mock_response.status_code = 200
+    mock_response.json = AsyncMock(
+        return_value={
+            "sanitizationResult": {
+                "filterMatchState": "MATCH_FOUND",
+                "filterResults": {
+                    "sdp": {
+                        "sdpFilterResult": {
+                            "inspectResult": {
+                                "matchState": "MATCH_FOUND",
+                                "findings": [
+                                    {
+                                        "infoType": "PASSWORD",
+                                        "likelihood": "VERY_LIKELY",
+                                    }
+                                ],
+                            }
+                        }
+                    }
+                },
+            }
+        }
+    )
+
+    guardrail._ensure_access_token_async = AsyncMock(
+        return_value=("test-token", "test-project")
+    )
+
+    with patch.object(
+        guardrail.async_handler, "post", AsyncMock(return_value=mock_response)
+    ):
+
+        async def mock_stream():
+            chunks = [
+                litellm.ModelResponseStream(
+                    choices=[
+                        litellm.types.utils.StreamingChoices(
+                            delta=litellm.types.utils.Delta(
+                                content="My password is "
+                            )
+                        )
+                    ]
+                ),
+                litellm.ModelResponseStream(
+                    choices=[
+                        litellm.types.utils.StreamingChoices(
+                            delta=litellm.types.utils.Delta(content="hunter2")
+                        )
+                    ]
+                ),
+            ]
+            for chunk in chunks:
+                yield chunk
+
+        request_data = {
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": "What's your password?"}],
+            "metadata": {"guardrails": ["model-armor-test"]},
+        }
+
+        result_chunks = []
+        async for chunk in guardrail.async_post_call_streaming_iterator_hook(
+            user_api_key_dict=mock_user_api_key_dict,
+            response=mock_stream(),
+            request_data=request_data,
+        ):
+            result_chunks.append(chunk)
+
+        # Should yield exactly one SSE error event (not raise HTTPException)
+        assert len(result_chunks) == 1
+        error_data = json.loads(result_chunks[0].removeprefix("data: "))
+        assert "error" in error_data
+        assert int(error_data["error"]["code"]) == 400
+
+
+@pytest.mark.asyncio
+async def test_model_armor_api_failure_returns_400():
+    """Test that Model Armor API failures raise HTTP 400, not the upstream status code."""
+    guardrail = ModelArmorGuardrail(
+        template_id="test-template",
+        project_id="test-project",
+        location="us-central1",
+        guardrail_name="model-armor-test",
+    )
+
+    # Mock a 500 response from the Model Armor GCP API
+    mock_response = AsyncMock()
+    mock_response.status_code = 500
+    mock_response.text = "Internal Server Error"
+
+    guardrail._ensure_access_token_async = AsyncMock(
+        return_value=("test-token", "test-project")
+    )
+
+    with patch.object(
+        guardrail.async_handler, "post", AsyncMock(return_value=mock_response)
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await guardrail.make_model_armor_request(
+                content="test content",
+                source="user_prompt",
+            )
+
+        # Should be 400, NOT the upstream 500
+        assert exc_info.value.status_code == 400
+        assert "upstream 500" in str(exc_info.value.detail)
+
 
 def test_model_armor_ui_friendly_name():
     """Test the UI-friendly name of the Model Armor guardrail"""
@@ -1120,6 +1243,83 @@ async def test_model_armor_non_model_response():
 
     # Verify that Model Armor API was NOT called since there's no text content
     assert not guardrail.async_handler.post.called
+
+
+@pytest.mark.asyncio
+async def test_model_armor_guardrail_status_intervened_vs_failed():
+    """
+    regression test for bug where _process_error always set 'guardrail_failed_to_respond'
+    even for intentional blocks (error 400).
+    """
+    mock_user_api_key_dict = UserAPIKeyAuth()
+    mock_cache = MagicMock(spec=DualCache)
+
+    #1: Blocked content should raise exception and show guardrail status: guardrail_intervened"
+    guardrail = ModelArmorGuardrail(
+        template_id="test-template",
+        project_id="test-project",
+        location="us-central1",
+        guardrail_name="model-armor-test",
+    )
+
+    mock_response = AsyncMock()
+    mock_response.status_code = 200
+    mock_response.json = AsyncMock(return_value={
+        "sanitizationResult": {
+            "filterMatchState": "MATCH_FOUND",
+            "filterResults": {
+                "rai": {
+                    "raiFilterResult": {
+                        "matchState": "MATCH_FOUND",
+                    }
+                }
+            }
+        }
+    })
+
+    guardrail._ensure_access_token_async = AsyncMock(return_value=("token", "test-project"))
+    with patch.object(guardrail.async_handler, "post", AsyncMock(return_value=mock_response)):
+        request_data = {
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": "bad content"}],
+            "metadata": {"guardrails": ["model-armor-test"]},
+        }
+        with pytest.raises(HTTPException):
+            await guardrail.async_pre_call_hook(
+                user_api_key_dict=mock_user_api_key_dict,
+                cache=mock_cache,
+                data=request_data,
+                call_type="completion",
+            )
+
+        info = request_data["metadata"]["standard_logging_guardrail_information"]
+        assert info[0]["guardrail_status"] == "guardrail_intervened"
+
+    #2: if an API error - guardrail status should be guardrail_failed_to_respond"
+    guardrail2 = ModelArmorGuardrail(
+        template_id="test-template",
+        project_id="test-project",
+        location="us-central1",
+        guardrail_name="model-armor-test2",
+        fail_on_error=True,
+    )
+
+    guardrail2._ensure_access_token_async = AsyncMock(side_effect=ConnectionError("timeout"))
+    request_data2 = {
+        "model": "gpt-4",
+        "messages": [{"role": "user", "content": "hello"}],
+        "metadata": {"guardrails": ["model-armor-test2"]},
+    }
+    with pytest.raises(ConnectionError):
+        await guardrail2.async_pre_call_hook(
+            user_api_key_dict=mock_user_api_key_dict,
+            cache=mock_cache,
+            data=request_data2,
+            call_type="completion",
+        )
+
+    info2 = request_data2["metadata"]["standard_logging_guardrail_information"]
+    assert info2[0]["guardrail_status"] == "guardrail_failed_to_respond"
 
 
 def mock_open(read_data=''):

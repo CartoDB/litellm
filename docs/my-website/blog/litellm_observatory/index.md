@@ -1,20 +1,11 @@
 ---
 slug: litellm-observatory
-title: "LiteLLM Observatory: Raising the Bar for Release Reliability"
+title: "Improve release stability with 24 hour load tests"
 date: 2026-02-06T10:00:00
 authors:
-  - name: Alexsander Hamir
-    title: "Performance Engineer, LiteLLM"
-    url: https://www.linkedin.com/in/alexsander-baptista/
-    image_url: https://github.com/AlexsanderHamir.png
-  - name: Krrish Dholakia
-    title: "CEO, LiteLLM"
-    url: https://www.linkedin.com/in/krish-d/
-    image_url: https://pbs.twimg.com/profile_images/1298587542745358340/DZv3Oj-h_400x400.jpg
-  - name: Ishaan Jaff
-    title: "CTO, LiteLLM"
-    url: https://www.linkedin.com/in/reffajnaahsi/
-    image_url: https://pbs.twimg.com/profile_images/1613813310264340481/lz54oEiB_400x400.jpg
+  - alexsander
+  - krrish
+  - ishaan-alt
 description: "How we built a long-running, release-validation system to catch regressions before they reach users."
 tags: [testing, observability, reliability, releases]
 hide_table_of_contents: false
@@ -22,11 +13,13 @@ hide_table_of_contents: false
 
 ![LiteLLM Observatory](https://raw.githubusercontent.com/AlexsanderHamir/assets/main/Screenshot%202026-01-31%20175355.png)
 
-# LiteLLM Observatory: Raising the Bar for Release Reliability
+# Improve release stability with 24 hour load tests
 
 As LiteLLM adoption has grown, so have expectations around reliability, performance, and operational safety. Meeting those expectations requires more than correctness-focused tests, it requires validating how the system behaves over time, under real-world conditions.
 
 This post introduces **LiteLLM Observatory**, a long-running release-validation system we built to catch regressions before they reach users.
+
+{/* truncate */}
 
 ---
 
@@ -53,21 +46,22 @@ The issue that surfaced was not caused by a single incorrect line of logic, but 
 Cannot send a request, as the client has been closed
 ```
 
+**Before (with bug):**
+
+| Provider | Requests | Success | Failures | Fail % |
+|----------|----------|---------|----------|--------|
+| OpenAI   | 720,000  | 432,000 | 288,000  | 40%    |
+| Azure    | 692,000  | 415,200 | 276,800  | 40%    |
+
+**After (fixed):**
+
+| Provider | Requests   | Success   | Failures | Fail %  |
+|----------|------------|-----------|----------|---------|
+| OpenAI   | 1,200,000  | 1,199,988 | 12       | 0.001%  |
+| Azure    | 1,150,000  | 1,149,982 | 18       | 0.002%  |
+
 Our focus moving forward is on being the first to detect issues, even when they aren’t covered by unit tests. LiteLLM Observatory is designed to surface latency regressions, OOMs, and failure modes that only appear under real traffic patterns in **our own production deployments** during release validation.
 
-
----
-
-## Introducing LiteLLM Observatory
-
-To systematically address this class of issues, we built **LiteLLM Observatory**.
-
-The Observatory is a long-running testing orchestrator used during release validation to exercise LiteLLM under production-like conditions for extended periods of time.
-
-Its core goals are:
-
-- Validate behavior over hours, not minutes
-- Turn production learnings into permanent release safeguards
 
 ---
 
@@ -132,5 +126,3 @@ Reliability is an ongoing investment.
 LiteLLM Observatory is one of several systems we’re building to continuously raise the bar on release quality and operational safety. As LiteLLM evolves, so will our validation tooling, informed by real-world usage and lessons learned.
 
 We’ll continue to share those improvements openly as we go.
-```
-
