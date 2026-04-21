@@ -27,6 +27,19 @@ RUN sed -i 's/\r$//' docker/build_admin_ui.sh && chmod +x docker/build_admin_ui.
 # Build the package
 RUN rm -rf dist/* && python -m build
 
+# Supply chain security: audit wheel contents (responds to litellm v1.82.8 compromise)
+# Only litellm/ and dist-info/ files should exist. Anything else (e.g., .pth files) fails the build.
+RUN python -c "\
+import zipfile, sys, glob; \
+whl = glob.glob('dist/*.whl')[0]; \
+z = zipfile.ZipFile(whl); \
+files = z.namelist(); \
+bad = [f for f in files if not f.startswith(('litellm/', 'litellm-', 'litellm_'))]; \
+pth = [f for f in files if f.endswith('.pth')]; \
+[(print(f'CRITICAL: .pth file: {f}')) for f in pth]; \
+[(print(f'UNEXPECTED: {f}')) for f in bad]; \
+sys.exit(1) if (bad or pth) else print(f'Wheel audit OK: {len(files)} files verified')"
+
 # There should be only one wheel file now, assume the build only creates one
 RUN ls -1 dist/*.whl | head -1
 

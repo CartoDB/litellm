@@ -239,21 +239,95 @@ run_grype_scans() {
     echo "Grype scans completed successfully"
 }
 
+# Function to install GuardDog
+install_guarddog() {
+    echo "Installing GuardDog..."
+    pip3 install "guarddog==2.9.0"
+    echo "GuardDog installed successfully"
+}
+
+# Function to run supply chain security scans
+# Responds to litellm v1.82.8 PyPI compromise (BerriAI/litellm#24512)
+run_supply_chain_scans() {
+    echo "Running supply chain security scans..."
+
+    if ! command -v guarddog &> /dev/null; then
+        install_guarddog
+    fi
+
+    # Scan 1: GuardDog source scan for malicious patterns
+    echo "Scanning source code for malicious patterns (GuardDog)..."
+    guarddog pypi scan . --output-format text || {
+        echo ""
+        echo "=========================================="
+        echo "ERROR: Supply Chain Security Scan Failed"
+        echo "=========================================="
+        echo "GuardDog detected suspicious patterns in the source code."
+        echo "Review the findings above before proceeding."
+        echo "=========================================="
+        echo ""
+        exit 1
+    }
+
+    # Scan 2: Wheel allowlist audit
+    echo "Auditing wheel contents..."
+    if ls dist/*.whl 1>/dev/null 2>&1; then
+        python3 -c "
+import zipfile, sys, glob
+whl = glob.glob('dist/*.whl')[0]
+with zipfile.ZipFile(whl) as z:
+    files = z.namelist()
+    bad = [f for f in files if not f.startswith(('litellm/', 'litellm-', 'litellm_'))]
+    pth = [f for f in files if f.endswith('.pth')]
+    if pth:
+        print('CRITICAL: .pth files detected:', pth)
+        sys.exit(1)
+    if bad:
+        print('UNEXPECTED files in wheel:', bad)
+        sys.exit(1)
+    print(f'Wheel audit OK: {len(files)} files verified')
+" || {
+            echo "ERROR: Wheel audit failed — unexpected files detected"
+            exit 1
+        }
+    else
+        echo "No wheel found in dist/ — skipping wheel audit"
+    fi
+
+    # Scan 3: Structural integrity
+    echo "Checking structural integrity..."
+    if [ -f setup.py ]; then
+        echo "ERROR: setup.py detected — this repo uses Poetry exclusively"
+        exit 1
+    fi
+
+    if grep -qE '(git\+|https?://|file://)' requirements.txt 2>/dev/null; then
+        echo "ERROR: Non-PyPI dependency sources detected in requirements.txt"
+        grep -nE '(git\+|https?://|file://)' requirements.txt
+        exit 1
+    fi
+
+    echo "Supply chain security scans completed successfully"
+}
+
 # Main execution
 main() {
     echo "Installing security scanning tools..."
     install_trivy
     install_grype
-    
+
     # echo "Running secret detection scans..."
     # run_secret_detection
-    
+
     echo "Running filesystem vulnerability scans..."
     run_trivy_scans
-    
+
     echo "Running Docker image vulnerability scans..."
     run_grype_scans
-    
+
+    echo "Running supply chain security scans..."
+    run_supply_chain_scans
+
     echo "All security scans completed successfully!"
 }
 
