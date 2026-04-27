@@ -1,0 +1,203 @@
+name: CARTO Schema Sync Validator
+
+# This workflow validates that schema.prisma is properly synced with upstream
+# during upstream-sync PRs. It prevents runtime errors caused by missing Prisma tables.
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches:
+      - carto/main
+    paths:
+      - 'schema.prisma'
+      - 'litellm/proxy/schema.prisma'
+      - 'litellm-proxy-extras/**/schema.prisma'
+
+  workflow_dispatch:
+    inputs:
+      pr-number:
+        description: "PR number to validate"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  validate-schema-sync:
+    name: Validate Schema Sync
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch upstream tags
+        run: |
+          echo "::group::Fetching upstream tags"
+          git remote add upstream https://github.com/BerriAI/litellm.git || true
+          git fetch upstream --tags
+          echo "::endgroup::"
+
+      - name: Detect target upstream version
+        id: version
+        run: |
+          echo "::group::Detecting target upstream version"
+
+          # Extract version from branch name (upstream-sync/v1.81.0-stable)
+          BRANCH="${{ github.head_ref }}"
+          VERSION=$(echo "$BRANCH" | sed -n 's/upstream-sync\/v\([0-9.]*\)-stable/v\1.0-stable/p')
+
+          if [ -z "$VERSION" ]; then
+            # Try without extra .0
+            VERSION=$(echo "$BRANCH" | sed -n 's/upstream-sync\/\(v[0-9.]*-stable\)/\1/p')
+          fi
+
+          if [ -z "$VERSION" ]; then
+            # Fallback: get latest stable tag
+            VERSION=$(git tag -l "v*-stable" | sort -V | tail -1)
+            echo "Using fallback version: $VERSION"
+          fi
+
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Target upstream version: $VERSION"
+
+          echo "::endgroup::"
+
+      - name: Validate schema.prisma sync
+        id: validate
+        run: |
+          echo "::group::Schema Validation"
+
+          VERSION="${{ steps.version.outputs.version }}"
+          ERRORS=0
+          WARNINGS=""
+
+          # Check if version tag exists
+          if ! git rev-parse "${VERSION}" >/dev/null 2>&1; then
+            echo "::warning::Upstream version tag ${VERSION} not found, skipping validation"
+            echo "validation=skipped" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Check root schema.prisma
+          if [ -f "schema.prisma" ]; then
+            echo "Checking schema.prisma..."
+
+            # Count models in each schema
+            UPSTREAM_TABLES=$(git show ${VERSION}:schema.prisma 2>/dev/null | grep -c "^model " || echo "0")
+            CURRENT_TABLES=$(grep -c "^model " schema.prisma || echo "0")
+
+            echo "  Current: $CURRENT_TABLES models"
+            echo "  Upstream ($VERSION): $UPSTREAM_TABLES models"
+
+            if [ "$CURRENT_TABLES" -lt "$UPSTREAM_TABLES" ]; then
+              echo "::error::schema.prisma is missing models! Current: $CURRENT_TABLES, Upstream: $UPSTREAM_TABLES"
+              ERRORS=$((ERRORS + 1))
+
+              # Show missing tables
+              echo ""
+              echo "Missing tables:"
+              comm -23 \
+                <(git show ${VERSION}:schema.prisma | grep "^model " | awk '{print $2}' | sort) \
+                <(grep "^model " schema.prisma | awk '{print $2}' | sort)
+            elif [ "$CURRENT_TABLES" -gt "$UPSTREAM_TABLES" ]; then
+              echo "::notice::schema.prisma has more models than upstream (CARTO additions)"
+            else
+              echo "Model count matches upstream"
+            fi
+          fi
+
+          # Check for specific required tables that caused previous failures
+          REQUIRED_TABLES="LiteLLM_AgentsTable LiteLLM_SSOConfig LiteLLM_CacheConfig LiteLLM_ManagedVectorStoreIndexTable LiteLLM_UISettings LiteLLM_SkillsTable"
+
+          echo ""
+          echo "Checking required tables..."
+          for TABLE in $REQUIRED_TABLES; do
+            if grep -q "^model $TABLE" schema.prisma; then
+              echo "  ✅ $TABLE"
+            else
+              echo "  ❌ $TABLE - MISSING"
+              echo "::error::Missing required table: $TABLE"
+              ERRORS=$((ERRORS + 1))
+            fi
+          done
+
+          echo "::endgroup::"
+
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "validation=failed" >> $GITHUB_OUTPUT
+            echo "errors=$ERRORS" >> $GITHUB_OUTPUT
+            exit 1
+          else
+            echo "validation=passed" >> $GITHUB_OUTPUT
+            echo "All schema validations passed"
+          fi
+
+      - name: Comment on PR if validation fails
+        if: failure() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+
+          gh pr comment ${{ github.event.pull_request.number }} --body "$(cat <<'EOF'
+          ## ❌ Schema Sync Validation Failed
+
+          The `schema.prisma` file is missing tables from upstream. This will cause runtime errors like:
+          ```
+          AttributeError: 'Prisma' object has no attribute 'litellm_agentstable'
+          ```
+
+          ### Required Action
+
+          Sync schema.prisma from upstream:
+          ```bash
+          git show ${{ steps.version.outputs.version }}:schema.prisma > schema.prisma
+          git add schema.prisma
+          git commit -m "fix: sync schema.prisma from upstream"
+          git push
+          ```
+
+          ### Required Tables
+
+          These tables must exist in schema.prisma:
+          - `LiteLLM_AgentsTable`
+          - `LiteLLM_SSOConfig`
+          - `LiteLLM_CacheConfig`
+          - `LiteLLM_ManagedVectorStoreIndexTable`
+          - `LiteLLM_UISettings`
+          - `LiteLLM_SkillsTable`
+
+          ### Why This Happened
+
+          The conflict resolver incorrectly kept CARTO's older schema.prisma instead of syncing from upstream.
+          Schema files must always track upstream to match LiteLLM code expectations.
+
+          [View workflow run →](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          EOF
+          )"
+
+      - name: Summary
+        if: always()
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          ## Schema Sync Validation
+
+          **Target Version:** ${{ steps.version.outputs.version }}
+          **Validation Result:** ${{ steps.validate.outputs.validation || 'unknown' }}
+
+          ### Checked Files
+          - \`schema.prisma\` (root)
+
+          ### Required Tables Verified
+          - LiteLLM_AgentsTable
+          - LiteLLM_SSOConfig
+          - LiteLLM_CacheConfig
+          - LiteLLM_ManagedVectorStoreIndexTable
+          - LiteLLM_UISettings
+          - LiteLLM_SkillsTable
+          EOF
