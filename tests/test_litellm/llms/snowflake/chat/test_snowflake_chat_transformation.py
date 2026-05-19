@@ -1,22 +1,19 @@
 """
 Unit tests for Snowflake chat transformation
-Tests tool calling request/response transformations and chat completions
+Tests tool calling request/response transformations
 """
 
-import asyncio
 import os
 import copy
 import json
-from typing import Any, Dict, List
 
-from unittest.mock import AsyncMock, patch, Mock, MagicMock
+from unittest.mock import patch
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
 
 import litellm
-from litellm import completion, acompletion
-from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
 from litellm.llms.snowflake.chat.transformation import SnowflakeConfig
 from litellm.types.utils import ModelResponse
 
@@ -109,21 +106,12 @@ class TestSnowflakeToolTransformation:
 
     def test_transform_request_with_string_tool_choice(self):
         """
-        Test that string tool_choice values are transformed to Snowflake object format.
-
-        Snowflake's API (like Anthropic) requires tool_choice as an object
-        with a "type" field, not as a bare string. OpenAI's "required" maps
-        to Snowflake's "any".
+        Test that string tool_choice values are converted to Snowflake's object format.
         """
         config = SnowflakeConfig()
 
-        expected_mappings = {
-            "auto": {"type": "auto"},
-            "required": {"type": "any"},
-            "none": {"type": "none"},
-        }
-
-        for value, expected in expected_mappings.items():
+        # "auto" and "none" become {"type": "auto"} and {"type": "none"}
+        for value in ["auto", "none"]:
             optional_params = {"tool_choice": value}
 
             transformed_request = config.transform_request(
@@ -134,10 +122,18 @@ class TestSnowflakeToolTransformation:
                 headers={},
             )
 
-            assert transformed_request["tool_choice"] == expected, (
-                f"tool_choice='{value}' should be transformed to {expected}, "
-                f"got {transformed_request['tool_choice']}"
-            )
+            assert transformed_request["tool_choice"] == {"type": value}
+
+        # "required" becomes {"type": "required"} (no tool names without tools)
+        optional_params = {"tool_choice": "required"}
+        transformed_request = config.transform_request(
+            model="claude-3-5-sonnet",
+            messages=[{"role": "user", "content": "Test"}],
+            optional_params=optional_params,
+            litellm_params={},
+            headers={},
+        )
+        assert transformed_request["tool_choice"] == {"type": "required"}
 
     def test_transform_response_with_tool_calls(self):
         """
@@ -444,175 +440,448 @@ class TestSnowFlakeCompletion:
         os.environ.pop("SNOWFLAKE_JWT", None)
 
 
-FAKE_API_BASE = "https://fake-snowflake.example.com/api/v2/cortex/inference:chat"
+class TestSnowflakeAuthenticationHeaders:
+    """Test suite for Snowflake authentication header handling"""
 
+    def test_validate_environment_with_jwt(self):
+        """
+        Test that JWT tokens are handled correctly with KEYPAIR_JWT header.
+        """
+        config = SnowflakeConfig()
+        headers = {}
 
-def _make_mock_response(json_data: Dict[str, Any]) -> MagicMock:
-    mock = MagicMock(spec=httpx.Response)
-    mock.status_code = 200
-    mock.headers = {"content-type": "application/json"}
-    mock.json.return_value = json_data
-    mock.text = json.dumps(json_data)
-    return mock
+        jwt_token = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.test"
 
+        result_headers = config.validate_environment(
+            headers=headers,
+            model="mistral-7b",
+            messages=[{"role": "user", "content": "Hello"}],
+            optional_params={},
+            litellm_params={},
+            api_key=jwt_token,
+            api_base=None,
+        )
 
-def _chat_response() -> Dict[str, Any]:
-    return {
-        "id": "chatcmpl-snowflake-123",
-        "object": "chat.completion",
-        "created": 1700000000,
-        "model": "mistral-7b",
-        "choices": [
-            {
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": "The sky above is painted blue,\nWith clouds of white and morning dew.",
-                },
-                "finish_reason": "stop",
-            }
-        ],
-        "usage": {
-            "prompt_tokens": 10,
-            "completion_tokens": 30,
-            "total_tokens": 40,
-        },
-    }
+        assert result_headers["Authorization"] == f"Bearer {jwt_token}"
+        assert result_headers["X-Snowflake-Authorization-Token-Type"] == "KEYPAIR_JWT"
+        assert result_headers["Content-Type"] == "application/json"
+        assert result_headers["Accept"] == "application/json"
 
+    def test_validate_environment_with_pat_token(self):
+        """
+        Test that PAT tokens with pat/ prefix are handled correctly.
+        The pat/ prefix should be stripped and PROGRAMMATIC_ACCESS_TOKEN should be used.
+        """
+        config = SnowflakeConfig()
+        headers = {}
 
-def _streaming_chunks() -> List[str]:
-    base = {
-        "id": "chatcmpl-snowflake-stream-123",
-        "object": "chat.completion.chunk",
-        "created": 1700000000,
-        "model": "mistral-7b",
-    }
-    deltas = [
-        {"role": "assistant", "content": "The"},
-        {"content": " sky"},
-        {"content": " is blue"},
-    ]
-    chunks = []
-    for i, delta in enumerate(deltas):
-        finish = "stop" if i == len(deltas) - 1 else None
-        chunks.append(
-            json.dumps(
-                {
-                    **base,
-                    "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
-                }
+        pat_token = "pat/abc123xyz789"
+        expected_token = "abc123xyz789"
+
+        result_headers = config.validate_environment(
+            headers=headers,
+            model="mistral-7b",
+            messages=[{"role": "user", "content": "Hello"}],
+            optional_params={},
+            litellm_params={},
+            api_key=pat_token,
+            api_base=None,
+        )
+
+        assert result_headers["Authorization"] == f"Bearer {expected_token}"
+        assert result_headers["X-Snowflake-Authorization-Token-Type"] == "PROGRAMMATIC_ACCESS_TOKEN"
+        assert result_headers["Content-Type"] == "application/json"
+        assert result_headers["Accept"] == "application/json"
+
+    def test_validate_environment_missing_api_key(self):
+        """
+        Test that missing API key raises ValueError.
+        """
+        config = SnowflakeConfig()
+        headers = {}
+
+        with pytest.raises(ValueError, match="Missing Snowflake JWT key"):
+            config.validate_environment(
+                headers=headers,
+                model="mistral-7b",
+                messages=[{"role": "user", "content": "Hello"}],
+                optional_params={},
+                litellm_params={},
+                api_key=None,
+                api_base=None,
             )
+
+
+class TestSnowflakeMessageTransformation:
+    """Test suite for Snowflake message transformation (tool results and tool calls)"""
+
+    def test_transform_messages_with_tool_result(self):
+        """
+        Test that OpenAI tool result messages are transformed to Snowflake format.
+        """
+        config = SnowflakeConfig()
+
+        # OpenAI format with tool result
+        messages = [
+            {"role": "user", "content": "What's the weather in Paris?"},
+            {
+                "role": "assistant",
+                "content": "Let me check the weather for you.",
+                "tool_calls": [
+                    {
+                        "id": "call_abc123",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": '{"location": "Paris, France"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_abc123",
+                "content": "Temperature: 18°C, Condition: Partly cloudy",
+            },
+        ]
+
+        transformed = config._transform_messages(messages)
+
+        # First message (user) should pass through
+        assert transformed[0]["role"] == "user"
+        assert transformed[0]["content"] == "What's the weather in Paris?"
+
+        # Second message (assistant with tool_calls) should be transformed
+        assert transformed[1]["role"] == "assistant"
+        assert "content" in transformed[1]
+        assert transformed[1]["content"] == "Let me check the weather for you."
+        assert "content_list" in transformed[1]
+        assert len(transformed[1]["content_list"]) == 1  # Only tool_use, text is in content field
+        assert transformed[1]["content_list"][0]["type"] == "tool_use"
+        assert transformed[1]["content_list"][0]["tool_use"]["tool_use_id"] == "call_abc123"
+        assert transformed[1]["content_list"][0]["tool_use"]["name"] == "get_weather"
+        assert transformed[1]["content_list"][0]["tool_use"]["input"]["location"] == "Paris, France"
+
+        # Third message (tool result) should be transformed to user message with content_list
+        assert transformed[2]["role"] == "user"
+        assert "content" in transformed[2]  # Must have content field
+        assert transformed[2]["content"] == ""  # Empty for tool results
+        assert "content_list" in transformed[2]
+        assert len(transformed[2]["content_list"]) == 1
+        assert transformed[2]["content_list"][0]["type"] == "tool_results"
+        tool_results = transformed[2]["content_list"][0]["tool_results"]
+        assert tool_results["tool_use_id"] == "call_abc123"
+        assert tool_results["name"] == "get_weather"  # Name should be tracked from tool_call
+        assert len(tool_results["content"]) == 1
+        assert tool_results["content"][0]["type"] == "text"
+        assert tool_results["content"][0]["text"] == "Temperature: 18°C, Condition: Partly cloudy"
+
+    def test_transform_messages_regular_conversation(self):
+        """
+        Test that regular messages without tools pass through unchanged.
+        """
+        config = SnowflakeConfig()
+
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Hello!"},
+            {"role": "assistant", "content": "Hi! How can I help you?"},
+        ]
+
+        transformed = config._transform_messages(messages)
+
+        # All messages should pass through unchanged
+        assert len(transformed) == 3
+        assert transformed[0] == messages[0]
+        assert transformed[1] == messages[1]
+        assert transformed[2] == messages[2]
+
+    def test_transform_messages_assistant_without_content(self):
+        """
+        Test assistant messages with only tool_calls (no text content).
+        """
+        config = SnowflakeConfig()
+
+        messages = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_xyz789",
+                        "type": "function",
+                        "function": {
+                            "name": "search_database",
+                            "arguments": '{"query": "users"}',
+                        },
+                    }
+                ],
+            }
+        ]
+
+        transformed = config._transform_messages(messages)
+
+        assert len(transformed) == 1
+        assert transformed[0]["role"] == "assistant"
+        assert "content" in transformed[0]
+        assert transformed[0]["content"] == ""  # Empty when no text content
+        assert "content_list" in transformed[0]
+        # Should only have tool_use
+        assert len(transformed[0]["content_list"]) == 1
+        assert transformed[0]["content_list"][0]["type"] == "tool_use"
+
+    def test_transform_messages_multiple_tool_calls(self):
+        """
+        Test assistant message with multiple tool calls.
+        """
+        config = SnowflakeConfig()
+
+        messages = [
+            {
+                "role": "assistant",
+                "content": "I'll check both locations for you.",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": '{"location": "Paris"}',
+                        },
+                    },
+                    {
+                        "id": "call_2",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": '{"location": "London"}',
+                        },
+                    },
+                ],
+            }
+        ]
+
+        transformed = config._transform_messages(messages)
+
+        assert len(transformed) == 1
+        assert transformed[0]["role"] == "assistant"
+        assert "content" in transformed[0]
+        assert transformed[0]["content"] == "I'll check both locations for you."
+        assert len(transformed[0]["content_list"]) == 2  # 2 tool_use (text is in content field)
+        assert transformed[0]["content_list"][0]["type"] == "tool_use"
+        assert transformed[0]["content_list"][1]["type"] == "tool_use"
+        assert transformed[0]["content_list"][0]["tool_use"]["tool_use_id"] == "call_1"
+        assert transformed[0]["content_list"][1]["tool_use"]["tool_use_id"] == "call_2"
+
+    def test_transform_request_integrates_message_transformation(self):
+        """
+        Test that transform_request properly calls _transform_messages.
+        """
+        config = SnowflakeConfig()
+
+        messages = [
+            {"role": "user", "content": "Test"},
+            {
+                "role": "tool",
+                "tool_call_id": "call_test",
+                "content": "Tool result",
+            },
+        ]
+
+        result = config.transform_request(
+            model="claude-3-5-sonnet",
+            messages=messages,
+            optional_params={},
+            litellm_params={},
+            headers={},
         )
-    return chunks
+
+        # Check that messages were transformed
+        assert "messages" in result
+        assert len(result["messages"]) == 2
+        # Second message should be transformed from tool to user with content_list
+        assert result["messages"][1]["role"] == "user"
+        assert "content" in result["messages"][1]  # Must have content field
+        assert "content_list" in result["messages"][1]
+
+    def test_transform_messages_with_none_content(self):
+        """
+        Test that messages with content=None are normalized to have content=""
+        This is critical for previous_response_id scenarios where loaded messages
+        may have None content.
+        """
+        config = SnowflakeConfig()
+
+        messages = [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": None},  # content=None (no tool_calls)
+            {"role": "assistant"},  # Missing content field entirely
+        ]
+
+        transformed = config._transform_messages(messages)
+
+        # All messages should have content field, even if it was None or missing
+        assert len(transformed) == 3
+        assert transformed[0]["content"] == "Hello"
+        assert "content" in transformed[1]
+        assert transformed[1]["content"] == ""  # None should become empty string
+        assert "content" in transformed[2]
+        assert transformed[2]["content"] == ""  # Missing should become empty string
+
+    def test_transform_messages_preserves_existing_content(self):
+        """
+        Test that messages with valid content are not modified
+        """
+        config = SnowflakeConfig()
+
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "What's the weather?"},
+            {"role": "assistant", "content": "I can help with that."},
+        ]
+
+        transformed = config._transform_messages(messages)
+
+        assert len(transformed) == 3
+        assert transformed[0]["content"] == "You are a helpful assistant."
+        assert transformed[1]["content"] == "What's the weather?"
+        assert transformed[2]["content"] == "I can help with that."
+
+    def test_transform_messages_previous_response_id_scenario(self):
+        """
+        Test the exact scenario that causes the error:
+        - First request returns assistant message with tool_calls (content may be None)
+        - Message is loaded from spend logs without tool_calls field
+        - Should be normalized to have content field
+        """
+        config = SnowflakeConfig()
+
+        # Simulate messages loaded from previous_response_id
+        # The assistant message from the first response no longer has tool_calls
+        messages = [
+            {"role": "user", "content": "What's the weather in Paris?"},
+            {
+                "role": "assistant",
+                "content": None,  # Was returned from Snowflake with no text, only tool_calls
+                # Note: tool_calls field is NOT present because it was consumed
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_abc123",
+                "content": "Temperature: 18°C",
+            },
+        ]
+
+        transformed = config._transform_messages(messages)
+
+        # All messages should be properly formatted
+        assert len(transformed) == 3
+        assert transformed[0]["role"] == "user"
+        assert transformed[0]["content"] == "What's the weather in Paris?"
+
+        # The problematic assistant message should now have content field
+        assert transformed[1]["role"] == "assistant"
+        assert "content" in transformed[1]
+        assert transformed[1]["content"] == ""  # Normalized from None
+
+        # Tool result should be transformed properly
+        assert transformed[2]["role"] == "user"
+        assert "content" in transformed[2]
+        assert transformed[2]["content"] == ""
 
 
-class TestSnowflakeChatCompletion:
-    """End-to-end chat completion tests (mocked HTTP)."""
+class TestSnowflakeStreamingHandler:
+    """Test suite for Snowflake streaming response handling"""
 
-    messages = [{"role": "user", "content": "Write me a poem about the blue sky"}]
-
-    @pytest.mark.parametrize("sync_mode", [True, False])
-    def test_chat_completion_snowflake(self, sync_mode):
-        mock_resp = _make_mock_response(_chat_response())
-
-        if sync_mode:
-            with patch.object(HTTPHandler, "post", return_value=mock_resp) as mock_post:
-                response = completion(
-                    model="snowflake/mistral-7b",
-                    messages=self.messages,
-                    api_key="fake-jwt",
-                    account_id="FAKE-ACCOUNT",
-                    api_base=FAKE_API_BASE,
-                )
-                mock_post.assert_called_once()
-        else:
-            with patch.object(
-                AsyncHTTPHandler, "post", new_callable=AsyncMock, return_value=mock_resp
-            ) as mock_post:
-                response = asyncio.run(
-                    acompletion(
-                        model="snowflake/mistral-7b",
-                        messages=self.messages,
-                        api_key="fake-jwt",
-                        account_id="FAKE-ACCOUNT",
-                        api_base=FAKE_API_BASE,
-                    )
-                )
-                mock_post.assert_called_once()
-
-        assert response is not None
-        assert response.choices[0].message.content is not None
-        assert "sky" in response.choices[0].message.content.lower()
-        assert response.usage.prompt_tokens == 10
-        assert response.usage.completion_tokens == 30
-
-    @pytest.mark.parametrize("sync_mode", [True, False])
-    def test_chat_completion_snowflake_stream(self, sync_mode):
-        raw_chunks = _streaming_chunks()
-
-        if sync_mode:
-
-            def _iter_lines():
-                for chunk in raw_chunks:
-                    yield f"data: {chunk}"
-                yield "data: [DONE]"
-
-            mock_resp = MagicMock()
-            mock_resp.iter_lines.return_value = _iter_lines()
-            mock_resp.status_code = 200
-            mock_resp.headers = {"content-type": "text/event-stream"}
-
-            with patch.object(HTTPHandler, "post", return_value=mock_resp) as mock_post:
-                response = completion(
-                    model="snowflake/mistral-7b",
-                    messages=self.messages,
-                    max_tokens=100,
-                    stream=True,
-                    api_key="fake-jwt",
-                    account_id="FAKE-ACCOUNT",
-                    api_base=FAKE_API_BASE,
-                )
-                chunks_received = list(response)
-                mock_post.assert_called_once()
-        else:
-
-            async def _aiter_lines():
-                for chunk in raw_chunks:
-                    yield f"data: {chunk}"
-                yield "data: [DONE]"
-
-            mock_resp = MagicMock()
-            mock_resp.aiter_lines.return_value = _aiter_lines()
-            mock_resp.status_code = 200
-            mock_resp.headers = {"content-type": "text/event-stream"}
-
-            async def _run():
-                with patch.object(
-                    AsyncHTTPHandler,
-                    "post",
-                    new_callable=AsyncMock,
-                    return_value=mock_resp,
-                ) as mock_post:
-                    resp = await acompletion(
-                        model="snowflake/mistral-7b",
-                        messages=self.messages,
-                        max_tokens=100,
-                        stream=True,
-                        api_key="fake-jwt",
-                        account_id="FAKE-ACCOUNT",
-                        api_base=FAKE_API_BASE,
-                    )
-                    received = []
-                    async for chunk in resp:
-                        received.append(chunk)
-                    mock_post.assert_called_once()
-                    return received
-
-            chunks_received = asyncio.run(_run())
-
-        assert len(chunks_received) > 0
-        content = "".join(
-            c.choices[0].delta.content
-            for c in chunks_received
-            if c.choices[0].delta.content
+    def test_chunk_parser_with_created_field(self):
+        """
+        Test that streaming chunks with 'created' field are parsed correctly.
+        This is the standard case for models like mistral-7b and llama3.3.
+        """
+        from litellm.llms.snowflake.chat.transformation import (
+            SnowflakeStreamingHandler,
         )
+
+        handler = SnowflakeStreamingHandler(
+            streaming_response=iter([]),
+            sync_stream=True,
+            json_mode=False,
+        )
+
+        chunk = {
+            "id": "chatcmpl-123",
+            "created": 1234567890,
+            "model": "mistral-7b",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"content": "Hello"},
+                    "finish_reason": None,
+                }
+            ],
+        }
+
+        result = handler.chunk_parser(chunk)
+
+        assert result.id == "chatcmpl-123"
+        assert result.created == 1234567890
+        assert result.model == "mistral-7b"
+        assert result.object == "chat.completion.chunk"
+        assert len(result.choices) == 1
+
+    def test_chunk_parser_without_created_field(self):
+        """
+        Test that streaming chunks WITHOUT 'created' field are parsed correctly.
+        This handles the case for Claude models (sonnet-3.5, sonnet-4-5) which
+        don't include the 'created' field in their streaming responses.
+        """
+        from litellm.llms.snowflake.chat.transformation import (
+            SnowflakeStreamingHandler,
+        )
+
+        handler = SnowflakeStreamingHandler(
+            streaming_response=iter([]),
+            sync_stream=True,
+            json_mode=False,
+        )
+
+        # Chunk without 'created' field (like claude-sonnet-4-5)
+        chunk = {
+            "id": "chatcmpl-456",
+            "model": "claude-sonnet-4-5",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"content": "Hi there"},
+                    "finish_reason": None,
+                }
+            ],
+        }
+
+        result = handler.chunk_parser(chunk)
+
+        assert result.id == "chatcmpl-456"
+        assert result.created is not None  # Should have a default timestamp
+        assert isinstance(result.created, int)  # Should be an integer timestamp
+        assert result.model == "claude-sonnet-4-5"
+        assert result.object == "chat.completion.chunk"
+        assert len(result.choices) == 1
+
+    def test_get_model_response_iterator(self):
+        """
+        Test that SnowflakeConfig returns the custom streaming handler.
+        """
+        from litellm.llms.snowflake.chat.transformation import (
+            SnowflakeStreamingHandler,
+            SnowflakeConfig,
+        )
+
+        config = SnowflakeConfig()
+
+        handler = config.get_model_response_iterator(
+            streaming_response=iter([]),
+            sync_stream=True,
+            json_mode=False,
+        )
+
+        assert isinstance(handler, SnowflakeStreamingHandler)

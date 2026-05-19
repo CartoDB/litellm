@@ -19,6 +19,7 @@ from urllib.parse import urlparse
 import httpx
 
 import litellm
+from litellm._logging import verbose_logger
 from litellm.litellm_core_utils.logging_utils import track_llm_api_timing
 from litellm.llms.base_llm.chat.transformation import BaseConfig, BaseLLMException
 from litellm.llms.custom_httpx.http_handler import (
@@ -295,6 +296,40 @@ class OCIChatConfig(BaseConfig):
 
         return adapted_params
 
+    def sign_request(
+        self,
+        headers: dict,
+        optional_params: dict,
+        request_data: dict,
+        api_base: str,
+        api_key: Optional[str] = None,
+        model: Optional[str] = None,
+        stream: Optional[bool] = None,
+        fake_stream: Optional[bool] = None,
+    ) -> Tuple[dict, Optional[bytes]]:
+        """
+        Some providers like Bedrock require signing the request. The sign request funtion needs access to `request_data` and `complete_url`
+        Args:
+            headers: dict
+            optional_params: dict
+            request_data: dict - the request body being sent in http request
+            api_base: str - the complete url being sent in http request
+        Returns:
+            dict - the signed headers
+        """
+        oci_signer = optional_params.get("oci_signer")
+
+        # If a signer is provided, use it for request signing
+        if oci_signer is not None:
+            return self._sign_with_oci_signer(
+                headers, optional_params, request_data, api_base
+            )
+
+        # Standard manual credential signing
+        return self._sign_with_manual_credentials(
+            headers, optional_params, request_data, api_base
+        )
+
     def _sign_with_oci_signer(
         self,
         headers: dict,
@@ -318,6 +353,8 @@ class OCIChatConfig(BaseConfig):
             OCIError: If signing fails
             ValueError: If HTTP method is unsupported
         """
+        import json
+
         oci_signer = optional_params.get("oci_signer")
         body = json.dumps(request_data).encode("utf-8")
         method = str(optional_params.get("method", "POST")).upper()
@@ -377,6 +414,8 @@ class OCIChatConfig(BaseConfig):
             Exception: If required credentials are missing
             ImportError: If cryptography package is not installed
         """
+        import json
+
         oci_region = optional_params.get("oci_region", "us-ashburn-1")
         api_base = (
             api_base
@@ -440,24 +479,6 @@ class OCIChatConfig(BaseConfig):
                 "Please install it with: pip install cryptography"
             ) from e
 
-        # Handle oci_key - it should be a string (PEM content)
-        oci_key_content = None
-        if oci_key:
-            if isinstance(oci_key, str):
-                oci_key_content = oci_key
-                # Fix common issues with PEM content
-                # Replace escaped newlines with actual newlines
-                oci_key_content = oci_key_content.replace("\\n", "\n")
-                # Ensure proper line endings
-                if "\r\n" in oci_key_content:
-                    oci_key_content = oci_key_content.replace("\r\n", "\n")
-            else:
-                raise OCIError(
-                    status_code=400,
-                    message=f"oci_key must be a string containing the PEM private key content. "
-                    f"Got type: {type(oci_key).__name__}",
-                )
-
         private_key = (
             load_private_key_from_str(oci_key_content)
             if oci_key_content
@@ -465,9 +486,8 @@ class OCIChatConfig(BaseConfig):
         )
 
         if private_key is None:
-            raise OCIError(
-                status_code=400,
-                message="Private key is required for OCI authentication. Please provide either oci_key or oci_key_file.",
+            raise Exception(
+                "Private key is required for OCI authentication. Please provide either oci_key or oci_key_file."
             )
 
         signature = private_key.sign(
@@ -500,73 +520,6 @@ class OCIChatConfig(BaseConfig):
 
         return headers, None
 
-    def sign_request(
-        self,
-        headers: dict,
-        optional_params: dict,
-        request_data: dict,
-        api_base: str,
-        api_key: Optional[str] = None,
-        model: Optional[str] = None,
-        stream: Optional[bool] = None,
-        fake_stream: Optional[bool] = None,
-    ) -> Tuple[dict, Optional[bytes]]:
-        """
-        Sign the OCI request by adding authentication headers.
-
-        Supports two signing modes:
-        1. OCI SDK Signer: Use an oci_signer object to sign the request
-        2. Manual Signing: Use OCI credentials to manually sign the request
-
-        Args:
-            headers: Request headers to be signed
-            optional_params: Optional parameters including auth credentials or oci_signer
-            request_data: The request body dict to be sent in HTTP request
-            api_base: The complete URL for the HTTP request
-            api_key: Optional API key (not used for OCI)
-            model: Optional model name
-            stream: Optional streaming flag
-            fake_stream: Optional fake streaming flag
-
-        Returns:
-            Tuple of (signed_headers, encoded_body):
-            - If oci_signer is provided: Returns (headers, body) where body is the encoded JSON
-            - If manual credentials are provided: Returns (headers, None) as body is not returned
-              for the manual signing path
-
-        Raises:
-            OCIError: If signing fails with oci_signer
-            Exception: If required credentials are missing
-            ImportError: If cryptography package is not installed (manual signing only)
-
-        Example:
-            >>> from oci.signer import Signer
-            >>> signer = Signer(
-            ...     tenancy="ocid1.tenancy.oc1..",
-            ...     user="ocid1.user.oc1..",
-            ...     fingerprint="xx:xx:xx",
-            ...     private_key_file_location="~/.oci/key.pem"
-            ... )
-            >>> headers, body = config.sign_request(
-            ...     headers={},
-            ...     optional_params={"oci_signer": signer},
-            ...     request_data={"message": "Hello"},
-            ...     api_base="https://inference.generativeai.us-ashburn-1.oci.oraclecloud.com/..."
-            ... )
-        """
-        oci_signer = optional_params.get("oci_signer")
-
-        # If a signer is provided, use it for request signing
-        if oci_signer is not None:
-            return self._sign_with_oci_signer(
-                headers, optional_params, request_data, api_base
-            )
-
-        # Standard manual credential signing
-        return self._sign_with_manual_credentials(
-            headers, optional_params, request_data, api_base
-        )
-
     def validate_environment(
         self,
         headers: dict,
@@ -577,67 +530,36 @@ class OCIChatConfig(BaseConfig):
         api_key: Optional[str] = None,
         api_base: Optional[str] = None,
     ) -> dict:
-        """
-        Validate the OCI environment and credentials.
-
-        Supports two authentication modes:
-        1. OCI SDK Signer: Pass an oci_signer object (e.g., oci.signer.Signer)
-        2. Manual Credentials: Pass oci_user, oci_fingerprint, oci_tenancy, and oci_key/oci_key_file
-
-        Args:
-            headers: Request headers to populate
-            model: Model name
-            messages: List of chat messages
-            optional_params: Optional parameters including authentication credentials
-            litellm_params: LiteLLM parameters
-            api_key: Optional API key (not used for OCI)
-            api_base: Optional API base URL
-
-        Returns:
-            Updated headers dict
-
-        Raises:
-            Exception: If required parameters are missing or invalid
-        """
-        oci_signer = optional_params.get("oci_signer")
         oci_region = optional_params.get("oci_region", "us-ashburn-1")
-
-        # Determine api_base
         api_base = (
             api_base
             or litellm.api_base
             or f"https://inference.generativeai.{oci_region}.oci.oraclecloud.com"
         )
+        oci_user = optional_params.get("oci_user")
+        oci_fingerprint = optional_params.get("oci_fingerprint")
+        oci_tenancy = optional_params.get("oci_tenancy")
+        oci_key = optional_params.get("oci_key")
+        oci_key_file = optional_params.get("oci_key_file")
+        oci_compartment_id = optional_params.get("oci_compartment_id")
+
+        if (
+            not oci_user
+            or not oci_fingerprint
+            or not oci_tenancy
+            or not (oci_key or oci_key_file)
+            or not oci_compartment_id
+        ):
+            raise Exception(
+                "Missing required parameters: oci_user, oci_fingerprint, oci_tenancy, oci_compartment_id "
+                "and at least one of oci_key or oci_key_file."
+            )
 
         if not api_base:
             raise Exception(
-                "Either `api_base` must be provided or `litellm.api_base` must be set. "
-                "Alternatively, you can set the `oci_region` optional parameter to use the default OCI region."
+                "Either `api_base` must be provided or `litellm.api_base` must be set. Alternatively, you can set the `oci_region` optional parameter to use the default OCI region."
             )
 
-        # Validate credentials only if signer is not provided
-        if oci_signer is None:
-            oci_user = optional_params.get("oci_user")
-            oci_fingerprint = optional_params.get("oci_fingerprint")
-            oci_tenancy = optional_params.get("oci_tenancy")
-            oci_key = optional_params.get("oci_key")
-            oci_key_file = optional_params.get("oci_key_file")
-            oci_compartment_id = optional_params.get("oci_compartment_id")
-
-            if (
-                not oci_user
-                or not oci_fingerprint
-                or not oci_tenancy
-                or not (oci_key or oci_key_file)
-                or not oci_compartment_id
-            ):
-                raise Exception(
-                    "Missing required parameters: oci_user, oci_fingerprint, oci_tenancy, oci_compartment_id "
-                    "and at least one of oci_key or oci_key_file. "
-                    "Alternatively, provide an oci_signer object from the OCI SDK."
-                )
-
-        # Common header setup
         headers.update(
             {
                 "content-type": "application/json",
@@ -685,7 +607,7 @@ class OCIChatConfig(BaseConfig):
         for openai_key, oci_key in open_ai_to_oci_param_map.items():
             if oci_key and openai_key in optional_params:
                 selected_params[oci_key] = optional_params[openai_key]  # type: ignore[index]
-
+        
         # Also check for already-mapped OCI params (for backward compatibility)
         for oci_value in open_ai_to_oci_param_map.values():
             if (
@@ -694,7 +616,7 @@ class OCIChatConfig(BaseConfig):
                 and oci_value not in selected_params
             ):
                 selected_params[oci_value] = optional_params[oci_value]  # type: ignore[index]
-
+        
         if "tools" in selected_params:
             if vendor == OCIVendors.COHERE:
                 selected_params["tools"] = self.adapt_tool_definitions_to_cohere_standard(  # type: ignore[assignment]
@@ -744,7 +666,7 @@ class OCIChatConfig(BaseConfig):
         for msg in messages[:-1]:  # All messages except the last one
             role = msg.get("role")
             content = msg.get("content")
-
+            
             if isinstance(content, list):
                 # Extract text from content array
                 text_content = ""
@@ -755,11 +677,11 @@ class OCIChatConfig(BaseConfig):
                     ):
                         text_content += content_item.get("text", "")
                 content = text_content
-
+            
             # Ensure content is a string
             if not isinstance(content, str):
                 content = str(content) if content is not None else ""
-
+            
             # Handle tool calls
             tool_calls: Optional[List[CohereToolCall]] = None
             if role == "assistant" and "tool_calls" in msg and msg.get("tool_calls"):  # type: ignore[union-attr,typeddict-item]
@@ -811,7 +733,7 @@ class OCIChatConfig(BaseConfig):
             function_def = tool.get("function", {})
             parameters = function_def.get("parameters", {}).get("properties", {})
             required = function_def.get("parameters", {}).get("required", [])
-
+            
             parameter_definitions = {}
             for param_name, param_schema in parameters.items():
                 parameter_definitions[param_name] = CohereParameterDefinition(
@@ -866,10 +788,9 @@ class OCIChatConfig(BaseConfig):
             )
 
         if oci_serving_mode == "DEDICATED":
-            oci_endpoint_id = optional_params.get("oci_endpoint_id", model)
             servingMode = OCIServingMode(
                 servingType="DEDICATED",
-                endpointId=oci_endpoint_id,
+                endpointId=model,
             )
         else:
             servingMode = OCIServingMode(
@@ -907,7 +828,7 @@ class OCIChatConfig(BaseConfig):
                 preambleOverride=preamble_override,
                 **optional_cohere_params,
             )
-
+            
             data = OCICompletionPayload(
                 compartmentId=oci_compartment_id,
                 servingMode=servingMode,
@@ -915,17 +836,22 @@ class OCIChatConfig(BaseConfig):
             )
         else:
             # Use generic format for other vendors
+            oci_messages = adapt_messages_to_generic_oci_standard(messages)
+            verbose_logger.debug(f"OCI transform_request - vendor: {vendor}, messages count: {len(messages)}")
+            verbose_logger.debug(f"OCI transform_request - oci_messages: {[m.model_dump() for m in oci_messages]}")
             data = OCICompletionPayload(
                 compartmentId=oci_compartment_id,
                 servingMode=servingMode,
                 chatRequest=OCIChatRequestPayload(
                     apiFormat=vendor.value,
-                    messages=adapt_messages_to_generic_oci_standard(messages),
+                    messages=oci_messages,
                     **self._get_optional_params(vendor, optional_params),
                 ),
             )
 
-        return data.model_dump(exclude_none=True)
+        request_body = data.model_dump(exclude_none=True)
+        verbose_logger.debug(f"OCI transform_request - final request body: {request_body}")
+        return request_body
 
     def _handle_cohere_response(
         self, json_response: dict, model: str, model_response: ModelResponse
@@ -934,15 +860,15 @@ class OCIChatConfig(BaseConfig):
         cohere_response = CohereChatResult(**json_response)
         # Cohere response format (uses camelCase)
         model_id = model
-
+        
         # Set basic response info
         model_response.model = model_id
         model_response.created = int(datetime.datetime.now().timestamp())
-
+        
         # Extract the response text
         response_text = cohere_response.chatResponse.text
         oci_finish_reason = cohere_response.chatResponse.finishReason
-
+        
         # Map finish reason
         if oci_finish_reason == "COMPLETE":
             finish_reason = "stop"
@@ -950,7 +876,7 @@ class OCIChatConfig(BaseConfig):
             finish_reason = "length"
         else:
             finish_reason = "stop"
-
+        
         # Handle tool calls
         tool_calls: Optional[List[Dict[str, Any]]] = None
         if cohere_response.chatResponse.toolCalls:
@@ -980,7 +906,7 @@ class OCIChatConfig(BaseConfig):
             finish_reason=finish_reason,
         )
         model_response.choices = [choice]
-
+        
         # Extract usage info
         usage_info = cohere_response.chatResponse.usage
         from litellm.types.utils import Usage
@@ -990,13 +916,13 @@ class OCIChatConfig(BaseConfig):
             completion_tokens=usage_info.completionTokens,  # type: ignore[union-attr]
             total_tokens=usage_info.totalTokens,  # type: ignore[union-attr]
         )
-
+        
         return model_response
 
     def _handle_generic_response(
-        self,
-        json: dict,
-        model: str,
+        self, 
+        json: dict, 
+        model: str, 
         model_response: ModelResponse,
         raw_response: httpx.Response,
     ) -> ModelResponse:
@@ -1008,7 +934,7 @@ class OCIChatConfig(BaseConfig):
                 message=f"Response cannot be casted to OCICompletionResponse: {str(e)}",
                 status_code=raw_response.status_code,
             )
-
+        
         iso_str = completion_response.chatResponse.timeCreated
         dt = datetime.datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
         model_response.created = int(dt.timestamp())
@@ -1064,7 +990,7 @@ class OCIChatConfig(BaseConfig):
             )
 
         vendor = get_vendor_from_model(model)
-
+        
         # Handle response based on vendor type
         if vendor == OCIVendors.COHERE:
             model_response = self._handle_cohere_response(json, model, model_response)
@@ -1223,9 +1149,6 @@ def adapt_messages_to_generic_oci_standard_content_message(
 
         elif type == "image_url":
             image_url = content_item.get("image_url")
-            # Handle both OpenAI format (object with url) and string format
-            if isinstance(image_url, dict):
-                image_url = image_url.get("url")
             if not isinstance(image_url, str):
                 raise Exception(
                     "Prop `image_url` must be a string or an object with a `url` property"
@@ -1296,6 +1219,8 @@ def adapt_messages_to_generic_oci_standard_tool_call(
 def adapt_messages_to_generic_oci_standard_tool_response(
     role: str, tool_call_id: str, content: str
 ) -> OCIMessage:
+    # OCI Gemini streaming doesn't return tool call IDs, but requires them in responses.
+    # We generate UUIDs when receiving tool calls, and send them back here.
     return OCIMessage(
         role=open_ai_to_generic_oci_role_map[role],
         content=[OCITextContentPart(text=content)],
@@ -1395,11 +1320,13 @@ class OCIStreamWrapper(CustomStreamWrapper):
         super().__init__(**kwargs)
 
     def chunk_creator(self, chunk: Any):
+        verbose_logger.debug(f"OCI chunk_creator received raw chunk: {chunk[:500] if isinstance(chunk, str) else chunk}")
         if not isinstance(chunk, str):
             raise ValueError(f"Chunk is not a string: {chunk}")
         if not chunk.startswith("data:"):
             raise ValueError(f"Chunk does not start with 'data:': {chunk}")
         dict_chunk = json.loads(chunk[5:])  # Remove 'data: ' prefix and parse JSON
+        verbose_logger.debug(f"OCI chunk_creator parsed dict_chunk: {dict_chunk}")
 
         # Check if this is a Cohere stream chunk
         if "apiFormat" in dict_chunk and dict_chunk.get("apiFormat") == "COHERE":
@@ -1452,20 +1379,41 @@ class OCIStreamWrapper(CustomStreamWrapper):
 
     def _handle_generic_stream_chunk(self, dict_chunk: dict):
         """Handle generic OCI streaming chunks."""
+        verbose_logger.debug(f"OCI _handle_generic_stream_chunk input: {dict_chunk}")
+
         # Fix missing required fields in tool calls before Pydantic validation
         # OCI streams tool calls progressively, so early chunks may be missing required fields
         if dict_chunk.get("message") and dict_chunk["message"].get("toolCalls"):
-            for tool_call in dict_chunk["message"]["toolCalls"]:
+            for idx, tool_call in enumerate(dict_chunk["message"]["toolCalls"]):
                 if "arguments" not in tool_call:
                     tool_call["arguments"] = ""
-                if "id" not in tool_call:
-                    tool_call["id"] = ""
+                # Generate a UUID if missing - OCI Gemini streaming doesn't return IDs
+                # but requires them in tool responses. Use UUID format like LangChain does.
+                if not tool_call.get("id"):
+                    import uuid
+                    tool_call["id"] = uuid.uuid4().hex
                 if "name" not in tool_call:
                     tool_call["name"] = ""
+
+        # Fix missing required fields in content items before Pydantic validation
+        # OCI may stream content progressively, especially with tool calls
+        if dict_chunk.get("message") and dict_chunk["message"].get("content"):
+            verbose_logger.debug(f"OCI chunk has message.content: {dict_chunk['message']['content']}")
+            for content_item in dict_chunk["message"]["content"]:
+                if isinstance(content_item, dict):
+                    # If content item has type TEXT but no text field, add empty text
+                    if content_item.get("type") == "TEXT" and "text" not in content_item:
+                        content_item["text"] = ""
+                    # If content item has type IMAGE but missing imageUrl, add empty dict
+                    elif content_item.get("type") == "IMAGE" and "imageUrl" not in content_item:
+                        content_item["imageUrl"] = {"url": ""}
+        else:
+            verbose_logger.debug(f"OCI chunk missing message or message.content. Keys in dict_chunk: {dict_chunk.keys()}, message keys: {dict_chunk.get('message', {}).keys() if dict_chunk.get('message') else 'NO MESSAGE'}")
 
         try:
             typed_chunk = OCIStreamChunk(**dict_chunk)
         except TypeError as e:
+            verbose_logger.error(f"OCI chunk parsing failed: {str(e)}, dict_chunk: {dict_chunk}")
             raise ValueError(f"Chunk cannot be casted to OCIStreamChunk: {str(e)}")
 
         if typed_chunk.index is None:
@@ -1473,9 +1421,12 @@ class OCIStreamWrapper(CustomStreamWrapper):
 
         text = ""
         if typed_chunk.message and typed_chunk.message.content:
+            verbose_logger.debug(f"OCI typed_chunk.message.content: {typed_chunk.message.content}")
             for item in typed_chunk.message.content:
+                verbose_logger.debug(f"OCI content item type: {type(item)}, item: {item}")
                 if isinstance(item, OCITextContentPart):
                     text += item.text
+                    verbose_logger.debug(f"OCI extracted text from OCITextContentPart: '{item.text}'")
                 elif isinstance(item, OCIImageContentPart):
                     raise ValueError(
                         "OCI does not support image content in streaming responses"
@@ -1484,6 +1435,10 @@ class OCIStreamWrapper(CustomStreamWrapper):
                     raise ValueError(
                         f"Unsupported content type in OCI response: {item.type}"
                     )
+        else:
+            verbose_logger.debug(f"OCI typed_chunk has no message.content. message: {typed_chunk.message}")
+
+        verbose_logger.debug(f"OCI _handle_generic_stream_chunk extracted text: '{text}', finishReason: {typed_chunk.finishReason}")
 
         tool_calls = None
         if typed_chunk.message and typed_chunk.message.toolCalls:

@@ -1,0 +1,1496 @@
+name: CARTO Upstream Sync - Customizations Analyzer
+
+# Multi-mode workflow to analyze and optionally fix CARTO feature preservation.
+# Triggered automatically when CI passes on upstream-sync PRs, or manually.
+#
+# Modes:
+#   - analyze: Read-only analysis, reports to PR description
+#   - analyze-and-fix: Analyze + fix INCORRECTLY_DROPPED features
+#   - fix-only: Skip analysis, use previous analysis to fix
+#
+# Usage:
+#   # Analysis only (default)
+#   gh workflow run carto-upstream-sync-customizations-analyzer.yml \
+#     --repo CartoDB/litellm \
+#     -f pr-number=88 \
+#     -f mode=analyze
+#
+#   # Analyze and fix
+#   gh workflow run carto-upstream-sync-customizations-analyzer.yml \
+#     --repo CartoDB/litellm \
+#     -f pr-number=88 \
+#     -f mode=analyze-and-fix
+#
+#   # Fix only (use previous analysis)
+#   gh workflow run carto-upstream-sync-customizations-analyzer.yml \
+#     --repo CartoDB/litellm \
+#     -f pr-number=88 \
+#     -f mode=fix-only
+
+on:
+  # Manual trigger
+  workflow_dispatch:
+    inputs:
+      pr-number:
+        description: "PR number to analyze/fix"
+        required: true
+      mode:
+        description: "Operation mode"
+        type: choice
+        options:
+          - analyze           # Analysis only (read-only)
+          - analyze-and-fix   # Analyze + fix if issues found
+          - fix-only          # Skip analysis, use existing to fix
+        default: "analyze"
+      debug:
+        description: "Enable debug logging"
+        type: boolean
+        default: false
+
+  # Automatic trigger - runs when CI checks pass on upstream-sync branches
+  workflow_run:
+    workflows:
+      - "LiteLLM Mock Tests (folder - tests/test_litellm)"
+      - "CARTO - Deploy Docker Image (CI)"
+      - "LiteLLM Linting"
+    types:
+      - completed
+    branches:
+      - 'upstream-sync/**'
+
+  # Can still be called directly via workflow_call
+  workflow_call:
+    inputs:
+      pr-number:
+        description: "PR number to analyze/fix"
+        required: true
+        type: string
+      mode:
+        description: "Operation mode: analyze, analyze-and-fix, fix-only"
+        required: false
+        type: string
+        default: "analyze-and-fix"
+
+concurrency:
+  group: feature-analyzer-${{ github.event.workflow_run.pull_requests[0].number || github.event.inputs.pr-number || inputs.pr-number || github.run_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+
+jobs:
+  # Job 0: Check if we should run and determine mode
+  check-trigger:
+    name: Check Trigger Conditions
+    runs-on: ubuntu-latest
+    outputs:
+      should-run: ${{ steps.check.outputs.should-run }}
+      pr-number: ${{ steps.check.outputs.pr-number }}
+      branch-name: ${{ steps.check.outputs.branch-name }}
+      mode: ${{ steps.check.outputs.mode }}
+
+    steps:
+      - name: Determine trigger and mode
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          echo "::group::Checking trigger conditions"
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            # Manual trigger
+            PR_NUMBER="${{ github.event.inputs.pr-number }}"
+            MODE="${{ github.event.inputs.mode }}"
+            echo "[Analyzer] Manual trigger: PR #${PR_NUMBER}, mode=${MODE}"
+
+          elif [[ "${{ github.event_name }}" == "workflow_run" ]]; then
+            # Automatic trigger - ONLY run on SUCCESS
+            if [[ "${{ github.event.workflow_run.conclusion }}" != "success" ]]; then
+              echo "[Analyzer] CI did not succeed - skipping (ci-fixer will handle failures)"
+              echo "should-run=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+
+            # Check if this is an upstream-sync PR
+            BRANCH_NAME="${{ github.event.workflow_run.head_branch }}"
+            PR_JSON=$(gh pr list --repo ${{ github.repository }} --head "${BRANCH_NAME}" --json number,labels --jq '.[0]')
+
+            if [[ -z "${PR_JSON}" || "${PR_JSON}" == "null" ]]; then
+              echo "[Analyzer] No PR found for branch ${BRANCH_NAME}"
+              echo "should-run=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+
+            PR_NUMBER=$(echo "${PR_JSON}" | jq -r '.number')
+            HAS_UPSTREAM_SYNC=$(echo "${PR_JSON}" | jq '[.labels[].name] | any(. == "upstream-sync")')
+
+            if [[ "${HAS_UPSTREAM_SYNC}" != "true" ]]; then
+              echo "[Analyzer] Not an upstream-sync PR - skipping"
+              echo "should-run=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+
+            MODE="analyze-and-fix"  # Default for automatic triggers
+            echo "[Analyzer] Auto-trigger on CI success: PR #${PR_NUMBER}"
+
+          else
+            # workflow_call
+            PR_NUMBER="${{ inputs.pr-number }}"
+            MODE="${{ inputs.mode }}"
+            if [[ -z "${MODE}" ]]; then
+              MODE="analyze-and-fix"
+            fi
+            echo "[Analyzer] workflow_call: PR #${PR_NUMBER}, mode=${MODE}"
+          fi
+
+          # Get branch name
+          PR_INFO=$(gh pr view ${PR_NUMBER} --repo ${{ github.repository }} --json headRefName)
+          BRANCH_NAME=$(echo "${PR_INFO}" | jq -r '.headRefName')
+
+          echo "[Analyzer] PR #${PR_NUMBER} on branch ${BRANCH_NAME}, mode=${MODE}"
+          echo "should-run=true" >> $GITHUB_OUTPUT
+          echo "pr-number=${PR_NUMBER}" >> $GITHUB_OUTPUT
+          echo "branch-name=${BRANCH_NAME}" >> $GITHUB_OUTPUT
+          echo "mode=${MODE}" >> $GITHUB_OUTPUT
+
+          echo "::endgroup::"
+
+      - name: Check for recent duplicate runs
+        if: steps.check.outputs.should-run == 'true'
+        id: dedup
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          BRANCH_NAME="${{ steps.check.outputs.branch-name }}"
+
+          # Skip dedup check for manual triggers or fix-only mode
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "[Analyzer] Manual trigger - skipping dedup check"
+            exit 0
+          fi
+
+          # Check if this exact workflow already ran successfully in the last 10 minutes
+          # Use date command compatible with both GNU and BSD date
+          TEN_MIN_AGO=$(date -u -v-10M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '10 minutes ago' +%Y-%m-%dT%H:%M:%SZ)
+
+          RECENT_RUNS=$(gh run list \
+            --repo ${{ github.repository }} \
+            --workflow "carto-upstream-sync-customizations-analyzer.yml" \
+            --status completed \
+            --limit 10 \
+            --json conclusion,headBranch,createdAt \
+            --jq "[.[] | select(.headBranch == \"${BRANCH_NAME}\" and .conclusion == \"success\" and .createdAt > \"${TEN_MIN_AGO}\")] | length")
+
+          if [[ "${RECENT_RUNS}" -gt 0 ]]; then
+            echo "[Analyzer] Already analyzed successfully in the last 10 minutes - skipping"
+            echo "should-run=false" >> $GITHUB_OUTPUT
+          fi
+
+  # Job 1: Analyze CARTO features (runs unless mode=fix-only)
+  analyze-carto-features:
+    name: Analyze CARTO Feature Preservation
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: check-trigger
+    if: |
+      needs.check-trigger.outputs.should-run == 'true' &&
+      needs.check-trigger.outputs.mode != 'fix-only'
+
+    outputs:
+      incorrectly_dropped: ${{ steps.verify-analysis.outputs.incorrectly_dropped }}
+      pr-number: ${{ steps.pr-info.outputs.pr-number }}
+      head-ref: ${{ steps.pr-info.outputs.head-ref }}
+      analysis_exists: ${{ steps.verify-analysis.outputs.analysis_exists }}
+
+    steps:
+      - name: Get PR info
+        id: pr-info
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          set -eu
+
+          PR_NUMBER="${{ needs.check-trigger.outputs.pr-number }}"
+          echo "::group::Fetching PR #${PR_NUMBER} info"
+
+          PR_JSON=$(gh pr view ${PR_NUMBER} --repo ${{ github.repository }} --json headRefName,baseRefName,title,labels)
+
+          HEAD_REF=$(echo "${PR_JSON}" | jq -r '.headRefName')
+          BASE_REF=$(echo "${PR_JSON}" | jq -r '.baseRefName')
+          PR_TITLE=$(echo "${PR_JSON}" | jq -r '.title')
+          HAS_UPSTREAM_SYNC=$(echo "${PR_JSON}" | jq '[.labels[].name] | any(. == "upstream-sync")')
+
+          echo "pr-number=${PR_NUMBER}" >> $GITHUB_OUTPUT
+          echo "head-ref=${HEAD_REF}" >> $GITHUB_OUTPUT
+          echo "base-ref=${BASE_REF}" >> $GITHUB_OUTPUT
+          echo "pr-title=${PR_TITLE}" >> $GITHUB_OUTPUT
+          echo "is-upstream-sync=${HAS_UPSTREAM_SYNC}" >> $GITHUB_OUTPUT
+
+          # Extract upstream TAG from PR title (format: "Upstream Sync: vX.Y.Z -> carto/main")
+          UPSTREAM_TAG=$(echo "$PR_TITLE" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+[a-z0-9.-]*' | head -1 || echo "")
+          echo "upstream-tag=${UPSTREAM_TAG}" >> $GITHUB_OUTPUT
+
+          echo "[Analyzer] PR #${PR_NUMBER}: ${HEAD_REF} -> ${BASE_REF}"
+          echo "[Analyzer] Title: ${PR_TITLE}"
+          echo "[Analyzer] Upstream TAG: ${UPSTREAM_TAG:-not found}"
+          echo "[Analyzer] Is upstream-sync PR: ${HAS_UPSTREAM_SYNC}"
+
+          echo "::endgroup::"
+
+      - name: Validate PR
+        run: |
+          if [[ "${{ steps.pr-info.outputs.is-upstream-sync }}" != "true" ]]; then
+            echo "::warning::This PR does not have the 'upstream-sync' label. Analysis may not be meaningful."
+          fi
+
+          if [[ -z "${{ steps.pr-info.outputs.upstream-tag }}" ]]; then
+            echo "::warning::Could not extract upstream TAG from PR title. Will use origin/main as reference."
+          fi
+
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr-info.outputs.head-ref }}
+          fetch-depth: 0
+          token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+
+      - name: Comment on PR - Starting analysis
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          MODE="${{ needs.check-trigger.outputs.mode }}"
+          if [[ "${MODE}" == "analyze-and-fix" ]]; then
+            MODE_DESC="Analysis + Auto-fix if issues found"
+          else
+            MODE_DESC="Analysis only (read-only)"
+          fi
+
+          gh pr comment ${{ steps.pr-info.outputs.pr-number }} \
+            --repo ${{ github.repository }} \
+            --body "## 📊 CARTO Feature Analysis Started
+
+          **Mode:** ${MODE_DESC}
+
+          Analyzing how each CARTO customization was handled during conflict resolution.
+          This will explain WHY each decision was made.
+
+          | Step | Status |
+          |------|--------|
+          | Extract CARTO PRs | ⏳ In progress |
+          | Compare code versions | ⏳ Pending |
+          | Analyze decisions | ⏳ Pending |
+          | Generate report | ⏳ Pending |
+
+          [View workflow →](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+
+      - name: Analyze CARTO PRs for feature context
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          echo "::group::Analyzing CARTO PRs for feature context"
+
+          OUTPUT_PATH="/tmp/carto-analysis"
+          mkdir -p "${OUTPUT_PATH}"
+
+          # Fetch CartoDB org members
+          echo "[Analyzer] Fetching CartoDB org members..."
+          ORG_MEMBERS=$(gh api "orgs/CartoDB/members" --paginate --jq '.[].login' 2>/dev/null | tr '\n' '|' | sed 's/|$//')
+          if [ -z "$ORG_MEMBERS" ]; then
+            echo "[Analyzer] Warning: Could not fetch org members, using fallback"
+            ORG_MEMBERS="Cartofante|mateo-di"
+          fi
+
+          # Fetch ALL merged PRs (any branch) to capture all CARTO customizations
+          echo "[Analyzer] Fetching all merged PRs..."
+          gh pr list \
+            --repo ${{ github.repository }} \
+            --state merged \
+            --limit 1000 \
+            --json number,title,author,mergedAt,files,body,labels \
+            > "${OUTPUT_PATH}/all_prs.json" 2>/dev/null || echo "[]" > "${OUTPUT_PATH}/all_prs.json"
+
+          echo "[Analyzer] Total merged PRs: $(jq 'length' "${OUTPUT_PATH}/all_prs.json")"
+
+          # Filter to CARTO org members, excluding upstream-sync PRs
+          jq --arg pattern "$ORG_MEMBERS" '
+            [.[] |
+              select(.author.login | test("^(" + $pattern + ")$"; "i")) |
+              select(([(.labels // [])[].name] | any(. == "upstream-sync")) | not) |
+              select(.title | test("^(sync:|upstream sync:|fix: resolve.*upstream|fix: resolve conflicts|fix\\(ci\\):|merge:)"; "i") | not) |
+              select(.title | test("Upstream Sync:"; "i") | not)
+            ]
+          ' "${OUTPUT_PATH}/all_prs.json" > "${OUTPUT_PATH}/carto_prs.json"
+
+          CARTO_PRS=$(jq 'length' "${OUTPUT_PATH}/carto_prs.json")
+          echo "[Analyzer] Found ${CARTO_PRS} CARTO feature PRs"
+
+          rm -f "${OUTPUT_PATH}/all_prs.json"
+          echo "::endgroup::"
+
+      - name: Build CARTO features inventory with code snapshots
+        run: |
+          echo "::group::Building CARTO features inventory"
+
+          # Create structured inventory
+          jq '[.[] | {
+            pr_number: .number,
+            title: .title,
+            body: (.body // ""),
+            author: .author.login,
+            merged_at: .mergedAt,
+            category: (
+              if .title | test("fix\\(azure\\)"; "i") then "Azure"
+              elif .title | test("fix\\(snowflake\\)"; "i") then "Snowflake"
+              elif .title | test("fix\\(databricks\\)"; "i") then "Databricks"
+              elif .title | test("fix\\(oci\\)"; "i") then "OCI"
+              elif .title | test("fix\\(responses\\)|responses.api"; "i") then "Responses API"
+              elif .title | test("fix\\(streaming\\)|streaming"; "i") then "Streaming"
+              elif .title | test("docker|prisma|dockerfile"; "i") then "Infrastructure"
+              elif .title | test("workflow|slack|release|ci"; "i") then "CI/CD"
+              else "Core"
+              end
+            ),
+            files: [.files[].path]
+          }]' /tmp/carto-analysis/carto_prs.json > /tmp/carto_inventory.json
+
+          INVENTORY_COUNT=$(jq 'length' /tmp/carto_inventory.json)
+          echo "[Analyzer] Built inventory with ${INVENTORY_COUNT} CARTO features"
+
+          echo "::endgroup::"
+
+      - name: Build code comparison
+        run: |
+          echo "::group::Building code comparison snapshots"
+
+          mkdir -p /tmp/code_comparison
+
+          # Determine upstream reference
+          UPSTREAM_TAG="${{ steps.pr-info.outputs.upstream-tag }}"
+
+          if [ -n "$UPSTREAM_TAG" ]; then
+            # Fetch the tag
+            git fetch origin "refs/tags/${UPSTREAM_TAG}:refs/tags/${UPSTREAM_TAG}" 2>/dev/null || true
+
+            if git rev-parse "refs/tags/${UPSTREAM_TAG}" &>/dev/null; then
+              UPSTREAM_REF="refs/tags/${UPSTREAM_TAG}"
+              echo "[Analyzer] Using upstream TAG: ${UPSTREAM_TAG}"
+            else
+              UPSTREAM_REF="origin/main"
+              echo "[Analyzer] TAG not found, using origin/main"
+            fi
+          else
+            UPSTREAM_REF="origin/main"
+            echo "[Analyzer] No TAG in title, using origin/main"
+          fi
+
+          echo "upstream-ref=${UPSTREAM_REF}" >> $GITHUB_OUTPUT
+
+          # Get list of files touched by CARTO PRs
+          CARTO_FILES=$(jq -r '[.[].files[]] | unique | .[]' /tmp/carto_inventory.json | head -50)
+
+          for FILE in $CARTO_FILES; do
+            mkdir -p "/tmp/code_comparison/$(dirname "$FILE")"
+
+            # Upstream version (from TAG or main)
+            git show "${UPSTREAM_REF}:${FILE}" > "/tmp/code_comparison/${FILE}.upstream" 2>/dev/null || echo "" > "/tmp/code_comparison/${FILE}.upstream"
+
+            # CARTO version (from carto/main)
+            git show origin/carto/main:"$FILE" > "/tmp/code_comparison/${FILE}.carto" 2>/dev/null || echo "" > "/tmp/code_comparison/${FILE}.carto"
+
+            # Resolved version (current state in PR branch)
+            if [ -f "$FILE" ]; then
+              cp "$FILE" "/tmp/code_comparison/${FILE}.resolved"
+            else
+              echo "" > "/tmp/code_comparison/${FILE}.resolved"
+            fi
+          done
+
+          echo "[Analyzer] Prepared code comparisons for $(echo "$CARTO_FILES" | wc -w | tr -d ' ') files"
+
+          echo "::endgroup::"
+
+      - name: Create analysis context document
+        run: |
+          echo "::group::Creating analysis context"
+
+          cat > /tmp/analysis_context.md << 'CONTEXT_EOF'
+          # CARTO Feature Analysis Context
+
+          ## What You're Analyzing
+
+          This PR syncs upstream LiteLLM changes into carto/main. During conflict resolution,
+          Claude (or a human) made decisions about how to handle each CARTO customization.
+
+          Your job is to analyze the FINAL RESOLVED STATE and explain:
+          1. What happened to each CARTO feature
+          2. WHY that decision was made
+          3. Whether the decision was correct
+
+          ## Code Comparison Files
+
+          For each CARTO-modified file, you have three versions in /tmp/code_comparison/:
+          - `{file}.upstream` - The upstream TAG version (what LiteLLM ships)
+          - `{file}.carto` - The CARTO customization (from carto/main before merge)
+          - `{file}.resolved` - The final resolved version (what will be merged)
+
+          ## Decision Categories
+
+          For each CARTO feature, classify the decision:
+
+          | Decision | Meaning | Evidence |
+          |----------|---------|----------|
+          | UPSTREAM_SUBSTITUTES | Upstream now provides equivalent functionality | CARTO code removed, upstream code does same thing |
+          | CUSTOMIZED_UPSTREAM | Upstream used as base, CARTO additions kept | Mix of upstream + CARTO code |
+          | PRESERVED_CARTO | Full CARTO implementation kept | CARTO code present, upstream version not used |
+          | INCORRECTLY_DROPPED | CARTO feature was lost (BUG!) | CARTO code missing, upstream doesn't provide equivalent |
+
+          CONTEXT_EOF
+
+          # Add CARTO features list
+          echo "" >> /tmp/analysis_context.md
+          echo "## CARTO Features to Analyze" >> /tmp/analysis_context.md
+          echo "" >> /tmp/analysis_context.md
+
+          jq -r '.[] | "### PR #\(.pr_number): \(.title)\n- **Category:** \(.category)\n- **Files:** \(.files | join(", "))\n- **Description:** \(.body | split("\n")[0:3] | join(" ") | .[0:200])...\n"' /tmp/carto_inventory.json >> /tmp/analysis_context.md
+
+          echo "[Analyzer] Created analysis context at /tmp/analysis_context.md"
+
+          echo "::endgroup::"
+
+      - name: Setup GCP credentials for Vertex AI
+        run: |
+          echo '${{ secrets.CI_RESOURCES_SERVICE_ACCOUNT }}' > /tmp/gcp-sa.json
+          echo "GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-sa.json" >> $GITHUB_ENV
+
+      - name: Run Claude Code for feature analysis
+        id: claude-analyze
+        uses: anthropics/claude-code-action@v1
+        with:
+          use_vertex: "true"
+          github_token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          show_full_output: true
+          claude_args: "--model claude-opus-4-5@20251101 --max-turns 150 --allowedTools Read,Bash,Grep,Glob ${{ github.event.inputs.debug == 'true' && '--debug' || '' }}"
+          prompt: |
+            # CARTO Feature Preservation Analysis
+
+            ## YOUR GOAL
+
+            Analyze how each CARTO customization was handled during the upstream sync resolution.
+            Explain WHY each decision was made and whether it was correct.
+
+            **DO NOT MAKE ANY CHANGES** - this is analysis only.
+
+            ---
+
+            ## CONTEXT
+
+            **PR:** #${{ steps.pr-info.outputs.pr-number }}
+            **Title:** ${{ steps.pr-info.outputs.pr-title }}
+            **Branch:** `${{ steps.pr-info.outputs.head-ref }}`
+            **Upstream Reference:** ${{ steps.pr-info.outputs.upstream-tag || 'origin/main' }}
+
+            This PR merges upstream LiteLLM changes into carto/main. Conflicts were resolved
+            (either by Claude or manually). Your job is to analyze what happened.
+
+            ---
+
+            ## STEP 1: Read the analysis context
+
+            ```bash
+            cat /tmp/analysis_context.md
+            ```
+
+            This shows you all CARTO features that need analysis.
+
+            ---
+
+            ## STEP 2: For each CARTO feature, analyze the resolution
+
+            For each PR listed in the context:
+
+            1. **Identify the key files** from the PR
+
+            2. **Compare the three versions:**
+               ```bash
+               # Example for a specific file
+               FILE="path/to/file.py"
+
+               echo "=== UPSTREAM VERSION ==="
+               head -100 "/tmp/code_comparison/${FILE}.upstream"
+
+               echo "=== CARTO VERSION ==="
+               head -100 "/tmp/code_comparison/${FILE}.carto"
+
+               echo "=== RESOLVED VERSION ==="
+               head -100 "/tmp/code_comparison/${FILE}.resolved"
+               ```
+
+            3. **Determine what happened:**
+               - Is the CARTO functionality present in resolved?
+               - Does upstream provide equivalent functionality?
+               - Was code merged from both sources?
+
+            4. **Classify the decision:**
+               - UPSTREAM_SUBSTITUTES: Upstream provides same functionality
+               - CUSTOMIZED_UPSTREAM: Upstream base + CARTO additions
+               - PRESERVED_CARTO: Full CARTO code kept
+               - INCORRECTLY_DROPPED: CARTO feature lost (this is a bug!)
+
+            ---
+
+            ## STEP 3: Write the analysis report
+
+            Create `/tmp/feature_analysis.json`:
+
+            ```bash
+            cat > /tmp/feature_analysis.json << 'ANALYSIS_EOF'
+            {
+              "analysis_timestamp": "YYYY-MM-DD HH:MM:SS UTC",
+              "pr_number": ${{ steps.pr-info.outputs.pr-number }},
+              "features": [
+                {
+                  "pr": 70,
+                  "title": "fix(azure): Strip operation suffixes",
+                  "category": "Azure",
+                  "decision": "UPSTREAM_SUBSTITUTES",
+                  "confidence": "high",
+                  "reason": "Upstream v1.81.0 added strip_operation_suffix() in azure/common_utils.py:45 that provides identical functionality to CARTO's implementation",
+                  "evidence": {
+                    "carto_code": "def strip_suffix(url): ...",
+                    "upstream_code": "def strip_operation_suffix(url): ...",
+                    "resolved_uses": "upstream"
+                  },
+                  "files_analyzed": ["litellm/llms/azure/common_utils.py"],
+                  "recommendation": "Correct decision - upstream provides equivalent functionality"
+                }
+              ],
+              "summary": {
+                "upstream_substitutes": 0,
+                "customized_upstream": 0,
+                "preserved_carto": 0,
+                "incorrectly_dropped": 0,
+                "total": 0
+              },
+              "issues": [
+                "List any INCORRECTLY_DROPPED features here - these are bugs that need fixing"
+              ],
+              "overall_assessment": "PASS or NEEDS_ATTENTION"
+            }
+            ANALYSIS_EOF
+            ```
+
+            ---
+
+            ## STEP 4: Create human-readable summary
+
+            Create `/tmp/analysis_summary.md`:
+
+            ```bash
+            cat > /tmp/analysis_summary.md << 'SUMMARY_EOF'
+            # CARTO Feature Preservation Analysis
+
+            ## Summary
+
+            | Decision | Count |
+            |----------|-------|
+            | Upstream Substitutes | X |
+            | Customized Upstream | X |
+            | Preserved CARTO | X |
+            | Incorrectly Dropped | X |
+
+            ## Overall Assessment: PASS / NEEDS_ATTENTION
+
+            [Brief explanation]
+
+            ## Feature Details
+
+            ### Upstream Substitutes
+            [List features where upstream now provides equivalent functionality]
+
+            ### Customized Upstream
+            [List features where upstream was enhanced with CARTO code]
+
+            ### Preserved CARTO
+            [List features where full CARTO implementation was kept]
+
+            ### Issues Found
+            [List any features that were incorrectly dropped - these need fixing!]
+
+            SUMMARY_EOF
+            ```
+
+            ---
+
+            ## SAY "ANALYSIS COMPLETE" WHEN DONE
+
+            After writing both files, say **"ANALYSIS COMPLETE"**.
+
+        env:
+          ANTHROPIC_VERTEX_PROJECT_ID: carto-ci-resources
+          CLOUD_ML_REGION: global
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GITHUB_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+
+      - name: Cleanup GCP credentials
+        if: always()
+        run: rm -f /tmp/gcp-sa.json
+
+      - name: Verify analysis output
+        id: verify-analysis
+        run: |
+          echo "::group::Verifying analysis output"
+
+          if [ -f /tmp/feature_analysis.json ]; then
+            echo "[Analyzer] Feature analysis JSON found"
+
+            if jq empty /tmp/feature_analysis.json 2>/dev/null; then
+              # Extract summary counts
+              UPSTREAM=$(jq -r '.summary.upstream_substitutes // 0' /tmp/feature_analysis.json)
+              CUSTOMIZED=$(jq -r '.summary.customized_upstream // 0' /tmp/feature_analysis.json)
+              PRESERVED=$(jq -r '.summary.preserved_carto // 0' /tmp/feature_analysis.json)
+              DROPPED=$(jq -r '.summary.incorrectly_dropped // 0' /tmp/feature_analysis.json)
+              TOTAL=$(jq -r '.summary.total // 0' /tmp/feature_analysis.json)
+              ASSESSMENT=$(jq -r '.overall_assessment // "UNKNOWN"' /tmp/feature_analysis.json)
+
+              echo "[Analyzer] Analysis summary:"
+              echo "  - Upstream substitutes: ${UPSTREAM}"
+              echo "  - Customized upstream: ${CUSTOMIZED}"
+              echo "  - Preserved CARTO: ${PRESERVED}"
+              echo "  - Incorrectly dropped: ${DROPPED}"
+              echo "  - Total: ${TOTAL}"
+              echo "  - Assessment: ${ASSESSMENT}"
+
+              echo "upstream_substitutes=${UPSTREAM}" >> $GITHUB_OUTPUT
+              echo "customized_upstream=${CUSTOMIZED}" >> $GITHUB_OUTPUT
+              echo "preserved_carto=${PRESERVED}" >> $GITHUB_OUTPUT
+              echo "incorrectly_dropped=${DROPPED}" >> $GITHUB_OUTPUT
+              echo "total=${TOTAL}" >> $GITHUB_OUTPUT
+              echo "assessment=${ASSESSMENT}" >> $GITHUB_OUTPUT
+              echo "analysis_exists=true" >> $GITHUB_OUTPUT
+            else
+              echo "[Analyzer] Feature analysis JSON is invalid"
+              echo "analysis_exists=false" >> $GITHUB_OUTPUT
+              echo "incorrectly_dropped=0" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "[Analyzer] Feature analysis not generated"
+            echo "analysis_exists=false" >> $GITHUB_OUTPUT
+            echo "incorrectly_dropped=0" >> $GITHUB_OUTPUT
+          fi
+
+          if [ -f /tmp/analysis_summary.md ]; then
+            echo "[Analyzer] Analysis summary MD found"
+            echo "summary_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "[Analyzer] Analysis summary not generated"
+            echo "summary_exists=false" >> $GITHUB_OUTPUT
+          fi
+
+          echo "::endgroup::"
+
+      - name: Upload analysis artifact
+        if: steps.verify-analysis.outputs.analysis_exists == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: feature-analysis
+          path: |
+            /tmp/feature_analysis.json
+            /tmp/analysis_summary.md
+            /tmp/carto_inventory.json
+          retention-days: 7
+
+      - name: Update PR description with full analysis
+        if: steps.verify-analysis.outputs.analysis_exists == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          echo "::group::Updating PR description with full analysis"
+
+          PR_NUMBER="${{ steps.pr-info.outputs.pr-number }}"
+
+          # Get current PR body
+          CURRENT_BODY=$(gh pr view $PR_NUMBER --repo ${{ github.repository }} --json body --jq '.body')
+
+          # Remove existing CARTO features section if present
+          CLEAN_BODY=$(echo "$CURRENT_BODY" | sed '/<!-- CARTO_FEATURES_START -->/,/<!-- CARTO_FEATURES_END -->/d')
+
+          # Build CARTO features status section with FULL details
+          ASSESSMENT="${{ steps.verify-analysis.outputs.assessment }}"
+          if [ "$ASSESSMENT" == "PASS" ]; then
+            ASSESSMENT_ICON="✅"
+          else
+            ASSESSMENT_ICON="⚠️"
+          fi
+
+          cat > /tmp/carto_section.md << SECTION_EOF
+          <!-- CARTO_FEATURES_START -->
+
+          ## CARTO Customizations Analysis
+
+          **Overall Assessment:** ${ASSESSMENT_ICON} ${ASSESSMENT}
+
+          | Decision | Count | Description |
+          |----------|-------|-------------|
+          | **Upstream Substitutes** | ${{ steps.verify-analysis.outputs.upstream_substitutes }} | Upstream provides equivalent functionality |
+          | **Customized Upstream** | ${{ steps.verify-analysis.outputs.customized_upstream }} | Upstream enhanced with CARTO-specific behavior |
+          | **Preserved CARTO** | ${{ steps.verify-analysis.outputs.preserved_carto }} | Full CARTO implementation kept |
+          | **Incorrectly Dropped** | ${{ steps.verify-analysis.outputs.incorrectly_dropped }} | CARTO feature lost (needs fixing!) |
+          | **Total** | **${{ steps.verify-analysis.outputs.total }}** | |
+
+          SECTION_EOF
+
+          # Add detailed analysis markdown if exists
+          if [ -f /tmp/analysis_summary.md ]; then
+            echo "" >> /tmp/carto_section.md
+            echo "---" >> /tmp/carto_section.md
+            echo "" >> /tmp/carto_section.md
+            cat /tmp/analysis_summary.md >> /tmp/carto_section.md
+          fi
+
+          # Add feature-by-feature breakdown
+          if [ -f /tmp/feature_analysis.json ]; then
+            echo "" >> /tmp/carto_section.md
+            echo "---" >> /tmp/carto_section.md
+            echo "" >> /tmp/carto_section.md
+            echo "### Feature-by-Feature Breakdown" >> /tmp/carto_section.md
+            echo "" >> /tmp/carto_section.md
+
+            jq -r '.features[] |
+              "#### PR #\(.pr): \(.title)\n" +
+              "- **Decision:** " + (
+                if .decision == "UPSTREAM_SUBSTITUTES" then "✅ Upstream Substitutes"
+                elif .decision == "CUSTOMIZED_UPSTREAM" then "🔧 Customized Upstream"
+                elif .decision == "PRESERVED_CARTO" then "🔒 Preserved CARTO"
+                else "❌ Incorrectly Dropped"
+                end
+              ) + " (\(.confidence // "unknown") confidence)\n" +
+              "- **Reason:** \(.reason // "N/A")\n" +
+              "- **Files:** \((.files_analyzed // []) | join(", "))\n" +
+              "- **Recommendation:** \(.recommendation // "N/A")\n"
+            ' /tmp/feature_analysis.json >> /tmp/carto_section.md 2>/dev/null || echo "Could not parse features" >> /tmp/carto_section.md
+          fi
+
+          # Add metadata footer with artifact link
+          cat >> /tmp/carto_section.md << METADATA_EOF
+
+          ---
+          **Analyzed:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          **Workflow Run:** [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          **Analysis Artifacts:** [Download JSON/MD](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}#artifacts)
+          **Method:** Claude Code (Opus 4.5) post-resolution semantic analysis
+
+          <!-- CARTO_FEATURES_END -->
+          METADATA_EOF
+
+          # Combine and update PR
+          NEW_BODY="${CLEAN_BODY}
+
+          $(cat /tmp/carto_section.md)"
+
+          gh pr edit $PR_NUMBER --repo ${{ github.repository }} --body "$NEW_BODY"
+
+          echo "[Analyzer] PR description updated with full analysis"
+          echo "::endgroup::"
+
+      - name: Post summary comment
+        if: steps.verify-analysis.outputs.analysis_exists == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          PR_NUMBER="${{ steps.pr-info.outputs.pr-number }}"
+          MODE="${{ needs.check-trigger.outputs.mode }}"
+
+          # Build SHORT summary comment
+          ASSESSMENT="${{ steps.verify-analysis.outputs.assessment }}"
+          DROPPED="${{ steps.verify-analysis.outputs.incorrectly_dropped }}"
+
+          if [ "$ASSESSMENT" == "PASS" ]; then
+            HEADER="## ✅ CARTO Feature Analysis Complete"
+          else
+            HEADER="## ⚠️ CARTO Feature Analysis - Attention Needed"
+          fi
+
+          # Add fix status if in analyze-and-fix mode
+          if [[ "${MODE}" == "analyze-and-fix" && "${DROPPED}" -gt 0 ]]; then
+            FIX_NOTE="
+
+          > 🔧 **Auto-fix enabled:** The fix job will run next to restore dropped features."
+          else
+            FIX_NOTE=""
+          fi
+
+          cat > /tmp/analysis_comment.md << COMMENT_EOF
+          ${HEADER}
+
+          | Decision | Count |
+          |----------|-------|
+          | Upstream Substitutes | ${{ steps.verify-analysis.outputs.upstream_substitutes }} |
+          | Customized Upstream | ${{ steps.verify-analysis.outputs.customized_upstream }} |
+          | Preserved CARTO | ${{ steps.verify-analysis.outputs.preserved_carto }} |
+          | Incorrectly Dropped | ${{ steps.verify-analysis.outputs.incorrectly_dropped }} |
+
+          **Overall Assessment:** ${ASSESSMENT}${FIX_NOTE}
+
+          📋 **Full details in PR description above.**
+
+          ---
+          [View workflow run →](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) | [Download analysis artifacts →](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}#artifacts)
+          COMMENT_EOF
+
+          gh pr comment $PR_NUMBER --repo ${{ github.repository }} --body "$(cat /tmp/analysis_comment.md)"
+
+          echo "[Analyzer] Summary comment posted"
+
+      - name: Comment on PR - Analysis failed
+        if: failure() || steps.verify-analysis.outputs.analysis_exists != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          PR_NUMBER="${{ steps.pr-info.outputs.pr-number }}"
+
+          gh pr comment ${PR_NUMBER} \
+            --repo ${{ github.repository }} \
+            --body "## CARTO Feature Analysis Failed
+
+          The analysis encountered an error or did not produce output.
+
+          [View workflow logs →](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+
+      - name: Summary
+        if: always()
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          ## CARTO Feature Preservation Analysis
+
+          **PR:** #${{ steps.pr-info.outputs.pr-number }}
+          **Title:** ${{ steps.pr-info.outputs.pr-title }}
+          **Upstream Reference:** ${{ steps.pr-info.outputs.upstream-tag || 'origin/main' }}
+          **Mode:** ${{ needs.check-trigger.outputs.mode }}
+
+          ### Analysis Results
+
+          | Metric | Value |
+          |--------|-------|
+          | Analysis Completed | ${{ steps.verify-analysis.outputs.analysis_exists == 'true' && 'Yes' || 'No' }} |
+          | Upstream Substitutes | ${{ steps.verify-analysis.outputs.upstream_substitutes || 'N/A' }} |
+          | Customized Upstream | ${{ steps.verify-analysis.outputs.customized_upstream || 'N/A' }} |
+          | Preserved CARTO | ${{ steps.verify-analysis.outputs.preserved_carto || 'N/A' }} |
+          | Incorrectly Dropped | ${{ steps.verify-analysis.outputs.incorrectly_dropped || 'N/A' }} |
+          | **Overall Assessment** | ${{ steps.verify-analysis.outputs.assessment || 'N/A' }} |
+
+          EOF
+
+  # Job 2: Fix INCORRECTLY_DROPPED features
+  fix-dropped-features:
+    name: Fix INCORRECTLY_DROPPED Features
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: [check-trigger, analyze-carto-features]
+    if: |
+      always() &&
+      needs.check-trigger.outputs.should-run == 'true' &&
+      (
+        (needs.check-trigger.outputs.mode == 'analyze-and-fix' &&
+         needs.analyze-carto-features.outputs.incorrectly_dropped > 0) ||
+        needs.check-trigger.outputs.mode == 'fix-only'
+      )
+
+    steps:
+      - name: Get PR info for fix job
+        id: fix-pr-info
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          # Get PR number from either analyze job output or check-trigger
+          if [[ "${{ needs.check-trigger.outputs.mode }}" == "fix-only" ]]; then
+            PR_NUMBER="${{ needs.check-trigger.outputs.pr-number }}"
+          else
+            PR_NUMBER="${{ needs.analyze-carto-features.outputs.pr-number }}"
+          fi
+
+          PR_INFO=$(gh pr view ${PR_NUMBER} --repo ${{ github.repository }} --json headRefName)
+          HEAD_REF=$(echo "${PR_INFO}" | jq -r '.headRefName')
+
+          echo "pr-number=${PR_NUMBER}" >> $GITHUB_OUTPUT
+          echo "head-ref=${HEAD_REF}" >> $GITHUB_OUTPUT
+
+          echo "[Fixer] PR #${PR_NUMBER} on branch ${HEAD_REF}"
+
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.fix-pr-info.outputs.head-ref }}
+          fetch-depth: 0
+          token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+
+      - name: Configure git
+        run: |
+          git config --global user.name "Cartofante"
+          git config --global user.email "cartofante@carto.com"
+
+      - name: Download analysis artifacts (fix-only mode)
+        if: needs.check-trigger.outputs.mode == 'fix-only'
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          echo "::group::Getting analysis for fix-only mode"
+
+          BRANCH_NAME="${{ steps.fix-pr-info.outputs.head-ref }}"
+          PR_NUMBER="${{ steps.fix-pr-info.outputs.pr-number }}"
+          ANALYSIS_FOUND=false
+
+          # Strategy 1: Try to download artifacts from previous successful run
+          echo "[Fixer] Trying to download artifacts from previous run..."
+          RUN_ID=$(gh run list \
+            --repo ${{ github.repository }} \
+            --workflow "carto-upstream-sync-customizations-analyzer.yml" \
+            --status success \
+            --limit 20 \
+            --json databaseId,headBranch \
+            --jq "[.[] | select(.headBranch == \"${BRANCH_NAME}\")] | .[0].databaseId")
+
+          if [[ -n "${RUN_ID}" && "${RUN_ID}" != "null" ]]; then
+            if gh run download ${RUN_ID} \
+              --repo ${{ github.repository }} \
+              --name feature-analysis \
+              --dir /tmp/ 2>/dev/null; then
+              echo "[Fixer] Downloaded analysis from run #${RUN_ID}"
+              ANALYSIS_FOUND=true
+            else
+              echo "[Fixer] Failed to download artifacts from run #${RUN_ID}"
+            fi
+          fi
+
+          # Strategy 2: Extract analysis from PR description
+          if [[ "${ANALYSIS_FOUND}" != "true" ]]; then
+            echo "[Fixer] Trying to extract analysis from PR description..."
+
+            PR_BODY=$(gh pr view ${PR_NUMBER} --repo ${{ github.repository }} --json body --jq '.body')
+
+            # Check if analysis section exists in PR description
+            if echo "${PR_BODY}" | grep -q "CARTO_FEATURES_START"; then
+              echo "[Fixer] Found analysis in PR description, extracting..."
+
+              # Extract the feature breakdown section and build a minimal analysis JSON
+              # Look for INCORRECTLY_DROPPED features in the breakdown
+              DROPPED_FEATURES=$(echo "${PR_BODY}" | grep -A 5 "❌ Incorrectly Dropped" | grep -oE "PR #[0-9]+" | grep -oE "[0-9]+" || echo "")
+              DROPPED_COUNT=$(echo "${PR_BODY}" | grep -oE "Incorrectly Dropped.*\|.*[0-9]+" | grep -oE "[0-9]+$" | head -1 || echo "0")
+
+              if [[ -n "${DROPPED_COUNT}" && "${DROPPED_COUNT}" -gt 0 ]]; then
+                echo "[Fixer] Found ${DROPPED_COUNT} incorrectly dropped features in PR description"
+
+                # Create a minimal analysis JSON from PR description
+                cat > /tmp/feature_analysis.json << ANALYSIS_EOF
+          {
+            "analysis_timestamp": "extracted from PR description",
+            "pr_number": ${PR_NUMBER},
+            "source": "pr_description",
+            "features": [],
+            "summary": {
+              "incorrectly_dropped": ${DROPPED_COUNT}
+            },
+            "overall_assessment": "NEEDS_ATTENTION",
+            "note": "Analysis extracted from PR description. Claude will re-analyze the dropped features during fix."
+          }
+          ANALYSIS_EOF
+
+                ANALYSIS_FOUND=true
+                echo "[Fixer] Created analysis JSON from PR description"
+              else
+                echo "[Fixer] No incorrectly dropped features found in PR description"
+              fi
+            fi
+          fi
+
+          if [[ "${ANALYSIS_FOUND}" != "true" ]]; then
+            echo "::error::No analysis found. Run in 'analyze' or 'analyze-and-fix' mode first."
+            exit 1
+          fi
+
+          echo "::endgroup::"
+
+      - name: Download analysis artifacts (analyze-and-fix mode)
+        if: needs.check-trigger.outputs.mode == 'analyze-and-fix'
+        uses: actions/download-artifact@v4
+        with:
+          name: feature-analysis
+          path: /tmp/
+
+      - name: Verify analysis exists
+        run: |
+          if [ ! -f /tmp/feature_analysis.json ]; then
+            echo "::error::No analysis file found at /tmp/feature_analysis.json"
+            exit 1
+          fi
+
+          DROPPED=$(jq -r '.summary.incorrectly_dropped // 0' /tmp/feature_analysis.json)
+          echo "[Fixer] Found ${DROPPED} incorrectly dropped features to fix"
+
+          if [[ "${DROPPED}" -eq 0 ]]; then
+            echo "[Fixer] No features to fix - exiting successfully"
+            exit 0
+          fi
+
+      - name: Comment on PR - Starting fix
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          DROPPED=$(jq -r '.summary.incorrectly_dropped // 0' /tmp/feature_analysis.json)
+
+          gh pr comment ${{ steps.fix-pr-info.outputs.pr-number }} \
+            --repo ${{ github.repository }} \
+            --body "## 🔧 CARTO Feature Fix Started
+
+          Restoring **${DROPPED}** incorrectly dropped CARTO feature(s).
+
+          [View workflow →](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+
+      - name: Setup GCP credentials for Vertex AI
+        run: |
+          echo '${{ secrets.CI_RESOURCES_SERVICE_ACCOUNT }}' > /tmp/gcp-sa.json
+          echo "GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-sa.json" >> $GITHUB_ENV
+
+      - name: Run Claude Code to fix dropped features
+        id: claude-fix
+        uses: anthropics/claude-code-action@v1
+        with:
+          use_vertex: "true"
+          github_token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          show_full_output: true
+          claude_args: "--model claude-opus-4-5@20251101 --max-turns 200 --allowedTools Read,Write,Edit,Bash,Grep,Glob"
+          prompt: |
+            # Fix INCORRECTLY_DROPPED CARTO Features
+
+            ## CONTEXT
+
+            **PR:** #${{ steps.fix-pr-info.outputs.pr-number }}
+            **Branch:** `${{ steps.fix-pr-info.outputs.head-ref }}`
+
+            The feature analysis identified CARTO customizations that were incorrectly dropped
+            during the upstream sync conflict resolution. Your job is to restore these features
+            using a systematic, comprehensive approach.
+
+            ---
+
+            ## PHASE 1: Discovery & Analysis
+
+            ### Step 1.1: Load the analysis report
+
+            ```bash
+            cat /tmp/feature_analysis.json | jq '.features[] | select(.decision == "INCORRECTLY_DROPPED")'
+            ```
+
+            For EACH dropped feature, you will perform a complete recovery cycle (Phases 2-5).
+
+            ---
+
+            ## PHASE 2: Deep Feature Analysis (per feature)
+
+            For each INCORRECTLY_DROPPED feature, perform comprehensive analysis:
+
+            ### Step 2.1: Understand CARTO's Original Implementation
+
+            1. **Read the CARTO PR description** to understand the original intent:
+               ```bash
+               gh pr view <PR_NUMBER> --repo ${{ github.repository }} --json body,title,files
+               ```
+
+            2. **Examine CARTO's implementation** in detail:
+               ```bash
+               git show origin/carto/main:<file_path>
+               ```
+
+            3. **Document what CARTO added:**
+               - What problem did this solve?
+               - What functions/classes/methods were added?
+               - What imports were needed?
+               - What are the key code patterns used?
+
+            ### Step 2.2: Analyze Upstream's Current Implementation
+
+            1. **Read the current resolved version** (upstream after merge):
+               ```bash
+               cat <file_path>
+               ```
+
+            2. **Compare with pure upstream** if needed:
+               ```bash
+               git show origin/main:<file_path>
+               ```
+
+            3. **Document upstream's approach:**
+               - Does upstream have similar functionality?
+               - What are the key differences in architecture?
+               - Are there naming conflicts or overlapping concerns?
+               - What upstream code must be preserved?
+
+            ### Step 2.3: Identify Integration Points
+
+            1. **Find where CARTO code should integrate:**
+               - Import locations
+               - Class inheritance or composition
+               - Function call sites
+               - Configuration or initialization points
+
+            2. **Identify potential conflicts:**
+               - Same function names with different signatures
+               - Overlapping class hierarchies
+               - Import conflicts
+               - Initialization order dependencies
+
+            ---
+
+            ## PHASE 3: Integration Strategy & Workplan
+
+            ### Step 3.1: Design Integration Strategy
+
+            For each dropped feature, determine the best approach:
+
+            | Strategy | When to Use |
+            |----------|-------------|
+            | **Direct Restoration** | CARTO code is independent, no upstream equivalent |
+            | **Merge & Enhance** | Upstream has partial solution, CARTO adds value |
+            | **Adapter Pattern** | CARTO and upstream have different interfaces |
+            | **Configuration Switch** | Both implementations valid for different use cases |
+
+            ### Step 3.2: Create Detailed Workplan
+
+            Write the workplan to `/tmp/workplan.md`:
+
+            ```markdown
+            # Feature Recovery Workplan
+
+            ## Feature: [PR #XX - Title]
+
+            ### Problem Statement
+            [What CARTO's PR originally solved]
+
+            ### CARTO's Solution
+            - Added `ClassName` in `file.py` (lines X-Y)
+            - Modified `function_name()` to handle edge case
+            - Added imports: `from module import X`
+
+            ### Upstream's Current State
+            - File structure: [describe]
+            - Related functionality: [describe]
+            - Key differences: [list]
+
+            ### Integration Strategy: [chosen strategy]
+
+            ### Implementation Steps
+            1. [ ] Add missing imports at line X
+            2. [ ] Restore `ClassName` class after line Y
+            3. [ ] Modify `existing_function()` to call CARTO code
+            4. [ ] Update any type hints or exports
+            5. [ ] Verify no syntax errors
+
+            ### Risk Assessment
+            - Low/Medium/High risk areas
+            - Backward compatibility concerns
+            - Testing requirements
+            ```
+
+            ---
+
+            ## PHASE 4: Implementation (per feature)
+
+            ### Step 4.1: Create Todo List
+
+            Use the TaskCreate tool to create todos from your workplan:
+
+            ```
+            For each implementation step in the workplan, create a todo:
+            - Subject: Clear, actionable description
+            - Description: Detailed context including file paths and line numbers
+            - ActiveForm: Present tense action (e.g., "Restoring SnowflakeStreamingHandler")
+            ```
+
+            ### Step 4.2: Implement Each Todo
+
+            For each todo:
+
+            1. **Mark as in_progress** using TaskUpdate
+            2. **Read the target file** to understand current state
+            3. **Apply the change** using Edit tool
+               - Be surgical: change only what's necessary
+               - Preserve upstream code structure
+               - Add comments if integration is complex
+            4. **Verify the change** is syntactically correct
+            5. **Mark as completed** using TaskUpdate
+
+            ### Step 4.3: Integration Testing
+
+            After implementing all todos for a feature:
+
+            1. **Syntax check** the modified files:
+               ```bash
+               python -m py_compile <file_path>
+               ```
+
+            2. **Import check** to verify no circular dependencies:
+               ```bash
+               python -c "import <module_path>"
+               ```
+
+            ---
+
+            ## PHASE 5: Verification & Commit
+
+            ### Step 5.1: Full Verification
+
+            After ALL features are restored:
+
+            1. **Run linting:**
+               ```bash
+               cd /home/project && make lint-ruff 2>&1 | head -50
+               ```
+
+            2. **Run type checking (optional, may have pre-existing issues):**
+               ```bash
+               cd /home/project && make lint-mypy 2>&1 | head -50
+               ```
+
+            3. **Docker build test:**
+               ```bash
+               docker build -t test-fix . 2>&1 | tail -30
+               ```
+
+            ### Step 5.2: Commit Changes
+
+            Create a well-documented commit:
+
+            ```bash
+            git add -A
+            git status
+            git commit -m "$(cat <<'EOF'
+            fix(carto): restore dropped CARTO customizations
+
+            Features restored:
+            - [PR #XX] Feature description
+            - [PR #YY] Feature description
+
+            Integration approach:
+            - Used [strategy] for each feature
+            - Preserved upstream functionality
+            - Added CARTO enhancements on top
+
+            Verified: syntax checks, import validation, docker build
+            EOF
+            )"
+            git push origin HEAD
+            ```
+
+            ---
+
+            ## PHASE 6: Documentation
+
+            ### Step 6.1: Create Fix Report
+
+            Write `/tmp/fix_report.json`:
+
+            ```json
+            {
+              "fixed_features": [
+                {
+                  "pr": 70,
+                  "title": "Original PR title",
+                  "files_modified": ["path/to/file.py"],
+                  "integration_strategy": "Direct Restoration | Merge & Enhance | etc.",
+                  "changes_made": [
+                    "Added SnowflakeStreamingHandler class (lines 26-96)",
+                    "Added get_supported_openai_params() method",
+                    "Added necessary imports"
+                  ],
+                  "decision": "Detailed explanation of integration approach",
+                  "evidence": "Verification results (syntax check passed, docker build succeeded)"
+                }
+              ],
+              "summary": "Restored N CARTO features using systematic analysis and integration",
+              "verification": {
+                "syntax_check": "passed",
+                "import_check": "passed",
+                "docker_build": "passed"
+              },
+              "workplan_followed": true
+            }
+            ```
+
+            ---
+
+            ## IMPORTANT GUIDELINES
+
+            1. **Be thorough**: Read and understand before modifying
+            2. **Be surgical**: Change only what's necessary
+            3. **Preserve upstream**: Don't break existing functionality
+            4. **Document everything**: Future maintainers need to understand
+            5. **Test incrementally**: Verify after each major change
+            6. **Use todos**: Track progress systematically
+
+            ---
+
+            ## SAY "FIX COMPLETE" WHEN DONE
+
+            After completing all phases and pushing the commit, say **"FIX COMPLETE"**.
+
+        env:
+          ANTHROPIC_VERTEX_PROJECT_ID: carto-ci-resources
+          CLOUD_ML_REGION: global
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GITHUB_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+
+      - name: Cleanup GCP credentials
+        if: always()
+        run: rm -f /tmp/gcp-sa.json
+
+      - name: Read fix report
+        id: fix-report
+        run: |
+          if [ -f /tmp/fix_report.json ]; then
+            if jq empty /tmp/fix_report.json 2>/dev/null; then
+              FIXED_COUNT=$(jq '.fixed_features | length' /tmp/fix_report.json)
+              SUMMARY=$(jq -r '.summary // "Features restored"' /tmp/fix_report.json)
+              echo "fixed_count=${FIXED_COUNT}" >> $GITHUB_OUTPUT
+              echo "summary=${SUMMARY}" >> $GITHUB_OUTPUT
+              echo "has_report=true" >> $GITHUB_OUTPUT
+            else
+              echo "[Fixer] Fix report JSON is invalid"
+              echo "has_report=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "[Fixer] No fix report generated"
+            echo "has_report=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update PR description with fix status
+        if: steps.fix-report.outputs.has_report == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          echo "::group::Updating PR description with fix status"
+
+          PR_NUMBER="${{ steps.fix-pr-info.outputs.pr-number }}"
+
+          # Get current PR body
+          CURRENT_BODY=$(gh pr view $PR_NUMBER --repo ${{ github.repository }} --json body --jq '.body')
+
+          # Remove existing fix section if present
+          CLEAN_BODY=$(echo "$CURRENT_BODY" | sed '/<!-- CARTO_FIX_START -->/,/<!-- CARTO_FIX_END -->/d')
+
+          # Build fix status section
+          FIXED_COUNT="${{ steps.fix-report.outputs.fixed_count }}"
+
+          cat > /tmp/fix_section.md << SECTION_EOF
+          <!-- CARTO_FIX_START -->
+
+          ## 🔧 CARTO Feature Fixes Applied
+
+          **Status:** ✅ Fixed
+          **Features Restored:** ${FIXED_COUNT}
+
+          SECTION_EOF
+
+          # Add feature-by-feature details
+          jq -r '.fixed_features[] |
+            "### PR #\(.pr): \(.title)\n" +
+            "- **Files:** \(.files_modified | join(", "))\n" +
+            "- **Decision:** \(.decision)\n" +
+            "- **Evidence:** \(.evidence)\n"
+          ' /tmp/fix_report.json >> /tmp/fix_section.md 2>/dev/null || echo "Could not parse fixed features" >> /tmp/fix_section.md
+
+          cat >> /tmp/fix_section.md << FOOTER_EOF
+
+          ---
+          **Fixed:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          **Workflow Run:** [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+          <!-- CARTO_FIX_END -->
+          FOOTER_EOF
+
+          # Combine and update PR
+          NEW_BODY="${CLEAN_BODY}
+
+          $(cat /tmp/fix_section.md)"
+
+          gh pr edit $PR_NUMBER --repo ${{ github.repository }} --body "$NEW_BODY"
+
+          echo "[Fixer] PR description updated with fix status"
+          echo "::endgroup::"
+
+      - name: Post detailed fix comment
+        if: steps.fix-report.outputs.has_report == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          PR_NUMBER="${{ steps.fix-pr-info.outputs.pr-number }}"
+          SUMMARY="${{ steps.fix-report.outputs.summary }}"
+
+          cat > /tmp/fix_comment.md << 'COMMENT_EOF'
+          ## 🔧 CARTO Feature Fix Complete
+
+          ### Summary
+          COMMENT_EOF
+
+          echo "${SUMMARY}" >> /tmp/fix_comment.md
+
+          cat >> /tmp/fix_comment.md << 'COMMENT_EOF'
+
+          ### Decisions Made
+
+          COMMENT_EOF
+
+          # Add detailed decisions from Claude
+          jq -r '.fixed_features[] |
+            "#### PR #\(.pr): \(.title)\n" +
+            "**Decision:** \(.decision)\n" +
+            "**Files Modified:** \(.files_modified | join(", "))\n" +
+            "**Verification:** \(.evidence)\n\n---\n"
+          ' /tmp/fix_report.json >> /tmp/fix_comment.md 2>/dev/null || echo "Could not parse fixed features" >> /tmp/fix_comment.md
+
+          cat >> /tmp/fix_comment.md << COMMENT_EOF
+
+          **Next Steps:**
+          1. Review the changes in the Files tab
+          2. CI will re-run automatically
+          3. Once CI passes, the sync-ready label will be added
+
+          [View full workflow logs →](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          COMMENT_EOF
+
+          gh pr comment $PR_NUMBER --repo ${{ github.repository }} --body "$(cat /tmp/fix_comment.md)"
+
+          echo "[Fixer] Detailed fix comment posted"
+
+      - name: Comment on PR - Fix failed
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          PR_NUMBER="${{ steps.fix-pr-info.outputs.pr-number }}"
+
+          gh pr comment ${PR_NUMBER} \
+            --repo ${{ github.repository }} \
+            --body "## ❌ CARTO Feature Fix Failed
+
+          The fix job encountered an error. Manual intervention may be required.
+
+          [View workflow logs →](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+
+      - name: Summary
+        if: always()
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          ## CARTO Feature Fix
+
+          **PR:** #${{ steps.fix-pr-info.outputs.pr-number }}
+          **Mode:** ${{ needs.check-trigger.outputs.mode }}
+
+          ### Fix Results
+
+          | Metric | Value |
+          |--------|-------|
+          | Fix Report Generated | ${{ steps.fix-report.outputs.has_report == 'true' && 'Yes' || 'No' }} |
+          | Features Fixed | ${{ steps.fix-report.outputs.fixed_count || '0' }} |
+
+          EOF
