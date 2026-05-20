@@ -207,6 +207,35 @@ jobs:
           echo "[Notifier] JWT token generated successfully"
           echo "::endgroup::"
 
+      - name: Log in to GHCR
+        if: steps.pr-info.outputs.is-valid == 'true'
+        uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        if: steps.pr-info.outputs.is-valid == 'true'
+        uses: docker/setup-buildx-action@edfb0fe6204400c56fbfd3feba3fe9ad1adfa345
+
+      - name: Resolve image digest
+        if: steps.pr-info.outputs.is-valid == 'true'
+        id: digest
+        run: |
+          set -eu
+          IMAGE="ghcr.io/${{ github.repository }}-non_root:${{ steps.pr-info.outputs.image-tag }}"
+          for i in 1 2 3 4 5; do
+            DIGEST=$(docker buildx imagetools inspect "${IMAGE}" --format '{{.Manifest.Digest}}' 2>/dev/null || true)
+            if [[ "${DIGEST}" == sha256:* ]]; then
+              echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::Could not resolve digest for ${IMAGE}"
+          exit 1
+
       - name: Call n8n webhook
         if: steps.pr-info.outputs.is-valid == 'true'
         run: |
@@ -219,6 +248,7 @@ jobs:
             "event_type": "upstream_sync_ready",
             "version": "${{ steps.pr-info.outputs.version }}",
             "image_tag": "${{ steps.pr-info.outputs.image-tag }}",
+            "image_digest": "${{ steps.digest.outputs.digest }}",
             "pr_url": "${{ steps.pr-info.outputs.pr-url }}"
           }
           EOF
@@ -304,6 +334,32 @@ jobs:
           echo "[Notifier] JWT token generated successfully"
           echo "::endgroup::"
 
+      - name: Log in to GHCR
+        uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@edfb0fe6204400c56fbfd3feba3fe9ad1adfa345
+
+      - name: Resolve image digest
+        id: digest
+        run: |
+          set -eu
+          IMAGE="ghcr.io/${{ github.repository }}-non_root:${{ github.event.release.tag_name }}"
+          for i in 1 2 3 4 5; do
+            DIGEST=$(docker buildx imagetools inspect "${IMAGE}" --format '{{.Manifest.Digest}}' 2>/dev/null || true)
+            if [[ "${DIGEST}" == sha256:* ]]; then
+              echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::Could not resolve digest for ${IMAGE}"
+          exit 1
+
       - name: Call n8n webhook for release
         run: |
           set -eu
@@ -318,6 +374,7 @@ jobs:
             "event_type": "release",
             "version": "${RELEASE_TAG}",
             "image_tag": "${RELEASE_TAG}",
+            "image_digest": "${{ steps.digest.outputs.digest }}",
             "release_url": "${{ github.event.release.html_url }}"
           }
           EOF
