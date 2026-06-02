@@ -218,6 +218,43 @@ def test_chunk_parser_with_citation():
     }
 
 
+def test_chunk_parser_preserves_empty_object_tool_arguments():
+    # Regression: a previous "avoid invalid json" guard rewrote tool_call
+    # arguments from "{}" to "" when a single streaming chunk carried the
+    # complete empty-object payload. That made the persisted assistant
+    # message invalid on the next turn — downstream providers (Databricks
+    # included) reject `arguments: ""` with a JSON parse error.
+    iterator = DatabricksChatResponseIterator(None, sync_stream=True)
+    chunk = {
+        "id": "1",
+        "object": "chat.completion.chunk",
+        "created": 0,
+        "model": "test",
+        "choices": [
+            {
+                "delta": {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "get_map_coordinates",
+                                "arguments": "{}",
+                            },
+                        }
+                    ],
+                },
+                "index": 0,
+                "finish_reason": None,
+            }
+        ],
+    }
+
+    parsed = iterator.chunk_parser(chunk)
+    assert parsed.choices[0].delta.tool_calls[0].function.arguments == "{}"
+
+
 def test_sanitize_empty_content_pops_none():
     message = {"role": "user", "content": None}
     _sanitize_empty_content(message)

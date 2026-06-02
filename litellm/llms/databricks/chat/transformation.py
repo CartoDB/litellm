@@ -687,10 +687,6 @@ class DatabricksChatResponseIterator(BaseModelResponseIterator):
                                 message.content = ""
                             choice["delta"]["content"] = message.content
                             choice["delta"]["tool_calls"] = None
-                elif tool_calls:
-                    for _tc in tool_calls:
-                        if _tc.get("function", {}).get("arguments") == "{}":
-                            _tc["function"]["arguments"] = ""  # avoid invalid json
                 if isinstance(choice["delta"].get("content"), list) and (
                     content := choice["delta"]["content"]
                 ):
