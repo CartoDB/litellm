@@ -14,6 +14,7 @@ from litellm.llms.databricks.chat.transformation import (
     DatabricksChatResponseIterator,
     DatabricksConfig,
     _sanitize_empty_content,
+    _strip_openai_annotations,
 )
 
 
@@ -297,3 +298,69 @@ def test_transform_messages_sanitizes_empty_content():
     )
     assert "content" not in result[0]
     assert result[1]["content"] == "Hi"
+
+
+def test_strip_openai_annotations_removes_annotations_field():
+    message = {
+        "role": "assistant",
+        "content": [
+            {
+                "type": "text",
+                "text": "Hello",
+                "annotations": [
+                    {
+                        "type": "url_citation",
+                        "url_citation": {"url": "https://example.com"},
+                    }
+                ],
+            }
+        ],
+    }
+    _strip_openai_annotations(message)
+    assert message["content"] == [{"type": "text", "text": "Hello"}]
+
+
+def test_strip_openai_annotations_leaves_string_content_untouched():
+    message = {"role": "user", "content": "Hi"}
+    _strip_openai_annotations(message)
+    assert message["content"] == "Hi"
+
+
+def test_strip_openai_annotations_noop_when_no_annotations():
+    message = {
+        "role": "assistant",
+        "content": [{"type": "text", "text": "Hello"}],
+    }
+    _strip_openai_annotations(message)
+    assert message["content"] == [{"type": "text", "text": "Hello"}]
+
+
+def test_transform_messages_strips_annotations_from_assistant_content():
+    # Regression: Databricks Model Serving rejects assistant messages whose
+    # content blocks carry an `annotations` field (OpenAI chat-completion
+    # citation parity). The Agents SDK persists this verbatim and replays it
+    # on the next turn, causing a 400 BAD_REQUEST:
+    #   messages.<n>.content.<m>.text.annotations: Extra inputs are not permitted
+    config = DatabricksConfig()
+    messages = [
+        {"role": "user", "content": "Hi"},
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Hello there",
+                    "annotations": [
+                        {
+                            "type": "url_citation",
+                            "url_citation": {"url": "https://example.com"},
+                        }
+                    ],
+                }
+            ],
+        },
+    ]
+    result = config._transform_messages(
+        messages=messages, model="databricks-claude", is_async=False
+    )
+    assert result[1]["content"] == [{"type": "text", "text": "Hello there"}]

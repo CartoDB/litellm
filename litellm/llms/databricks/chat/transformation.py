@@ -93,6 +93,23 @@ def _sanitize_empty_content(message_dict: dict[str, Any]) -> None:
             message_dict["content"] = filtered
 
 
+def _strip_openai_annotations(message_dict: dict[str, Any]) -> None:
+    """
+    Remove the OpenAI-only `annotations` field from each content block.
+    Databricks Model Serving uses Anthropic Messages API spec and rejects
+    `annotations` with `Extra inputs are not permitted`. The field appears
+    on chat-completion assistant messages emitted by OpenAI-compatible
+    providers (for citation parity with the Responses API) and survives the
+    Agents SDK replay on every follow-up turn.
+    """
+    content = message_dict.get("content")
+    if not isinstance(content, list):
+        return
+    for block in content:
+        if isinstance(block, dict) and "annotations" in block:
+            block.pop("annotations", None)
+
+
 if TYPE_CHECKING:
     from litellm.litellm_core_utils.litellm_logging import Logging as _LiteLLMLoggingObj
 
@@ -381,6 +398,7 @@ class DatabricksConfig(DatabricksBase, OpenAILikeChatConfig, AnthropicConfig):
             if "cache_control" in _message and isinstance(_message.get("content"), str):
                 _message = self._move_cache_control_into_string_content_block(_message)
             _sanitize_empty_content(cast(dict[str, Any], _message))
+            _strip_openai_annotations(cast(dict[str, Any], _message))
             new_messages.append(_message)
 
         if is_async:
