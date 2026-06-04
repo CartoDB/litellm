@@ -93,6 +93,37 @@ def _sanitize_empty_content(message_dict: dict[str, Any]) -> None:
             message_dict["content"] = filtered
 
 
+def _normalize_empty_tool_call_arguments(message_dict: dict[str, Any]) -> None:
+    """
+    Restore `tool_calls[].function.arguments` to a valid JSON empty object
+    when it is missing or an empty string.
+
+    Databricks's streaming protocol emits parameterless tool_call arguments
+    as one or two empty-string deltas (no `{}`), which accumulate to `""` in
+    the consumer. When that assistant message is replayed on a follow-up
+    turn (e.g. via the OpenAI Agents SDK conversation history), Databricks
+    Model Serving rejects it with:
+
+        INVALID_PARAMETER_VALUE: Param 'arguments' in the tool_calls
+        function specification is not a valid JSON string. No content to
+        map due to end-of-input
+
+    Coercing empty/missing arguments to `"{}"` is safe because that is the
+    canonical JSON representation of a parameterless call.
+    """
+    tool_calls = message_dict.get("tool_calls")
+    if not isinstance(tool_calls, list):
+        return
+    for tc in tool_calls:
+        if not isinstance(tc, dict):
+            continue
+        fn = tc.get("function")
+        if not isinstance(fn, dict):
+            continue
+        if not fn.get("arguments"):
+            fn["arguments"] = "{}"
+
+
 def _strip_openai_annotations(message_dict: dict[str, Any]) -> None:
     """
     Remove the OpenAI-only `annotations` field from each content block.
@@ -399,6 +430,7 @@ class DatabricksConfig(DatabricksBase, OpenAILikeChatConfig, AnthropicConfig):
                 _message = self._move_cache_control_into_string_content_block(_message)
             _sanitize_empty_content(cast(dict[str, Any], _message))
             _strip_openai_annotations(cast(dict[str, Any], _message))
+            _normalize_empty_tool_call_arguments(cast(dict[str, Any], _message))
             new_messages.append(_message)
 
         if is_async:

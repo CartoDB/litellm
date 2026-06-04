@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 from litellm.llms.databricks.chat.transformation import (
     DatabricksChatResponseIterator,
     DatabricksConfig,
+    _normalize_empty_tool_call_arguments,
     _sanitize_empty_content,
     _strip_openai_annotations,
 )
@@ -364,3 +365,89 @@ def test_transform_messages_strips_annotations_from_assistant_content():
         messages=messages, model="databricks-claude", is_async=False
     )
     assert result[1]["content"] == [{"type": "text", "text": "Hello there"}]
+
+
+def test_normalize_empty_tool_call_arguments_replaces_empty_string():
+    message = {
+        "role": "assistant",
+        "tool_calls": [
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "get_map_coordinates", "arguments": ""},
+            }
+        ],
+    }
+    _normalize_empty_tool_call_arguments(message)
+    assert message["tool_calls"][0]["function"]["arguments"] == "{}"
+
+
+def test_normalize_empty_tool_call_arguments_replaces_missing_field():
+    message = {
+        "role": "assistant",
+        "tool_calls": [
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "get_map_coordinates"},
+            }
+        ],
+    }
+    _normalize_empty_tool_call_arguments(message)
+    assert message["tool_calls"][0]["function"]["arguments"] == "{}"
+
+
+def test_normalize_empty_tool_call_arguments_preserves_valid_args():
+    message = {
+        "role": "assistant",
+        "tool_calls": [
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "tool", "arguments": '{"a": 1}'},
+            }
+        ],
+    }
+    _normalize_empty_tool_call_arguments(message)
+    assert message["tool_calls"][0]["function"]["arguments"] == '{"a": 1}'
+
+
+def test_normalize_empty_tool_call_arguments_noop_without_tool_calls():
+    message = {"role": "user", "content": "Hi"}
+    _normalize_empty_tool_call_arguments(message)
+    assert message == {"role": "user", "content": "Hi"}
+
+
+def test_transform_messages_normalizes_empty_tool_call_arguments():
+    # Regression: Databricks streams parameterless tool_call arguments as ""
+    # (instead of "{}"). The OpenAI Agents SDK accumulates and persists the
+    # empty string, then replays it on the next turn. Databricks rejects with:
+    #   INVALID_PARAMETER_VALUE: Param 'arguments' in the tool_calls function
+    #   specification is not a valid JSON string. No content to map due to
+    #   end-of-input
+    config = DatabricksConfig()
+    messages = [
+        {"role": "user", "content": "Use the tool"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "get_map_coordinates",
+                        "arguments": "",
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": '{"lat": 0, "lon": 0}',
+        },
+    ]
+    result = config._transform_messages(
+        messages=messages, model="databricks-claude", is_async=False
+    )
+    assert result[1]["tool_calls"][0]["function"]["arguments"] == "{}"
