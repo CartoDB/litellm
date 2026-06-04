@@ -737,6 +737,19 @@ class DatabricksChatResponseIterator(BaseModelResponseIterator):
                                 message.content = ""
                             choice["delta"]["content"] = message.content
                             choice["delta"]["tool_calls"] = None
+                elif tool_calls:
+                    # Databricks streams parameterless tool_call arguments as
+                    # a sequence of empty-string deltas, which accumulate to
+                    # `""` in the consumer (OpenAI Agents SDK, frontend tool
+                    # runners) — invalid JSON. On the name-introducing chunk
+                    # default arguments to `"{}"` so accumulation ends up
+                    # valid JSON. Subsequent empty-string deltas concatenate
+                    # harmlessly.
+                    for _tc in tool_calls:
+                        fn = _tc.get("function") or {}
+                        if fn.get("name") and not fn.get("arguments"):
+                            fn["arguments"] = "{}"
+                            _tc["function"] = fn
                 if isinstance(choice["delta"].get("content"), list) and (
                     content := choice["delta"]["content"]
                 ):

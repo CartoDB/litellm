@@ -220,6 +220,71 @@ def test_chunk_parser_with_citation():
     }
 
 
+def test_chunk_parser_defaults_empty_arguments_on_name_chunk():
+    # Regression: Databricks streams parameterless tool_call arguments as
+    # empty-string deltas. Without coercion the consumer accumulates `""` and
+    # downstream `JSON.parse` fails. The name-introducing chunk (the one
+    # carrying `function.name`) seeds the accumulation with `"{}"`; later
+    # empty-string deltas concatenate harmlessly.
+    iterator = DatabricksChatResponseIterator(None, sync_stream=True)
+    name_chunk = {
+        "id": "1",
+        "object": "chat.completion.chunk",
+        "created": 0,
+        "model": "test",
+        "choices": [
+            {
+                "delta": {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "get_map_coordinates",
+                                "arguments": "",
+                            },
+                        }
+                    ],
+                },
+                "index": 0,
+                "finish_reason": None,
+            }
+        ],
+    }
+    parsed = iterator.chunk_parser(name_chunk)
+    assert parsed.choices[0].delta.tool_calls[0].function.arguments == "{}"
+
+
+def test_chunk_parser_leaves_subsequent_empty_args_chunks_untouched():
+    # The name-only chunk seeds "{}". Subsequent args-only chunks with
+    # empty-string deltas must stay empty to avoid double-accumulation
+    # (otherwise the consumer would end with "{}{}" — invalid JSON).
+    iterator = DatabricksChatResponseIterator(None, sync_stream=True)
+    args_chunk = {
+        "id": "2",
+        "object": "chat.completion.chunk",
+        "created": 0,
+        "model": "test",
+        "choices": [
+            {
+                "delta": {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "function": {"arguments": ""},
+                        }
+                    ],
+                },
+                "index": 0,
+                "finish_reason": None,
+            }
+        ],
+    }
+    parsed = iterator.chunk_parser(args_chunk)
+    assert parsed.choices[0].delta.tool_calls[0].function.arguments == ""
+
+
 def test_chunk_parser_preserves_empty_object_tool_arguments():
     # Regression: a previous "avoid invalid json" guard rewrote tool_call
     # arguments from "{}" to "" when a single streaming chunk carried the
