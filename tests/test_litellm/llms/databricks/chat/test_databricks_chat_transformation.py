@@ -13,7 +13,9 @@ from unittest.mock import MagicMock, patch
 from litellm.llms.databricks.chat.transformation import (
     DatabricksChatResponseIterator,
     DatabricksConfig,
+    _normalize_empty_tool_call_arguments,
     _sanitize_empty_content,
+    _strip_openai_annotations,
 )
 
 
@@ -218,6 +220,71 @@ def test_chunk_parser_with_citation():
     }
 
 
+def test_chunk_parser_defaults_empty_arguments_on_name_chunk():
+    # Regression: Databricks streams parameterless tool_call arguments as
+    # empty-string deltas. Without coercion the consumer accumulates `""` and
+    # downstream `JSON.parse` fails. The name-introducing chunk (the one
+    # carrying `function.name`) seeds the accumulation with `"{}"`; later
+    # empty-string deltas concatenate harmlessly.
+    iterator = DatabricksChatResponseIterator(None, sync_stream=True)
+    name_chunk = {
+        "id": "1",
+        "object": "chat.completion.chunk",
+        "created": 0,
+        "model": "test",
+        "choices": [
+            {
+                "delta": {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "get_map_coordinates",
+                                "arguments": "",
+                            },
+                        }
+                    ],
+                },
+                "index": 0,
+                "finish_reason": None,
+            }
+        ],
+    }
+    parsed = iterator.chunk_parser(name_chunk)
+    assert parsed.choices[0].delta.tool_calls[0].function.arguments == "{}"
+
+
+def test_chunk_parser_leaves_subsequent_empty_args_chunks_untouched():
+    # The name-only chunk seeds "{}". Subsequent args-only chunks with
+    # empty-string deltas must stay empty to avoid double-accumulation
+    # (otherwise the consumer would end with "{}{}" — invalid JSON).
+    iterator = DatabricksChatResponseIterator(None, sync_stream=True)
+    args_chunk = {
+        "id": "2",
+        "object": "chat.completion.chunk",
+        "created": 0,
+        "model": "test",
+        "choices": [
+            {
+                "delta": {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "function": {"arguments": ""},
+                        }
+                    ],
+                },
+                "index": 0,
+                "finish_reason": None,
+            }
+        ],
+    }
+    parsed = iterator.chunk_parser(args_chunk)
+    assert parsed.choices[0].delta.tool_calls[0].function.arguments == ""
+
+
 def test_chunk_parser_preserves_empty_object_tool_arguments():
     # Regression: a previous "avoid invalid json" guard rewrote tool_call
     # arguments from "{}" to "" when a single streaming chunk carried the
@@ -297,3 +364,155 @@ def test_transform_messages_sanitizes_empty_content():
     )
     assert "content" not in result[0]
     assert result[1]["content"] == "Hi"
+
+
+def test_strip_openai_annotations_removes_annotations_field():
+    message = {
+        "role": "assistant",
+        "content": [
+            {
+                "type": "text",
+                "text": "Hello",
+                "annotations": [
+                    {
+                        "type": "url_citation",
+                        "url_citation": {"url": "https://example.com"},
+                    }
+                ],
+            }
+        ],
+    }
+    _strip_openai_annotations(message)
+    assert message["content"] == [{"type": "text", "text": "Hello"}]
+
+
+def test_strip_openai_annotations_leaves_string_content_untouched():
+    message = {"role": "user", "content": "Hi"}
+    _strip_openai_annotations(message)
+    assert message["content"] == "Hi"
+
+
+def test_strip_openai_annotations_noop_when_no_annotations():
+    message = {
+        "role": "assistant",
+        "content": [{"type": "text", "text": "Hello"}],
+    }
+    _strip_openai_annotations(message)
+    assert message["content"] == [{"type": "text", "text": "Hello"}]
+
+
+def test_transform_messages_strips_annotations_from_assistant_content():
+    # Regression: Databricks Model Serving rejects assistant messages whose
+    # content blocks carry an `annotations` field (OpenAI chat-completion
+    # citation parity). The Agents SDK persists this verbatim and replays it
+    # on the next turn, causing a 400 BAD_REQUEST:
+    #   messages.<n>.content.<m>.text.annotations: Extra inputs are not permitted
+    config = DatabricksConfig()
+    messages = [
+        {"role": "user", "content": "Hi"},
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Hello there",
+                    "annotations": [
+                        {
+                            "type": "url_citation",
+                            "url_citation": {"url": "https://example.com"},
+                        }
+                    ],
+                }
+            ],
+        },
+    ]
+    result = config._transform_messages(
+        messages=messages, model="databricks-claude", is_async=False
+    )
+    assert result[1]["content"] == [{"type": "text", "text": "Hello there"}]
+
+
+def test_normalize_empty_tool_call_arguments_replaces_empty_string():
+    message = {
+        "role": "assistant",
+        "tool_calls": [
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "get_map_coordinates", "arguments": ""},
+            }
+        ],
+    }
+    _normalize_empty_tool_call_arguments(message)
+    assert message["tool_calls"][0]["function"]["arguments"] == "{}"
+
+
+def test_normalize_empty_tool_call_arguments_replaces_missing_field():
+    message = {
+        "role": "assistant",
+        "tool_calls": [
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "get_map_coordinates"},
+            }
+        ],
+    }
+    _normalize_empty_tool_call_arguments(message)
+    assert message["tool_calls"][0]["function"]["arguments"] == "{}"
+
+
+def test_normalize_empty_tool_call_arguments_preserves_valid_args():
+    message = {
+        "role": "assistant",
+        "tool_calls": [
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "tool", "arguments": '{"a": 1}'},
+            }
+        ],
+    }
+    _normalize_empty_tool_call_arguments(message)
+    assert message["tool_calls"][0]["function"]["arguments"] == '{"a": 1}'
+
+
+def test_normalize_empty_tool_call_arguments_noop_without_tool_calls():
+    message = {"role": "user", "content": "Hi"}
+    _normalize_empty_tool_call_arguments(message)
+    assert message == {"role": "user", "content": "Hi"}
+
+
+def test_transform_messages_normalizes_empty_tool_call_arguments():
+    # Regression: Databricks streams parameterless tool_call arguments as ""
+    # (instead of "{}"). The OpenAI Agents SDK accumulates and persists the
+    # empty string, then replays it on the next turn. Databricks rejects with:
+    #   INVALID_PARAMETER_VALUE: Param 'arguments' in the tool_calls function
+    #   specification is not a valid JSON string. No content to map due to
+    #   end-of-input
+    config = DatabricksConfig()
+    messages = [
+        {"role": "user", "content": "Use the tool"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "get_map_coordinates",
+                        "arguments": "",
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": '{"lat": 0, "lon": 0}',
+        },
+    ]
+    result = config._transform_messages(
+        messages=messages, model="databricks-claude", is_async=False
+    )
+    assert result[1]["tool_calls"][0]["function"]["arguments"] == "{}"
