@@ -31,6 +31,47 @@ else:
     LiteLLMLoggingObj = Any
 
 
+def _strip_openai_annotations(message_dict: Dict[str, Any]) -> None:
+    """
+    Remove the OpenAI-only `annotations` field from each content block.
+    Snowflake Cortex rejects unknown fields inside text content blocks with
+    `390142 Incoming request does not contain a valid payload`. The field
+    appears on assistant messages emitted by OpenAI-compatible providers
+    (for citation parity with the Responses API) and survives the Agents
+    SDK replay on every follow-up turn.
+    """
+    content = message_dict.get("content")
+    if not isinstance(content, list):
+        return
+    for block in content:
+        if isinstance(block, dict) and "annotations" in block:
+            block.pop("annotations", None)
+
+
+def _content_to_text_blocks(content: Any) -> List[Dict[str, Any]]:
+    """
+    Convert an OpenAI-style assistant `content` value into a list of Snowflake
+    `{"type": "text", "text": ...}` blocks suitable for inclusion in
+    `content_list`. Empty/whitespace-only text is dropped.
+    """
+    if not content:
+        return []
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}] if content.strip() else []
+    if isinstance(content, list):
+        blocks: List[Dict[str, Any]] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") != "text":
+                continue
+            text = block.get("text") or ""
+            if isinstance(text, str) and text.strip():
+                blocks.append({"type": "text", "text": text})
+        return blocks
+    return []
+
+
 class SnowflakeStreamingHandler(BaseModelResponseIterator):
     """
     Custom streaming handler for Snowflake that handles missing fields in chunk responses.
@@ -49,18 +90,39 @@ class SnowflakeStreamingHandler(BaseModelResponseIterator):
 
             # Check if this is a tool_use block (Claude format via Snowflake)
             if delta.get("type") == "tool_use":
+                name = delta.get("name")
+
+                # Normalize `input` into a JSON string for the OpenAI delta shape.
+                # Cortex routes Claude through Bedrock, which emits parameterless
+                # tool_use chunks with `input=""` instead of `input={}`. The SDK
+                # would accumulate the empty string into an invalid arguments
+                # value (JSON.parse fails on ""), which then poisons the
+                # conversation history on the next turn. Seed `"{}"` on the
+                # name-introducing chunk so accumulation ends up valid JSON.
+                input_value = delta.get("input")
+                if isinstance(input_value, dict):
+                    arguments = json.dumps(input_value)
+                elif isinstance(input_value, str):
+                    arguments = input_value
+                else:
+                    arguments = ""
+                if name and not arguments:
+                    arguments = "{}"
+
                 tool_call = ChatCompletionDeltaToolCall(
                     id=delta.get("tool_use_id") or delta.get("id"),
                     type="function",
                     function=Function(
-                        name=delta.get("name"),
-                        arguments=delta.get("input", ""),
+                        name=name,
+                        arguments=arguments,
                     ),
                     index=choice.get("index", 0),
                 )
                 delta["tool_calls"] = [tool_call]
                 delta.pop("type", None)
                 delta.pop("tool_use_id", None)
+                delta.pop("input", None)
+                delta.pop("name", None)
                 delta.pop("content_list", None)
 
         return ModelResponseStream(
@@ -324,9 +386,15 @@ class SnowflakeConfig(SnowflakeBaseConfig, OpenAIGPTConfig):
         Handles:
         - role="tool" messages -> role="user" with content_list containing tool_results
         - role="assistant" with tool_calls -> content_list with tool_use blocks
+        - consecutive assistant messages (text-only followed by tool_call-only,
+          as the OpenAI Agents SDK replays them) -> merged into a single
+          assistant message with both text and tool_use blocks. Snowflake
+          Cortex rejects role-alternation violations with 390142.
+        - OpenAI `annotations: []` on content blocks -> stripped. Snowflake
+          Cortex rejects unknown fields with 390142.
         - content=None -> content="" (Snowflake requires non-null content)
         """
-        transformed_messages = []
+        transformed_messages: List[Dict[str, Any]] = []
         tool_call_map: Dict[str, str] = {}
 
         for message in messages:
@@ -358,7 +426,7 @@ class SnowflakeConfig(SnowflakeBaseConfig, OpenAIGPTConfig):
 
             # Handle assistant messages with tool_calls
             elif msg_dict.get("role") == "assistant" and msg_dict.get("tool_calls"):
-                content_list = []
+                tool_use_blocks: List[Dict[str, Any]] = []
 
                 for tool_call in msg_dict.get("tool_calls", []):
                     if tool_call.get("type") == "function":
@@ -370,16 +438,23 @@ class SnowflakeConfig(SnowflakeBaseConfig, OpenAIGPTConfig):
                         if tc_id and tc_name:
                             tool_call_map[tc_id] = tc_name
 
-                        try:
-                            arguments = (
-                                json.loads(arguments_str)
-                                if isinstance(arguments_str, str)
-                                else arguments_str
-                            )
-                        except json.JSONDecodeError:
-                            arguments = {}
+                        # Empty/missing arguments → parameterless call. The
+                        # Cortex-via-Bedrock streaming path leaves
+                        # `arguments=""` on the SDK side; coerce to a valid
+                        # empty object before serialization.
+                        if not arguments_str:
+                            arguments: Any = {}
+                        else:
+                            try:
+                                arguments = (
+                                    json.loads(arguments_str)
+                                    if isinstance(arguments_str, str)
+                                    else arguments_str
+                                )
+                            except json.JSONDecodeError:
+                                arguments = {}
 
-                        content_list.append({
+                        tool_use_blocks.append({
                             "type": "tool_use",
                             "tool_use": {
                                 "tool_use_id": tc_id,
@@ -387,6 +462,26 @@ class SnowflakeConfig(SnowflakeBaseConfig, OpenAIGPTConfig):
                                 "input": arguments,
                             },
                         })
+
+                # Merge with the immediately preceding assistant message if it
+                # carried only text and no content_list / tool_calls. The
+                # OpenAI Agents SDK replays a tool-using turn as two separate
+                # assistant messages (text first, tool_call second); Snowflake
+                # Cortex expects a single assistant message per turn whose
+                # content_list contains both text and tool_use blocks.
+                text_prelude_blocks: List[Dict[str, Any]] = []
+                if (
+                    transformed_messages
+                    and transformed_messages[-1].get("role") == "assistant"
+                    and not transformed_messages[-1].get("content_list")
+                    and not transformed_messages[-1].get("tool_calls")
+                ):
+                    prev = transformed_messages.pop()
+                    text_prelude_blocks = _content_to_text_blocks(
+                        prev.get("content")
+                    )
+
+                content_list = text_prelude_blocks + tool_use_blocks
 
                 transformed_messages.append({
                     "role": "assistant",
@@ -399,6 +494,8 @@ class SnowflakeConfig(SnowflakeBaseConfig, OpenAIGPTConfig):
                     msg_to_append = message.copy()
                 else:
                     msg_to_append = dict(message)
+
+                _strip_openai_annotations(msg_to_append)
 
                 content_value = msg_to_append.get("content")
                 has_content_list = "content_list" in msg_to_append and msg_to_append.get("content_list")
