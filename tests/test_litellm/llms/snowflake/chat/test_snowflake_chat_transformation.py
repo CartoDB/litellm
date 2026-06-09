@@ -1429,3 +1429,184 @@ class TestSnowflakeCortex390142Fixes:
                     _no_annotations(item)
 
         _no_annotations(transformed)
+
+
+class TestSnowflakeCortexArrayContentFlatten:
+    """
+    Regression coverage for the sc-554963 follow-up: Snowflake Cortex
+    `inference:complete` rejects a message whose `content` is an ARRAY of
+    content blocks (`[{"type": "text", "text": "..."}]`) with
+    `390142 Incoming request does not contain a valid payload`. It requires
+    `content` to be a plain string.
+
+    The OpenAI Agents SDK replays a prior assistant turn with exactly that
+    list-of-blocks shape on every follow-up turn, so a PLAIN multi-turn text
+    conversation (no tools at all) fails on the second turn. This was missed
+    by the original fix because:
+      - the only end-to-end repro covered the tool-call path, never a plain
+        text multi-turn, and
+      - the unit tests exercised list-form content only in the merge path
+        (where it is converted into content_list), never on a standalone
+        assistant message that goes through the passthrough branch.
+
+    Verified against the live Cortex endpoint: array-form content -> HTTP 400
+    / 390142; the same payload flattened to a string -> HTTP 200.
+    """
+
+    def test_helper_flattens_list_to_string(self):
+        from litellm.llms.snowflake.chat.transformation import (
+            _content_to_text_string,
+        )
+
+        assert _content_to_text_string("hello") == "hello"
+        assert _content_to_text_string(None) == ""
+        assert _content_to_text_string([]) == ""
+        assert (
+            _content_to_text_string(
+                [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]
+            )
+            == "ab"
+        )
+        # non-text blocks are ignored
+        assert (
+            _content_to_text_string(
+                [{"type": "text", "text": "a"}, {"type": "image_url"}]
+            )
+            == "a"
+        )
+
+    def test_standalone_assistant_array_content_flattened_to_string(self):
+        """
+        The exact production-failing shape from the capture:
+        user "Hi" -> assistant replayed with list-form content -> follow-up
+        user message. The assistant content must come out as a string, and
+        the message must NOT acquire a content_list.
+        """
+        config = SnowflakeConfig()
+
+        transformed = config._transform_messages(
+            [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "Hi"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Hi! How can I help you with the cell towers map today?",
+                        }
+                    ],
+                },
+                {"role": "user", "content": "Center the map in Cuenca"},
+            ]
+        )
+
+        assistant = transformed[2]
+        assert assistant["role"] == "assistant"
+        assert isinstance(assistant["content"], str)
+        assert (
+            assistant["content"]
+            == "Hi! How can I help you with the cell towers map today?"
+        )
+        # A plain assistant turn must not gain a content_list.
+        assert "content_list" not in assistant
+
+    def test_no_message_has_array_form_content_after_transform(self):
+        """
+        Guard: after transform, NO message may carry list-form `content`
+        (the shape Cortex rejects). Mixes plain text turns and a tool turn.
+        """
+        config = SnowflakeConfig()
+
+        transformed = config._transform_messages(
+            [
+                {"role": "system", "content": [{"type": "text", "text": "sys"}]},
+                {"role": "user", "content": "Hi"},
+                {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "Hello!"}],
+                },
+                {"role": "user", "content": "do it"},
+                {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "calling"}],
+                    "tool_calls": [
+                        {
+                            "id": "t1",
+                            "type": "function",
+                            "function": {"name": "f", "arguments": "{}"},
+                        }
+                    ],
+                },
+            ]
+        )
+
+        for m in transformed:
+            assert not isinstance(
+                m.get("content"), list
+            ), f"message still has array-form content: {m}"
+
+    def test_tool_call_assistant_array_content_flattened(self):
+        """
+        An assistant message that carries BOTH list-form text content and
+        tool_calls must emit string `content` (the tool_use goes in
+        content_list).
+        """
+        config = SnowflakeConfig()
+
+        transformed = config._transform_messages(
+            [
+                {"role": "user", "content": "do it"},
+                {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "on it"}],
+                    "tool_calls": [
+                        {
+                            "id": "t1",
+                            "type": "function",
+                            "function": {"name": "f", "arguments": ""},
+                        }
+                    ],
+                },
+            ]
+        )
+
+        assistant = transformed[-1]
+        assert isinstance(assistant["content"], str)
+        assert assistant["content"] == "on it"
+        assert assistant["content_list"][-1]["type"] == "tool_use"
+        assert assistant["content_list"][-1]["tool_use"]["input"] == {}
+
+    def test_system_message_array_content_flattened(self):
+        """System messages can also arrive with list-form content."""
+        config = SnowflakeConfig()
+
+        transformed = config._transform_messages(
+            [
+                {
+                    "role": "system",
+                    "content": [
+                        {"type": "text", "text": "line1 "},
+                        {"type": "text", "text": "line2"},
+                    ],
+                },
+                {"role": "user", "content": "Hi"},
+            ]
+        )
+
+        assert transformed[0]["role"] == "system"
+        assert transformed[0]["content"] == "line1 line2"
+
+    def test_empty_array_content_becomes_empty_string(self):
+        config = SnowflakeConfig()
+
+        transformed = config._transform_messages(
+            [
+                {"role": "user", "content": "Hi"},
+                {"role": "assistant", "content": []},
+            ]
+        )
+
+        assistant = transformed[-1]
+        assert assistant["content"] == ""
+        assert "content_list" not in assistant

@@ -72,6 +72,33 @@ def _content_to_text_blocks(content: Any) -> List[Dict[str, Any]]:
     return []
 
 
+def _content_to_text_string(content: Any) -> str:
+    """
+    Flatten an OpenAI-style `content` value into a plain string.
+
+    Snowflake Cortex `inference:complete` rejects a message whose `content`
+    is an array of content blocks (e.g. `[{"type": "text", "text": "..."}]`)
+    with `390142 Incoming request does not contain a valid payload`; it
+    requires `content` to be a plain string. The OpenAI Agents SDK replays a
+    prior assistant turn with exactly that list-of-blocks shape on every
+    follow-up turn, so a plain multi-turn text conversation (no tools
+    involved) hits 390142 on the second turn. Concatenating the text blocks
+    back into a string is the form Cortex accepts. Non-text blocks are
+    ignored here — tool_use / tool_results are carried in `content_list`.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+    return ""
+
+
 class SnowflakeStreamingHandler(BaseModelResponseIterator):
     """
     Custom streaming handler for Snowflake that handles missing fields in chunk responses.
@@ -392,6 +419,11 @@ class SnowflakeConfig(SnowflakeBaseConfig, OpenAIGPTConfig):
           Cortex rejects role-alternation violations with 390142.
         - OpenAI `annotations: []` on content blocks -> stripped. Snowflake
           Cortex rejects unknown fields with 390142.
+        - list-form `content` ([{"type": "text", "text": ...}], the shape the
+          Agents SDK replays a prior assistant turn in) -> flattened to a
+          plain string. Snowflake Cortex rejects array-form `content` with
+          390142, so a plain multi-turn text conversation otherwise fails on
+          the second turn.
         - content=None -> content="" (Snowflake requires non-null content)
         """
         transformed_messages: List[Dict[str, Any]] = []
@@ -485,7 +517,9 @@ class SnowflakeConfig(SnowflakeBaseConfig, OpenAIGPTConfig):
 
                 transformed_messages.append({
                     "role": "assistant",
-                    "content": msg_dict.get("content") or "",
+                    # Flatten any list-form content to a string — Snowflake
+                    # rejects array-form `content` with 390142.
+                    "content": _content_to_text_string(msg_dict.get("content")),
                     "content_list": content_list,
                 })
 
@@ -497,7 +531,16 @@ class SnowflakeConfig(SnowflakeBaseConfig, OpenAIGPTConfig):
 
                 _strip_openai_annotations(msg_to_append)
 
+                # Snowflake Cortex requires `content` to be a plain string, not
+                # an array of content blocks. The OpenAI Agents SDK replays a
+                # prior assistant turn as list-form content
+                # ([{"type": "text", "text": "..."}]); left unflattened it is
+                # rejected with 390142 on the next turn. Flatten to a string.
                 content_value = msg_to_append.get("content")
+                if isinstance(content_value, list):
+                    msg_to_append["content"] = _content_to_text_string(content_value)
+                    content_value = msg_to_append["content"]
+
                 has_content_list = "content_list" in msg_to_append and msg_to_append.get("content_list")
                 if content_value is None and not has_content_list:
                     msg_to_append["content"] = ""
