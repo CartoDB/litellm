@@ -885,3 +885,728 @@ class TestSnowflakeStreamingHandler:
         )
 
         assert isinstance(handler, SnowflakeStreamingHandler)
+
+
+class TestSnowflakeCortex390142Fixes:
+    """
+    Regression coverage for sc-554963 — Snowflake Cortex `390142 Incoming
+    request does not contain a valid payload` on Claude function-calling
+    follow-up turns.
+
+    Three root causes (mirrors the Databricks PR #110 family + one
+    Snowflake-specific schema fix):
+
+    1. Streaming tool_use chunks emit `input=""` for parameterless calls
+       (Bedrock-Anthropic quirk) → SDK accumulates `""` → invalid JSON →
+       poisoned conversation history. Fix: seed `"{}"` on the
+       name-introducing chunk.
+    2. OpenAI-compatible providers emit `annotations: []` inside text
+       content blocks; Snowflake rejects unknown fields. Fix: strip.
+    3. The Agents SDK replays a tool-using turn as TWO consecutive
+       assistant messages (text-only, then tool_call-only). Snowflake
+       expects one assistant message per turn. Fix: merge.
+    """
+
+    # ----- chunk_parser: empty-args seeding ----------------------------
+
+    def _make_handler(self):
+        from litellm.llms.snowflake.chat.transformation import (
+            SnowflakeStreamingHandler,
+        )
+
+        return SnowflakeStreamingHandler.__new__(SnowflakeStreamingHandler)
+
+    def _tool_use_chunk(self, **delta_overrides):
+        delta = {"type": "tool_use", "tool_use_id": "tu1"}
+        delta.update(delta_overrides)
+        return {
+            "id": "chunk-1",
+            "model": "claude-3-5-sonnet",
+            "created": 1,
+            "choices": [{"index": 0, "delta": delta}],
+        }
+
+    def test_chunk_parser_seeds_empty_string_input_with_braces(self):
+        handler = self._make_handler()
+
+        result = handler.chunk_parser(
+            self._tool_use_chunk(name="get_coords", input="")
+        )
+
+        tc = result.choices[0].delta.tool_calls[0]
+        assert tc.function.arguments == "{}"
+        assert tc.function.name == "get_coords"
+
+    def test_chunk_parser_seeds_missing_input_with_braces(self):
+        handler = self._make_handler()
+
+        chunk = self._tool_use_chunk(name="get_coords")
+        # No `input` key at all.
+        result = handler.chunk_parser(chunk)
+
+        tc = result.choices[0].delta.tool_calls[0]
+        assert tc.function.arguments == "{}"
+
+    def test_chunk_parser_serializes_dict_input_to_json_string(self):
+        handler = self._make_handler()
+
+        result = handler.chunk_parser(
+            self._tool_use_chunk(
+                name="wx", input={"location": "Madrid", "unit": "celsius"}
+            )
+        )
+
+        tc = result.choices[0].delta.tool_calls[0]
+        # ChatCompletionDeltaToolCall.arguments must be a string for the
+        # downstream SDK to accumulate correctly.
+        assert isinstance(tc.function.arguments, str)
+        parsed = json.loads(tc.function.arguments)
+        assert parsed == {"location": "Madrid", "unit": "celsius"}
+
+    def test_chunk_parser_passes_through_partial_json_string(self):
+        """
+        Subsequent delta chunks (no name, partial JSON in `input`) must
+        pass through untouched so consumers can accumulate them.
+        """
+        handler = self._make_handler()
+
+        result = handler.chunk_parser(
+            self._tool_use_chunk(name=None, input='{"loc')
+        )
+
+        tc = result.choices[0].delta.tool_calls[0]
+        assert tc.function.arguments == '{"loc'
+
+    def test_chunk_parser_does_not_seed_when_no_name(self):
+        """
+        Empty `input` on a continuation chunk (no name) must not be
+        rewritten — only the name-introducing chunk seeds.
+        """
+        handler = self._make_handler()
+
+        result = handler.chunk_parser(
+            self._tool_use_chunk(name=None, input="")
+        )
+
+        tc = result.choices[0].delta.tool_calls[0]
+        assert tc.function.arguments == ""
+
+    def test_chunk_parser_strips_snowflake_specific_delta_fields(self):
+        handler = self._make_handler()
+
+        result = handler.chunk_parser(
+            self._tool_use_chunk(name="get_coords", input="")
+        )
+
+        delta = result.choices[0].delta
+        # `type`, `tool_use_id`, `input`, `name`, and `content_list`
+        # should be removed in favour of the OpenAI-shaped `tool_calls`.
+        for snowflake_field in ("type", "tool_use_id", "input", "name", "content_list"):
+            assert not hasattr(delta, snowflake_field) or getattr(delta, snowflake_field) is None
+
+    # ----- _strip_openai_annotations ----------------------------------
+
+    def test_strip_openai_annotations_removes_field(self):
+        from litellm.llms.snowflake.chat.transformation import (
+            _strip_openai_annotations,
+        )
+
+        message = {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "hi", "annotations": []},
+                {"type": "text", "text": "there", "annotations": [{"x": 1}]},
+            ],
+        }
+
+        _strip_openai_annotations(message)
+
+        assert "annotations" not in message["content"][0]
+        assert "annotations" not in message["content"][1]
+        # Other fields preserved.
+        assert message["content"][0] == {"type": "text", "text": "hi"}
+
+    def test_strip_openai_annotations_is_noop_on_string_content(self):
+        from litellm.llms.snowflake.chat.transformation import (
+            _strip_openai_annotations,
+        )
+
+        message = {"role": "user", "content": "hello"}
+        _strip_openai_annotations(message)
+        assert message == {"role": "user", "content": "hello"}
+
+    def test_strip_openai_annotations_is_noop_on_none_content(self):
+        from litellm.llms.snowflake.chat.transformation import (
+            _strip_openai_annotations,
+        )
+
+        message = {"role": "assistant", "content": None}
+        _strip_openai_annotations(message)
+        assert message == {"role": "assistant", "content": None}
+
+    # ----- _content_to_text_blocks ------------------------------------
+
+    def test_content_to_text_blocks_from_string(self):
+        from litellm.llms.snowflake.chat.transformation import (
+            _content_to_text_blocks,
+        )
+
+        assert _content_to_text_blocks("hello") == [
+            {"type": "text", "text": "hello"}
+        ]
+
+    def test_content_to_text_blocks_drops_empty_and_non_text(self):
+        from litellm.llms.snowflake.chat.transformation import (
+            _content_to_text_blocks,
+        )
+
+        blocks = _content_to_text_blocks(
+            [
+                {"type": "text", "text": "a", "annotations": []},
+                {"type": "text", "text": "   "},  # whitespace-only → drop
+                {"type": "tool_use", "tool_use": {}},  # non-text → drop
+                {"type": "text", "text": "b"},
+            ]
+        )
+
+        assert blocks == [
+            {"type": "text", "text": "a"},
+            {"type": "text", "text": "b"},
+        ]
+
+    def test_content_to_text_blocks_handles_empty_inputs(self):
+        from litellm.llms.snowflake.chat.transformation import (
+            _content_to_text_blocks,
+        )
+
+        assert _content_to_text_blocks("") == []
+        assert _content_to_text_blocks(None) == []
+        assert _content_to_text_blocks([]) == []
+        assert _content_to_text_blocks("   ") == []
+
+    # ----- _transform_messages: consecutive-assistant merge -----------
+
+    def test_transform_messages_merges_consecutive_assistant_messages(self):
+        """
+        Reproduces the captured failing payload shape from sc-554963:
+        an assistant text message immediately followed by an assistant
+        tool_call message. After transform they should be a single
+        assistant message with content_list containing the text block
+        first and the tool_use block second.
+        """
+        config = SnowflakeConfig()
+
+        transformed = config._transform_messages(
+            [
+                {"role": "user", "content": "Call get_map_coordinates."},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "I'll call the tool.",
+                            "annotations": [],
+                        }
+                    ],
+                },
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "toolu_bdrk_01",
+                            "type": "function",
+                            "function": {
+                                "name": "get_map_coordinates",
+                                "arguments": "",
+                            },
+                        }
+                    ],
+                },
+            ]
+        )
+
+        # user + ONE merged assistant
+        assert len(transformed) == 2
+        assert transformed[0]["role"] == "user"
+
+        assistant = transformed[1]
+        assert assistant["role"] == "assistant"
+        assert assistant["content"] == ""
+        assert len(assistant["content_list"]) == 2
+
+        text_block, tool_block = assistant["content_list"]
+        # Text prelude carried over (and annotations stripped).
+        assert text_block == {"type": "text", "text": "I'll call the tool."}
+        # Tool_use built from the second message with empty args coerced
+        # to {} (parameterless call).
+        assert tool_block["type"] == "tool_use"
+        assert tool_block["tool_use"]["tool_use_id"] == "toolu_bdrk_01"
+        assert tool_block["tool_use"]["name"] == "get_map_coordinates"
+        assert tool_block["tool_use"]["input"] == {}
+
+    def test_transform_messages_does_not_merge_when_previous_has_content_list(self):
+        """
+        A previous assistant that already carried tool_calls should not
+        be merged with the next assistant — they belong to different
+        turns separated by a tool_result.
+        """
+        config = SnowflakeConfig()
+
+        transformed = config._transform_messages(
+            [
+                {"role": "user", "content": "First."},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "tu1",
+                            "type": "function",
+                            "function": {"name": "first", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "tu1", "content": "ok"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "tu2",
+                            "type": "function",
+                            "function": {"name": "second", "arguments": "{}"},
+                        }
+                    ],
+                },
+            ]
+        )
+
+        # user + assistant + user(tool_results) + assistant — no merge.
+        assert len(transformed) == 4
+        assert transformed[1]["role"] == "assistant"
+        assert transformed[2]["role"] == "user"
+        assert transformed[3]["role"] == "assistant"
+
+    def test_transform_messages_does_not_merge_across_non_assistant(self):
+        """
+        If a non-assistant message sits between two assistants, merging
+        must not happen.
+        """
+        config = SnowflakeConfig()
+
+        transformed = config._transform_messages(
+            [
+                {"role": "user", "content": "First."},
+                {"role": "assistant", "content": "I think..."},
+                {"role": "user", "content": "Now do something."},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "tu1",
+                            "type": "function",
+                            "function": {"name": "do_it", "arguments": "{}"},
+                        }
+                    ],
+                },
+            ]
+        )
+
+        assert len(transformed) == 4
+        # The first assistant remains a plain text message.
+        assert transformed[1]["role"] == "assistant"
+        assert transformed[1].get("content_list") in (None, [])
+        # The second assistant has just the tool_use block, no prelude.
+        last = transformed[3]
+        assert len(last["content_list"]) == 1
+        assert last["content_list"][0]["type"] == "tool_use"
+
+    def test_transform_messages_strips_annotations_on_plain_assistant(self):
+        """
+        Annotations must be stripped from plain (non-merged) assistant
+        text messages as well — Cortex rejects them with 390142
+        regardless of merge.
+        """
+        config = SnowflakeConfig()
+
+        transformed = config._transform_messages(
+            [
+                {"role": "user", "content": "Hi"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Hello there.",
+                            "annotations": [],
+                        }
+                    ],
+                },
+            ]
+        )
+
+        assert "annotations" not in transformed[1]["content"][0]
+
+    def test_transform_messages_empty_tool_call_arguments_coerced_to_empty_dict(self):
+        """
+        Without a merge in play, an assistant message with `tool_calls`
+        whose `arguments=""` must still serialize to `input={}` in the
+        Snowflake tool_use block — Snowflake's schema requires an object
+        for `input`, not an empty string.
+        """
+        config = SnowflakeConfig()
+
+        transformed = config._transform_messages(
+            [
+                {"role": "user", "content": "Call it."},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "tu1",
+                            "type": "function",
+                            "function": {
+                                "name": "get_coords",
+                                "arguments": "",
+                            },
+                        }
+                    ],
+                },
+            ]
+        )
+
+        tool_use = transformed[1]["content_list"][0]
+        assert tool_use["tool_use"]["input"] == {}
+
+    def test_transform_messages_missing_tool_call_arguments_coerced_to_empty_dict(self):
+        config = SnowflakeConfig()
+
+        transformed = config._transform_messages(
+            [
+                {"role": "user", "content": "Call it."},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "tu1",
+                            "type": "function",
+                            "function": {"name": "get_coords"},
+                            # no `arguments` key at all
+                        }
+                    ],
+                },
+            ]
+        )
+
+        tool_use = transformed[1]["content_list"][0]
+        assert tool_use["tool_use"]["input"] == {}
+
+    def test_transform_messages_preserves_non_empty_arguments(self):
+        config = SnowflakeConfig()
+
+        transformed = config._transform_messages(
+            [
+                {"role": "user", "content": "Get the weather."},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "tu1",
+                            "type": "function",
+                            "function": {
+                                "name": "get_weather",
+                                "arguments": '{"location": "Paris"}',
+                            },
+                        }
+                    ],
+                },
+            ]
+        )
+
+        tool_use = transformed[1]["content_list"][0]
+        assert tool_use["tool_use"]["input"] == {"location": "Paris"}
+
+    def test_transform_messages_end_to_end_captured_failing_payload(self):
+        """
+        Full end-to-end smoke test against the exact shape captured from
+        the sc-554963 production HAR (annotations + two-consecutive
+        assistants + empty-string arguments + synthetic tool_result).
+
+        After the fixes the Snowflake-bound payload must:
+        - have a SINGLE assistant message per turn (no consecutive
+          same-role messages),
+        - carry NO `annotations` fields anywhere in content blocks,
+        - have `tool_use.input` as `{}` (object), not `""`.
+        """
+        config = SnowflakeConfig()
+
+        transformed = config._transform_messages(
+            [
+                {"role": "system", "content": "You are an assistant."},
+                {
+                    "role": "user",
+                    "content": "Call get_map_coordinates and echo the result.",
+                },
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "I'll call the tool and share the result.",
+                            "annotations": [],
+                        }
+                    ],
+                },
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "toolu_bdrk_01U31Y2KLfXpuoeg2f2DqgcU",
+                            "type": "function",
+                            "function": {
+                                "name": "get_map_coordinates",
+                                "arguments": "",
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "toolu_bdrk_01U31Y2KLfXpuoeg2f2DqgcU",
+                    "name": "get_map_coordinates",
+                    "content": '{"latitude": 40.4168, "longitude": -3.7038}',
+                },
+            ]
+        )
+
+        # Expected shape: system, user, merged-assistant, user(tool_results)
+        assert [m["role"] for m in transformed] == [
+            "system",
+            "user",
+            "assistant",
+            "user",
+        ]
+
+        # No consecutive same-role messages.
+        for i in range(len(transformed) - 1):
+            assert transformed[i]["role"] != transformed[i + 1]["role"]
+
+        # The merged assistant: text prelude + tool_use, no annotations
+        # leaked anywhere, input is an object.
+        merged = transformed[2]
+        assert len(merged["content_list"]) == 2
+        text_block, tool_block = merged["content_list"]
+        assert text_block == {
+            "type": "text",
+            "text": "I'll call the tool and share the result.",
+        }
+        assert tool_block["tool_use"]["input"] == {}
+        assert tool_block["tool_use"]["name"] == "get_map_coordinates"
+
+        # tool_result wrapped into user message with content_list.
+        tool_user = transformed[3]
+        assert tool_user["content_list"][0]["type"] == "tool_results"
+        assert (
+            tool_user["content_list"][0]["tool_results"]["tool_use_id"]
+            == "toolu_bdrk_01U31Y2KLfXpuoeg2f2DqgcU"
+        )
+
+        # Recursively assert no `annotations` field survives anywhere in
+        # the transformed payload — this is the field Snowflake rejects.
+        def _no_annotations(obj):
+            if isinstance(obj, dict):
+                assert "annotations" not in obj, f"annotations leaked in {obj}"
+                for v in obj.values():
+                    _no_annotations(v)
+            elif isinstance(obj, list):
+                for item in obj:
+                    _no_annotations(item)
+
+        _no_annotations(transformed)
+
+
+class TestSnowflakeCortexArrayContentFlatten:
+    """
+    Regression coverage for the sc-554963 follow-up: Snowflake Cortex
+    `inference:complete` rejects a message whose `content` is an ARRAY of
+    content blocks (`[{"type": "text", "text": "..."}]`) with
+    `390142 Incoming request does not contain a valid payload`. It requires
+    `content` to be a plain string.
+
+    The OpenAI Agents SDK replays a prior assistant turn with exactly that
+    list-of-blocks shape on every follow-up turn, so a PLAIN multi-turn text
+    conversation (no tools at all) fails on the second turn. This was missed
+    by the original fix because:
+      - the only end-to-end repro covered the tool-call path, never a plain
+        text multi-turn, and
+      - the unit tests exercised list-form content only in the merge path
+        (where it is converted into content_list), never on a standalone
+        assistant message that goes through the passthrough branch.
+
+    Verified against the live Cortex endpoint: array-form content -> HTTP 400
+    / 390142; the same payload flattened to a string -> HTTP 200.
+    """
+
+    def test_helper_flattens_list_to_string(self):
+        from litellm.llms.snowflake.chat.transformation import (
+            _content_to_text_string,
+        )
+
+        assert _content_to_text_string("hello") == "hello"
+        assert _content_to_text_string(None) == ""
+        assert _content_to_text_string([]) == ""
+        assert (
+            _content_to_text_string(
+                [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]
+            )
+            == "ab"
+        )
+        # non-text blocks are ignored
+        assert (
+            _content_to_text_string(
+                [{"type": "text", "text": "a"}, {"type": "image_url"}]
+            )
+            == "a"
+        )
+
+    def test_standalone_assistant_array_content_flattened_to_string(self):
+        """
+        The exact production-failing shape from the capture:
+        user "Hi" -> assistant replayed with list-form content -> follow-up
+        user message. The assistant content must come out as a string, and
+        the message must NOT acquire a content_list.
+        """
+        config = SnowflakeConfig()
+
+        transformed = config._transform_messages(
+            [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "Hi"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Hi! How can I help you with the cell towers map today?",
+                        }
+                    ],
+                },
+                {"role": "user", "content": "Center the map in Cuenca"},
+            ]
+        )
+
+        assistant = transformed[2]
+        assert assistant["role"] == "assistant"
+        assert isinstance(assistant["content"], str)
+        assert (
+            assistant["content"]
+            == "Hi! How can I help you with the cell towers map today?"
+        )
+        # A plain assistant turn must not gain a content_list.
+        assert "content_list" not in assistant
+
+    def test_no_message_has_array_form_content_after_transform(self):
+        """
+        Guard: after transform, NO message may carry list-form `content`
+        (the shape Cortex rejects). Mixes plain text turns and a tool turn.
+        """
+        config = SnowflakeConfig()
+
+        transformed = config._transform_messages(
+            [
+                {"role": "system", "content": [{"type": "text", "text": "sys"}]},
+                {"role": "user", "content": "Hi"},
+                {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "Hello!"}],
+                },
+                {"role": "user", "content": "do it"},
+                {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "calling"}],
+                    "tool_calls": [
+                        {
+                            "id": "t1",
+                            "type": "function",
+                            "function": {"name": "f", "arguments": "{}"},
+                        }
+                    ],
+                },
+            ]
+        )
+
+        for m in transformed:
+            assert not isinstance(
+                m.get("content"), list
+            ), f"message still has array-form content: {m}"
+
+    def test_tool_call_assistant_array_content_flattened(self):
+        """
+        An assistant message that carries BOTH list-form text content and
+        tool_calls must emit string `content` (the tool_use goes in
+        content_list).
+        """
+        config = SnowflakeConfig()
+
+        transformed = config._transform_messages(
+            [
+                {"role": "user", "content": "do it"},
+                {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "on it"}],
+                    "tool_calls": [
+                        {
+                            "id": "t1",
+                            "type": "function",
+                            "function": {"name": "f", "arguments": ""},
+                        }
+                    ],
+                },
+            ]
+        )
+
+        assistant = transformed[-1]
+        assert isinstance(assistant["content"], str)
+        assert assistant["content"] == "on it"
+        assert assistant["content_list"][-1]["type"] == "tool_use"
+        assert assistant["content_list"][-1]["tool_use"]["input"] == {}
+
+    def test_system_message_array_content_flattened(self):
+        """System messages can also arrive with list-form content."""
+        config = SnowflakeConfig()
+
+        transformed = config._transform_messages(
+            [
+                {
+                    "role": "system",
+                    "content": [
+                        {"type": "text", "text": "line1 "},
+                        {"type": "text", "text": "line2"},
+                    ],
+                },
+                {"role": "user", "content": "Hi"},
+            ]
+        )
+
+        assert transformed[0]["role"] == "system"
+        assert transformed[0]["content"] == "line1 line2"
+
+    def test_empty_array_content_becomes_empty_string(self):
+        config = SnowflakeConfig()
+
+        transformed = config._transform_messages(
+            [
+                {"role": "user", "content": "Hi"},
+                {"role": "assistant", "content": []},
+            ]
+        )
+
+        assistant = transformed[-1]
+        assert assistant["content"] == ""
+        assert "content_list" not in assistant

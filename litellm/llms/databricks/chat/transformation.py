@@ -93,6 +93,54 @@ def _sanitize_empty_content(message_dict: dict[str, Any]) -> None:
             message_dict["content"] = filtered
 
 
+def _normalize_empty_tool_call_arguments(message_dict: dict[str, Any]) -> None:
+    """
+    Restore `tool_calls[].function.arguments` to a valid JSON empty object
+    when it is missing or an empty string.
+
+    Databricks's streaming protocol emits parameterless tool_call arguments
+    as one or two empty-string deltas (no `{}`), which accumulate to `""` in
+    the consumer. When that assistant message is replayed on a follow-up
+    turn (e.g. via the OpenAI Agents SDK conversation history), Databricks
+    Model Serving rejects it with:
+
+        INVALID_PARAMETER_VALUE: Param 'arguments' in the tool_calls
+        function specification is not a valid JSON string. No content to
+        map due to end-of-input
+
+    Coercing empty/missing arguments to `"{}"` is safe because that is the
+    canonical JSON representation of a parameterless call.
+    """
+    tool_calls = message_dict.get("tool_calls")
+    if not isinstance(tool_calls, list):
+        return
+    for tc in tool_calls:
+        if not isinstance(tc, dict):
+            continue
+        fn = tc.get("function")
+        if not isinstance(fn, dict):
+            continue
+        if not fn.get("arguments"):
+            fn["arguments"] = "{}"
+
+
+def _strip_openai_annotations(message_dict: dict[str, Any]) -> None:
+    """
+    Remove the OpenAI-only `annotations` field from each content block.
+    Databricks Model Serving uses Anthropic Messages API spec and rejects
+    `annotations` with `Extra inputs are not permitted`. The field appears
+    on chat-completion assistant messages emitted by OpenAI-compatible
+    providers (for citation parity with the Responses API) and survives the
+    Agents SDK replay on every follow-up turn.
+    """
+    content = message_dict.get("content")
+    if not isinstance(content, list):
+        return
+    for block in content:
+        if isinstance(block, dict) and "annotations" in block:
+            block.pop("annotations", None)
+
+
 if TYPE_CHECKING:
     from litellm.litellm_core_utils.litellm_logging import Logging as _LiteLLMLoggingObj
 
@@ -353,8 +401,7 @@ class DatabricksConfig(DatabricksBase, OpenAILikeChatConfig, AnthropicConfig):
     @overload
     def _transform_messages(
         self, messages: List[AllMessageValues], model: str, is_async: Literal[True]
-    ) -> Coroutine[Any, Any, List[AllMessageValues]]:
-        ...
+    ) -> Coroutine[Any, Any, List[AllMessageValues]]: ...
 
     @overload
     def _transform_messages(
@@ -362,8 +409,7 @@ class DatabricksConfig(DatabricksBase, OpenAILikeChatConfig, AnthropicConfig):
         messages: List[AllMessageValues],
         model: str,
         is_async: Literal[False] = False,
-    ) -> List[AllMessageValues]:
-        ...
+    ) -> List[AllMessageValues]: ...
 
     def _transform_messages(
         self, messages: List[AllMessageValues], model: str, is_async: bool = False
@@ -383,6 +429,8 @@ class DatabricksConfig(DatabricksBase, OpenAILikeChatConfig, AnthropicConfig):
             if "cache_control" in _message and isinstance(_message.get("content"), str):
                 _message = self._move_cache_control_into_string_content_block(_message)
             _sanitize_empty_content(cast(dict[str, Any], _message))
+            _strip_openai_annotations(cast(dict[str, Any], _message))
+            _normalize_empty_tool_call_arguments(cast(dict[str, Any], _message))
             new_messages.append(_message)
 
         if is_async:
@@ -615,7 +663,9 @@ class DatabricksConfig(DatabricksBase, OpenAILikeChatConfig, AnthropicConfig):
                 headers=response_headers,
             )
 
-        model_response.model = completion_response["model"]
+        _custom_llm_provider = litellm_params.get("custom_llm_provider") or "databricks"
+        _response_model = completion_response.get("model") or ""
+        model_response.model = f"{_custom_llm_provider}/{_response_model}"
         model_response.id = completion_response["id"]
         model_response.created = completion_response["created"]
         setattr(model_response, "usage", Usage(**completion_response["usage"]))
@@ -688,9 +738,18 @@ class DatabricksChatResponseIterator(BaseModelResponseIterator):
                             choice["delta"]["content"] = message.content
                             choice["delta"]["tool_calls"] = None
                 elif tool_calls:
+                    # Databricks streams parameterless tool_call arguments as
+                    # a sequence of empty-string deltas, which accumulate to
+                    # `""` in the consumer (OpenAI Agents SDK, frontend tool
+                    # runners) — invalid JSON. On the name-introducing chunk
+                    # default arguments to `"{}"` so accumulation ends up
+                    # valid JSON. Subsequent empty-string deltas concatenate
+                    # harmlessly.
                     for _tc in tool_calls:
-                        if _tc.get("function", {}).get("arguments") == "{}":
-                            _tc["function"]["arguments"] = ""  # avoid invalid json
+                        fn = _tc.get("function") or {}
+                        if fn.get("name") and not fn.get("arguments"):
+                            fn["arguments"] = "{}"
+                            _tc["function"] = fn
                 if isinstance(choice["delta"].get("content"), list) and (
                     content := choice["delta"]["content"]
                 ):

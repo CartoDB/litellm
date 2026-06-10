@@ -19,6 +19,17 @@ features:
       - pattern: "_handle_tool_call_delta"
         file: litellm/responses/litellm_completion_transformation/streaming_iterator.py
 
+  - name: "OCI Inline PEM Key Normalization"
+    source_prs: [17159]
+    description: "Accepts the PEM private key as a string via oci_key, normalizes escaped newlines, and validates input type. Required for UI-based OCI credentials (textarea field)."
+    files:
+      - litellm/llms/oci/chat/transformation.py
+    verification:
+      - pattern: "oci_key must be a string containing the PEM private key content"
+        file: litellm/llms/oci/chat/transformation.py
+      - pattern: "load_private_key_from_str(oci_key_content)"
+        file: litellm/llms/oci/chat/transformation.py
+
   - name: "Snowflake Streaming + Tool Calling"
     source_prs: [38, 58]
     files:

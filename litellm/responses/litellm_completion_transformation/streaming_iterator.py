@@ -445,7 +445,30 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
                 # Get the next chunk from the stream
                 try:
                     chunk = self.litellm_custom_stream_wrapper.__next__()
-                    self.collected_chat_completion_chunks.append(chunk)
+                    self._ensure_output_item_for_chunk(chunk)
+                    # Accumulate provider_specific_fields from chunk and delta
+                    for src in (
+                        getattr(chunk, "provider_specific_fields", None),
+                        getattr(
+                            chunk.choices[0].delta if chunk.choices else None,
+                            "provider_specific_fields",
+                            None,
+                        ),
+                    ):
+                        if src and isinstance(src, dict):
+                            self._merge_provider_specific_fields(src)
+                    # Always snapshot before returning any pending events so that
+                    # finish_reason (e.g. content_filter) is captured even when
+                    # _ensure_output_item_for_chunk queues events on the same chunk.
+                    # This mirrors the async path (see __anext__).
+                    self.collected_chat_completion_chunks.append(
+                        self._snapshot_chunk_for_stream_chunk_builder(
+                            cast(ModelResponseStream, chunk)
+                        )
+                    )
+                    # Emit any just-queued output_item event
+                    if self._pending_response_events:
+                        return self._pending_response_events.pop(0)
                     response_api_chunk = (
                         self._transform_chat_completion_chunk_to_response_api_chunk(
                             chunk
