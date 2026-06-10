@@ -78,3 +78,45 @@ features:
         file: litellm/responses/litellm_completion_transformation/streaming_iterator.py
       - pattern: "_patch_store_session_in_redis"
         file: litellm/responses/litellm_completion_transformation/transformation.py
+
+  - name: "Snowflake Cortex Claude Function-Calling Follow-up Turns"
+    source_prs: [111]
+    description: "Unblocks multi-turn Claude function-calling on Cortex: rebuilds assistant tool_use content_list, merges consecutive text+tool_call assistant turns, and strips OpenAI-only annotations that Cortex rejects (390142)."
+    files:
+      - litellm/llms/snowflake/chat/transformation.py
+    verification:
+      - pattern: "def _content_to_text_blocks"
+        file: litellm/llms/snowflake/chat/transformation.py
+      - pattern: "def _strip_openai_annotations"
+        file: litellm/llms/snowflake/chat/transformation.py
+      - pattern: "text_prelude_blocks"
+        file: litellm/llms/snowflake/chat/transformation.py
+
+  - name: "Snowflake Cortex Array Content Flattening"
+    source_prs: [112]
+    description: "Flattens OpenAI array-form message content ([{type: text, text: ...}]) to a plain string before sending to Cortex, which rejects array-form content with error 390142."
+    files:
+      - litellm/llms/snowflake/chat/transformation.py
+    verification:
+      - pattern: "def _content_to_text_string"
+        file: litellm/llms/snowflake/chat/transformation.py
+
+  - name: "Databricks Empty Tool Call Arguments Normalization"
+    source_prs: [109, 110]
+    description: "Coerces empty/missing tool_call arguments to '{}' (non-streaming and on the streaming name chunk) so Databricks does not reject parameterless tool calls with INVALID_PARAMETER_VALUE."
+    files:
+      - litellm/llms/databricks/chat/transformation.py
+    verification:
+      - pattern: "def _normalize_empty_tool_call_arguments"
+        file: litellm/llms/databricks/chat/transformation.py
+      - pattern: 'if fn.get("name") and not fn.get("arguments"):'
+        file: litellm/llms/databricks/chat/transformation.py
+
+  - name: "Databricks Strip OpenAI Annotations"
+    source_prs: [110]
+    description: "Removes the OpenAI-only 'annotations' field from outbound Databricks chat content blocks, which Databricks rejects with 'Extra inputs are not permitted'."
+    files:
+      - litellm/llms/databricks/chat/transformation.py
+    verification:
+      - pattern: "def _strip_openai_annotations"
+        file: litellm/llms/databricks/chat/transformation.py
