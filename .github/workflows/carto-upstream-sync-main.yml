@@ -878,6 +878,18 @@ jobs:
                       }'
           fi
 
+          # "View PR" button only when a PR URL exists. The "Up to Date" state has
+          # no PR, and Slack rejects any button with an empty url (invalid_attachments).
+          VIEW_PR_BUTTON_BLOCK=""
+          if [[ -n "${PR_URL}" ]]; then
+            VIEW_PR_BUTTON_BLOCK=',{
+                        "type": "button",
+                        "text": { "type": "plain_text", "text": "View PR", "emoji": true },
+                        "style": "primary",
+                        "url": "'"${PR_URL}"'"
+                      }'
+          fi
+
           # Build Block Kit payload with colored sidebar
           cat > /tmp/slack_payload.json << EOF
           {
@@ -934,20 +946,15 @@ jobs:
                     "elements": [
                       {
                         "type": "button",
-                        "text": { "type": "plain_text", "text": "View PR", "emoji": true },
-                        "style": "primary",
-                        "url": "${PR_URL}"
+                        "text": { "type": "plain_text", "text": "View Logs", "emoji": true },
+                        "url": "${WORKFLOW_RUN_URL}"
                       }
+                      ${VIEW_PR_BUTTON_BLOCK}
                       ${COMPARE_BUTTON_BLOCK}
                       ,{
                         "type": "button",
                         "text": { "type": "plain_text", "text": "Docs", "emoji": true },
                         "url": "${DOCS_URL}"
-                      }
-                      ,{
-                        "type": "button",
-                        "text": { "type": "plain_text", "text": "View Logs", "emoji": true },
-                        "url": "${WORKFLOW_RUN_URL}"
                       }
                     ]
                   }
@@ -995,7 +1002,7 @@ jobs:
           if [ "$SUCCESS" = "false" ]; then
             echo "::error::Failed to send Slack notification after 3 attempts"
             echo "::endgroup::"
-            exit 0
+            exit 1
           fi
 
           echo "::endgroup::"
