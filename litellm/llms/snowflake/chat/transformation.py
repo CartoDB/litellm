@@ -119,15 +119,8 @@ class SnowflakeStreamingHandler(BaseModelResponseIterator):
             if delta.get("type") == "tool_use":
                 name = delta.get("name")
 
-                # Assign a distinct, monotonic index per tool call. Cortex
-                # streams every tool_use block on the single choice (index 0),
-                # so using `choice.index` collapses multiple tool calls onto
-                # one index — the downstream accumulator then concatenates
-                # their names and arguments into a single malformed call
-                # (e.g. `set_layer_style` + `set_map_center_and_zoom_to_layer`).
-                # A new tool call always starts with a name-introducing chunk;
-                # continuation chunks (name=None) stream the arguments and must
-                # keep the current index.
+                # A new tool call begins on the name-introducing chunk;
+                # continuation chunks (name=None) reuse the current index.
                 tool_call_index = getattr(self, "_tool_call_index", -1)
                 if name:
                     tool_call_index += 1
