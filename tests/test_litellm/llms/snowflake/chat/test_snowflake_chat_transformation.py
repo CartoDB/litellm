@@ -991,6 +991,50 @@ class TestSnowflakeCortex390142Fixes:
         tc = result.choices[0].delta.tool_calls[0]
         assert tc.function.arguments == ""
 
+    def test_chunk_parser_single_tool_call_starts_at_index_zero(self):
+        handler = self._make_handler()
+
+        result = handler.chunk_parser(self._tool_use_chunk(name="get_coords"))
+
+        assert result.choices[0].delta.tool_calls[0].index == 0
+
+    def test_chunk_parser_assigns_distinct_index_per_tool_call(self):
+        """
+        Cortex streams every tool_use block on the single choice (index 0).
+        Each name-introducing chunk starts a new tool call and must get a
+        distinct, monotonic index; otherwise the downstream accumulator
+        concatenates the names/arguments of separate calls into one
+        malformed tool call (e.g. `set_layer_style` +
+        `set_map_center_and_zoom_to_layer`).
+        """
+        handler = self._make_handler()
+
+        first = handler.chunk_parser(
+            self._tool_use_chunk(name="set_layer_style", input={})
+        )
+        second = handler.chunk_parser(
+            self._tool_use_chunk(name="set_map_center_and_zoom_to_layer", input={})
+        )
+
+        assert first.choices[0].delta.tool_calls[0].index == 0
+        assert second.choices[0].delta.tool_calls[0].index == 1
+
+    def test_chunk_parser_continuation_chunks_keep_current_index(self):
+        """
+        Continuation chunks (name=None, partial JSON arguments) must reuse
+        the index of the tool call whose arguments they are streaming, so
+        the accumulator appends to the right call.
+        """
+        handler = self._make_handler()
+
+        handler.chunk_parser(self._tool_use_chunk(name="first_tool", input=""))
+        cont1 = handler.chunk_parser(self._tool_use_chunk(name=None, input='{"a'))
+        handler.chunk_parser(self._tool_use_chunk(name="second_tool", input=""))
+        cont2 = handler.chunk_parser(self._tool_use_chunk(name=None, input='{"b'))
+
+        assert cont1.choices[0].delta.tool_calls[0].index == 0
+        assert cont2.choices[0].delta.tool_calls[0].index == 1
+
     def test_chunk_parser_strips_snowflake_specific_delta_fields(self):
         handler = self._make_handler()
 
