@@ -894,7 +894,10 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
                         return self._pending_response_events.pop(0)
 
                 except StopAsyncIteration:
-                    return self.common_done_event_logic(sync_mode=False)
+                    result = self.common_done_event_logic(sync_mode=False)
+                    if isinstance(result, ResponseCompletedEvent):
+                        await self._store_session_in_redis(result)
+                    return result
 
         except Exception as e:
             # Handle HTTP errors
@@ -1097,3 +1100,31 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
             )
         else:
             return None
+
+    async def _store_session_in_redis(self, response_completed_event: ResponseCompletedEvent) -> None:
+        """
+        Store session in Redis for streaming responses.
+        This fixes the issue where Redis sessions weren't created for streaming requests.
+        """
+        try:
+            response = response_completed_event.response
+            if response and response.id:
+                session_id = (
+                    self.litellm_completion_request.get("litellm_trace_id")
+                    or self.litellm_metadata.get("litellm_trace_id")
+                    or str(uuid.uuid4())
+                )
+                messages = self.litellm_completion_request.get("messages", []).copy()
+                if response.output and len(response.output) > 0:
+                    output_item = response.output[0]
+                    if output_item.content and len(output_item.content) > 0:
+                        content_item = output_item.content[0]
+                        if hasattr(content_item, "text"):
+                            messages.append({"role": "assistant", "content": content_item.text})
+                await LiteLLMCompletionResponsesConfig._patch_store_session_in_redis(
+                    response_id=response.id,
+                    session_id=session_id,
+                    messages=messages,
+                )
+        except Exception:
+            pass

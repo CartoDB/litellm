@@ -222,15 +222,19 @@ class LiteLLMCompletionResponsesConfig:
                 # reasoning could be a string directly
                 reasoning_effort = reasoning_param
 
+        tool_choice_value = LiteLLMCompletionResponsesConfig._transform_tool_choice(
+            responses_api_request.get("tool_choice")
+        )
+        if tool_choice_value is None and tools:
+            tool_choice_value = "auto"
+
         litellm_completion_request: dict = {
             "messages": LiteLLMCompletionResponsesConfig.transform_responses_api_input_to_messages(
                 input=input,
                 responses_api_request=responses_api_request,
             ),
             "model": model,
-            "tool_choice": LiteLLMCompletionResponsesConfig._transform_tool_choice(
-                responses_api_request.get("tool_choice")
-            ),
+            "tool_choice": tool_choice_value,
             "tools": tools,
             "top_p": responses_api_request.get("top_p"),
             "user": responses_api_request.get("user"),
@@ -2077,3 +2081,84 @@ class LiteLLMCompletionResponsesConfig:
                     return None
 
         return None
+
+    @staticmethod
+    def _filter_empty_assistant_messages(messages: List[Dict]) -> List[Dict]:
+        """
+        Filter out empty assistant messages that have no content and no tool_calls.
+        """
+        from litellm._logging import verbose_logger
+
+        filtered_messages = []
+        for msg in messages:
+            if (
+                msg.get("role") == "assistant"
+                and (msg.get("content") is None or msg.get("content") == "")
+                and not msg.get("tool_calls")
+            ):
+                verbose_logger.debug(f"FILTER: Removing empty assistant message: {msg}")
+                continue
+            filtered_messages.append(msg)
+        return filtered_messages
+
+    @staticmethod
+    async def _patch_store_session_in_redis(response_id: str, session_id: str, messages: List[Dict]) -> None:
+        """Store session immediately in Redis to avoid batch processing delay."""
+        try:
+            import json
+            from datetime import datetime
+
+            import litellm
+            from litellm._logging import verbose_logger
+
+            if (
+                litellm.cache is None
+                or not hasattr(litellm.cache, "cache")
+                or not hasattr(litellm.cache.cache, "init_async_client")
+            ):
+                return
+
+            filtered_messages = LiteLLMCompletionResponsesConfig._filter_empty_assistant_messages(messages)
+            verbose_logger.debug(
+                f"REDIS STORAGE: Storing {len(filtered_messages)} messages (filtered from {len(messages)})"
+            )
+
+            session_data = {
+                "messages": filtered_messages,
+                "session_id": session_id,
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+
+            async_redis_client = litellm.cache.cache.init_async_client()
+            await async_redis_client.set(
+                name=f"litellm_patch:session:{response_id}",
+                value=json.dumps(session_data),
+                ex=86400,
+            )
+        except Exception:
+            pass
+
+    @staticmethod
+    async def _patch_get_session_from_redis(previous_response_id: str) -> Optional[Dict]:
+        """Get session from Redis if available."""
+        try:
+            import json
+
+            import litellm
+
+            if (
+                litellm.cache is None
+                or not hasattr(litellm.cache, "cache")
+                or not hasattr(litellm.cache.cache, "init_async_client")
+            ):
+                return None
+
+            async_redis_client = litellm.cache.cache.init_async_client()
+            session_json = await async_redis_client.get(name=f"litellm_patch:session:{previous_response_id}")
+
+            if session_json:
+                return json.loads(session_json)
+
+            return None
+        except Exception:
+            return None

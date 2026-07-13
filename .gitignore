@@ -2,7 +2,8 @@
 .venv
 .venv_policy_test
 .env
-.claude
+.claude/*
+!.claude/skills/
 .newenv
 newenv/*
 litellm/proxy/myenv/*
@@ -132,3 +133,6 @@ crash.*.log
 .coverage
 
 ui/litellm-dashboard/out/
+
+# Git worktrees
+.worktrees/
