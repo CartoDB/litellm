@@ -47,18 +47,15 @@ jobs:
         run: |
           echo "::group::Detecting target upstream version"
 
-          # Extract version from branch name (upstream-sync/v1.81.0-stable)
+          # Extract version from branch name. carto-upstream-sync-main.yml always names
+          # the branch "upstream-sync/<exact upstream tag>" (e.g. upstream-sync/v1.92.0,
+          # or upstream-sync/v1.83.14-stable for pre-2026-05 syncs) - just strip the prefix.
           BRANCH="${{ github.head_ref }}"
-          VERSION=$(echo "$BRANCH" | sed -n 's/upstream-sync\/v\([0-9.]*\)-stable/v\1.0-stable/p')
+          VERSION=$(echo "$BRANCH" | sed -n 's|^upstream-sync/||p')
 
           if [ -z "$VERSION" ]; then
-            # Try without extra .0
-            VERSION=$(echo "$BRANCH" | sed -n 's/upstream-sync\/\(v[0-9.]*-stable\)/\1/p')
-          fi
-
-          if [ -z "$VERSION" ]; then
-            # Fallback: get latest stable tag
-            VERSION=$(git tag -l "v*-stable" | sort -V | tail -1)
+            # Fallback: latest plain or legacy "-stable" release tag (excludes -rc./-dev. prereleases)
+            VERSION=$(git tag -l | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(-stable)?$' | sort -V | tail -1)
             echo "Using fallback version: $VERSION"
           fi
 
