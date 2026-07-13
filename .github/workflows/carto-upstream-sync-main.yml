@@ -14,7 +14,8 @@
 # would bring in unreleased code that may require database tables not in the stable schema.
 #
 # The workflow runs every Monday at noon and performs two checks:
-#   - Detects new stable releases (tagged with -stable suffix) and syncs main
+#   - Detects new stable releases (latest non-prerelease, non-draft GitHub release;
+#     BerriAI dropped the "-stable" tag suffix after v1.83.14-stable) and syncs main
 #   - Creates PR to carto/main if carto/main is behind main (regardless of upstream sync)
 #
 # Uses X_GITHUB_SUPERCARTOFANTE token to allow workflow file modifications.
@@ -48,6 +49,7 @@ jobs:
       has-new-release: ${{ steps.detect-release.outputs.has-new-release }}
       new-version: ${{ steps.detect-release.outputs.new-version }}
       current-version: ${{ steps.detect-release.outputs.current-version }}
+      current-version-tag: ${{ steps.detect-release.outputs.current-version-tag }}
     steps:
       # Checkout carto/main to check what version we currently have in production
       # NOT main (which has unstable upstream dev code that's always ahead of stable)
@@ -78,9 +80,12 @@ jobs:
           CURRENT_VERSION=$(grep -E "^version\s*=" pyproject.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
           echo "[Sync] Current version in carto/main pyproject.toml: ${CURRENT_VERSION}"
 
-          # Get latest stable release tag (ends with -stable, not a prerelease)
+          # Get latest stable release tag (non-prerelease, non-draft).
+          # BerriAI tagged stable releases with a "-stable" suffix through v1.83.14-stable
+          # (2026-05-02); every release since is a plain "vX.Y.Z" tag with isPrerelease=false.
+          # Filtering on isPrerelease/isDraft alone works for both conventions.
           LATEST_STABLE=$(gh release list --repo BerriAI/litellm --limit 50 --json tagName,isPrerelease,isDraft | \
-            jq -r '.[] | select(.isPrerelease == false and .isDraft == false and (.tagName | endswith("-stable"))) | .tagName' | \
+            jq -r '.[] | select(.isPrerelease == false and .isDraft == false) | .tagName' | \
             sort -V | tail -1)
 
           if [[ -z "${LATEST_STABLE}" ]]; then
@@ -107,6 +112,18 @@ jobs:
             echo "has-new-release=true" >> $GITHUB_OUTPUT
             echo "new-version=${LATEST_STABLE}" >> $GITHUB_OUTPUT
             echo "current-version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
+
+            # Resolve the exact upstream tag for CURRENT_VERSION so compare links work
+            # whether it predates or postdates the "-stable" suffix drop.
+            if git rev-parse "v${CURRENT_VERSION}" >/dev/null 2>&1; then
+              CURRENT_VERSION_TAG="v${CURRENT_VERSION}"
+            elif git rev-parse "v${CURRENT_VERSION}-stable" >/dev/null 2>&1; then
+              CURRENT_VERSION_TAG="v${CURRENT_VERSION}-stable"
+            else
+              CURRENT_VERSION_TAG="v${CURRENT_VERSION}"
+            fi
+            echo "current-version-tag=${CURRENT_VERSION_TAG}" >> $GITHUB_OUTPUT
+
             echo "::notice title=New Release Detected::${LATEST_STABLE} (current: ${CURRENT_VERSION})"
           else
             echo "[Sync] ✅ Already on latest stable: ${CURRENT_VERSION}"
@@ -420,6 +437,7 @@ jobs:
         env:
           NEW_VERSION: ${{ needs.check-new-release.outputs.new-version }}
           CURRENT_VERSION: ${{ needs.check-new-release.outputs.current-version }}
+          CURRENT_VERSION_TAG: ${{ needs.check-new-release.outputs.current-version-tag }}
         run: |
           set -eu
 
@@ -471,7 +489,7 @@ jobs:
           - **Commits Ahead:** ${COMMITS_COUNT}
           - **Files Changed:** ${FILES_CHANGED}
           - **Upstream Repo:** [BerriAI/litellm](https://github.com/BerriAI/litellm)
-          - **Compare Changes:** [v${CURRENT_VERSION}-stable...${NEW_VERSION}](https://github.com/BerriAI/litellm/compare/v${CURRENT_VERSION}-stable...${NEW_VERSION})
+          - **Compare Changes:** [${CURRENT_VERSION_TAG}...${NEW_VERSION}](https://github.com/BerriAI/litellm/compare/${CURRENT_VERSION_TAG}...${NEW_VERSION})
 
           </details>
 
@@ -675,6 +693,7 @@ jobs:
           HAS_NEW_RELEASE: ${{ needs.check-new-release.outputs.has-new-release }}
           NEW_VERSION: ${{ needs.check-new-release.outputs.new-version }}
           CURRENT_VERSION: ${{ needs.check-new-release.outputs.current-version }}
+          CURRENT_VERSION_TAG: ${{ needs.check-new-release.outputs.current-version-tag }}
           NEEDS_SYNC: ${{ needs.check-carto-main-sync.outputs.needs-sync }}
           COMMITS_BEHIND: ${{ needs.check-carto-main-sync.outputs.commits-behind }}
           PR_EXISTS: ${{ needs.check-carto-main-sync.outputs.pr-exists }}
@@ -851,8 +870,8 @@ jobs:
 
           # Build compare URL for viewing changes between versions
           COMPARE_URL=""
-          if [[ -n "${CURRENT_VERSION}" && -n "${NEW_VERSION}" ]]; then
-            COMPARE_URL="https://github.com/BerriAI/litellm/compare/v${CURRENT_VERSION}-stable...${NEW_VERSION}"
+          if [[ -n "${CURRENT_VERSION_TAG}" && -n "${NEW_VERSION}" ]]; then
+            COMPARE_URL="https://github.com/BerriAI/litellm/compare/${CURRENT_VERSION_TAG}...${NEW_VERSION}"
           fi
 
           # Pre-build optional JSON blocks (avoid bash expansion issues in heredoc)

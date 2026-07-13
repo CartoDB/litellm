@@ -10,7 +10,7 @@ CARTO maintains a fork of LiteLLM with custom workflows, documentation, and conf
 flowchart LR
     subgraph Upstream["BerriAI/litellm"]
         U_MAIN[main]
-        U_STABLE[/"v1.X.Y-stable"/]
+        U_STABLE[/"v1.X.Y (latest release)"/]
     end
 
     subgraph CARTO["CartoDB/litellm"]
@@ -286,8 +286,9 @@ gh workflow run carto-upstream-sync-resolver.yml \
 # Current version in production
 grep '^version' pyproject.toml
 
-# Latest upstream stable
-gh release list --repo BerriAI/litellm --limit 10 | grep stable
+# Latest upstream stable (non-prerelease, non-draft)
+gh release list --repo BerriAI/litellm --limit 10 --json tagName,isPrerelease,isDraft \
+  --jq '.[] | select(.isPrerelease == false and .isDraft == false) | .tagName'
 
 # Commits behind upstream
 git fetch origin main carto/main
@@ -301,7 +302,7 @@ If automated resolution fails:
 ```bash
 # 1. Checkout the sync branch
 git fetch origin
-git checkout upstream-sync/v1.X.Y-stable
+git checkout upstream-sync/v1.X.Y
 
 # 2. Start the merge
 git merge origin/carto/main
@@ -311,12 +312,12 @@ git merge origin/carto/main
 
 # 4. Complete the merge
 git add .
-git commit -m "resolve: merge conflicts for v1.X.Y-stable"
+git commit -m "resolve: merge conflicts for v1.X.Y"
 
 # 5. Verify and push
 make lint
 make test-unit
-git push origin upstream-sync/v1.X.Y-stable
+git push origin upstream-sync/v1.X.Y
 ```
 
 ---
@@ -352,10 +353,9 @@ The workflow sends Slack notifications to `#cartodb-ops`:
 
 ### Workflow Not Detecting New Releases
 
-1. Verify release has `-stable` suffix
-2. Check `gh release list --repo BerriAI/litellm`
-3. Ensure version is greater than current (string comparison)
-4. Check workflow logs for jq filter output
+1. Check `gh release list --repo BerriAI/litellm` for the latest non-prerelease, non-draft tag (BerriAI dropped the `-stable` suffix after `v1.83.14-stable`, published 2026-05-02 — releases since are plain `vX.Y.Z` tags)
+2. Ensure version is greater than current (semver comparison via `sort -V`)
+3. Check workflow logs for jq filter output
 
 ### "PR Already Exists" Blocking New Versions
 
