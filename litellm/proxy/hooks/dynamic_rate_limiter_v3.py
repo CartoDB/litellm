@@ -245,7 +245,7 @@ class _PROXY_DynamicRateLimitHandlerV3(CustomLogger):
 
             # Query RPM saturation - always read from Redis for multi-node consistency
             if model_group_info.rpm is not None and model_group_info.rpm > 0:
-                # Use v3 limiter's key format: {key:value}:rate_limit_type
+                # Use v3 limiter's key format: {litellm-rl}key:value:rate_limit_type
                 counter_key = self.v3_limiter.create_rate_limit_keys(
                     key="model_saturation_check",
                     value=model,

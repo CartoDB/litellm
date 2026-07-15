@@ -195,8 +195,8 @@ async def test_rate_limiter_script_return_values_v3(monkeypatch, time_controller
     )
 
     # Verify both counter and window values are stored in cache
-    window_key = f"{{api_key:{_api_key}}}:window"
-    counter_key = f"{{api_key:{_api_key}}}:requests"
+    window_key = f"{{litellm-rl}}api_key:{_api_key}:window"
+    counter_key = f"{{litellm-rl}}api_key:{_api_key}:requests"
 
     window_value = await local_cache.async_get_cache(key=window_key)
     counter_value = await local_cache.async_get_cache(key=counter_key)
@@ -561,7 +561,7 @@ async def test_async_log_failure_event_v3():
     # Verify correct operation was created
     assert len(captured_ops) == 1
     op = captured_ops[0]
-    assert op["key"] == f"{{api_key:{_api_key}}}:max_parallel_requests"
+    assert op["key"] == f"{{litellm-rl}}api_key:{_api_key}:max_parallel_requests"
     assert op["increment_value"] == -1
     assert op["ttl"] == 60  # default window size
 
@@ -2394,9 +2394,9 @@ async def test_agent_rate_limit_tpm_increment_on_success(monkeypatch):
     agent_tpm_op = None
     session_tpm_op = None
     for op in captured_operations:
-        if op["key"] == f"{{agent:{_agent_id}}}:tokens":
+        if op["key"] == f"{{litellm-rl}}agent:{_agent_id}:tokens":
             agent_tpm_op = op
-        elif op["key"] == f"{{agent_session:{_agent_id}:{_session_id}}}:tokens":
+        elif op["key"] == f"{{litellm-rl}}agent_session:{_agent_id}:{_session_id}:tokens":
             session_tpm_op = op
 
     assert agent_tpm_op is not None, "Agent TPM increment should be present"

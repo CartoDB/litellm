@@ -284,7 +284,10 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
         """
         Create the rate limit keys for the given key and value.
         """
-        counter_key = f"{{{key}:{value}}}:{rate_limit_type}"
+        # Constant hash tag so every rate-limit key hashes to one Redis Cluster
+        # slot; the batch/increment Lua EVALs stay single-slot and avoid CROSSSLOT
+        # on cluster-mode servers. Do not revert to a per-descriptor tag.
+        counter_key = f"{{litellm-rl}}{key}:{value}:{rate_limit_type}"
 
         return counter_key
 
@@ -480,7 +483,7 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
             max_parallel_requests_limit = rate_limit.get("max_parallel_requests")
             window_size = rate_limit.get("window_size") or self.window_size
 
-            window_key = f"{{{descriptor_key}:{descriptor_value}}}:window"
+            window_key = f"{{litellm-rl}}{descriptor_key}:{descriptor_value}:window"
 
             rate_limit_set = False
             if requests_limit is not None:
