@@ -424,8 +424,12 @@ jobs:
             **Docker Build Failed:** ${{ steps.extract-errors.outputs.docker-failed }}
             **CARTO Feature Tests Failed:** ${{ steps.extract-errors.outputs.tests-failed }}
 
-            **Key insight:** The upstream TAG code is TESTED and WORKING. If something is "missing",
-            the conflict resolver likely kept an old carto/main version instead of the new upstream TAG.
+            **Key insight:** Upstream TAG code works for UPSTREAM's call graph, not
+            necessarily for CARTO's. It is tested, but CARTO adds call sites,
+            parameters, and stored-data contracts upstream never exercises. When a
+            fix accepts an upstream file, re-verify CARTO's callers, attributes, and
+            data formats still line up - a file that imports cleanly can still be
+            broken at every CARTO call site.
 
             ---
 
@@ -439,6 +443,25 @@ jobs:
             These patterns MUST still exist after your fixes. If a fix would remove a
             pattern, find an alternative approach that preserves the CARTO feature.
 
+            **Restore CARTO code VERBATIM, do not paraphrase.** When a fix needs a
+            CARTO block back, copy it byte-identical from carto/main
+            (`git show origin/carto/main:<file>`) - including comments and debug
+            logging - and confirm with `diff`. Adapt only where an upstream API
+            change makes verbatim impossible, keep it minimal, and mark it
+            `# CARTO PATCH`.
+
+            **The manifest grep proves a string EXISTS, not that it is WIRED.**
+            After your fix, run an orphan sweep - a CARTO helper defined with no
+            caller is a half-restored feature (the v1.92.0 sync left
+            `_patch_get_session_from_redis` defined but uncalled):
+            ```bash
+            for fn in $(git grep -hoE "def (_patch_[a-z_0-9]+|_carto_[a-z_0-9]+)" -- litellm/ | sed -E 's/def //' | sort -u); do
+              refs=$(git grep -c "$fn" -- litellm/ | awk -F: '{s+=$NF} END {print s}')
+              defs=$(git grep -c "def $fn" -- litellm/ | awk -F: '{s+=$NF} END {print s}')
+              [ "$refs" -le "$defs" ] && echo "ORPHAN: $fn (defined, never called)"
+            done
+            ```
+
             ---
 
             ## STEP 0: FIX LOOP DETECTION (DO THIS FIRST!)
@@ -449,11 +472,24 @@ jobs:
             cat /tmp/pr_comments.md | grep -iE "Added.*function|sync.*file|ImportError|fix:" | head -15
             ```
 
-            **If same file appears 3+ times → SYNC ENTIRE FILE from upstream TAG:**
+            **If same file appears 3+ times → break the loop, BUT check the
+            manifest first.**
+
+            If the file is NOT in any feature's `files:` in
+            `.github/carto-features.yml`, sync the entire file from upstream TAG:
             ```bash
             # ORIG_HEAD = upstream TAG version (pre-merge state)
             git show ORIG_HEAD:path/to/problematic_file.py > path/to/problematic_file.py
             git add path/to/problematic_file.py
+            ```
+
+            If the file IS a manifest file, do NOT blindly sync it from upstream -
+            that is exactly how CARTO wirings get erased. Instead, take upstream's
+            version as the base and re-apply the CARTO block VERBATIM from
+            carto/main, then run the orphan/wiring checks:
+            ```bash
+            git show ORIG_HEAD:<file> > <file>                 # upstream base
+            git show origin/carto/main:<file> | less           # copy CARTO blocks back byte-identical
             ```
 
             ---
