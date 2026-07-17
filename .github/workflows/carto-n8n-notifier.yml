@@ -224,7 +224,9 @@ jobs:
         id: digest
         run: |
           set -eu
-          IMAGE="ghcr.io/${{ github.repository }}-non_root:${{ steps.pr-info.outputs.image-tag }}"
+          # GHCR requires lowercase repo paths; github.repository preserves case (CartoDB/litellm).
+          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE="ghcr.io/${REPO_LOWER}-non_root:${{ steps.pr-info.outputs.image-tag }}"
           for i in 1 2 3 4 5; do
             DIGEST=$(docker buildx imagetools inspect "${IMAGE}" --format '{{.Manifest.Digest}}' 2>/dev/null || true)
             if [[ "${DIGEST}" == sha256:* ]]; then
@@ -348,7 +350,9 @@ jobs:
         id: digest
         run: |
           set -eu
-          IMAGE="ghcr.io/${{ github.repository }}-non_root:${{ github.event.release.tag_name }}"
+          # GHCR requires lowercase repo paths; github.repository preserves case (CartoDB/litellm).
+          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE="ghcr.io/${REPO_LOWER}-non_root:${{ github.event.release.tag_name }}"
           for i in 1 2 3 4 5; do
             DIGEST=$(docker buildx imagetools inspect "${IMAGE}" --format '{{.Manifest.Digest}}' 2>/dev/null || true)
             if [[ "${DIGEST}" == sha256:* ]]; then
