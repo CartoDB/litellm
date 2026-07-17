@@ -13,6 +13,7 @@ from litellm.responses.litellm_completion_transformation.transformation import (
     LiteLLMCompletionResponsesConfig,
 )
 from litellm.responses.streaming_iterator import BaseResponsesAPIStreamingIterator
+from litellm.responses.utils import ResponsesAPIRequestUtils
 from litellm.types.llms.openai import (
     ResponseInputParam,
     ResponsesAPIOptionalRequestParams,
@@ -121,12 +122,20 @@ class LiteLLMCompletionTransformationHandler:
                 )
             )
 
-            # CARTO PATCH: Store session immediately in Redis to avoid batch processing delay
+            # CARTO PATCH: Store session immediately in Redis to avoid batch processing delay.
+            # Key by the DECODED response id: previous_response_id is decoded
+            # (responses/utils.py) before it reaches the session handler, so an
+            # encoded store key can never be read back.
             if responses_api_response.id:
                 session_id = kwargs.get("litellm_trace_id") or str(uuid.uuid4())
                 current_messages = litellm_completion_request.get("messages", [])
+                raw_response_id = (
+                    ResponsesAPIRequestUtils.decode_previous_response_id_to_original_previous_response_id(
+                        responses_api_response.id
+                    )
+                )
                 await LiteLLMCompletionResponsesConfig._patch_store_session_in_redis(
-                    response_id=responses_api_response.id,
+                    response_id=raw_response_id,
                     session_id=session_id,
                     messages=current_messages
                 )

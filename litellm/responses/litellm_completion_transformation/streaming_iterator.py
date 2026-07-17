@@ -1123,8 +1123,17 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
                         content_item = output_item.content[0]
                         if hasattr(content_item, "text"):
                             messages.append({"role": "assistant", "content": content_item.text})
+                # CARTO PATCH: key by the DECODED response id. The completed event
+                # carries litellm's b64-encoded id, but previous_response_id is decoded
+                # (responses/utils.py) before it reaches the session handler, so an
+                # encoded store key can never be read back.
+                raw_response_id = (
+                    ResponsesAPIRequestUtils.decode_previous_response_id_to_original_previous_response_id(
+                        response.id
+                    )
+                )
                 await LiteLLMCompletionResponsesConfig._patch_store_session_in_redis(
-                    response_id=response.id,
+                    response_id=raw_response_id,
                     session_id=session_id,
                     messages=messages,
                 )

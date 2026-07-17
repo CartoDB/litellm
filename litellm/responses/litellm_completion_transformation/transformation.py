@@ -315,21 +315,36 @@ class LiteLLMCompletionResponsesConfig:
         """
         Async hook to get the chain of previous input and output pairs and return a list of Chat Completion messages
 
-        CARTO PATCH: Redis-first lookup (PR #16). The DB-backed session store is
-        batch-written, so an immediate follow-up turn can miss its own history and
-        derail the conversation. Sessions written by _patch_store_session_in_redis
-        must be read back here before falling through to the DB path.
+        CARTO PATCH: Added Redis-first lookup to fix conversation context timing issues
         """
+        from litellm._logging import verbose_logger
+
+        verbose_logger.debug("=" * 80)
+        verbose_logger.debug("SESSION HANDLER: Loading conversation history")
+        verbose_logger.debug(f"previous_response_id: {previous_response_id}")
+        verbose_logger.debug(f"Current messages in request: {len(litellm_completion_request.get('messages', []))}")
+        verbose_logger.debug("=" * 80)
+
+        # CARTO PATCH: Try Redis first for immediate availability
         redis_session = await LiteLLMCompletionResponsesConfig._patch_get_session_from_redis(previous_response_id)
+        verbose_logger.debug(f"Redis session found: {redis_session is not None}")
         if redis_session:
             _messages = litellm_completion_request.get("messages") or []
-            session_messages = LiteLLMCompletionResponsesConfig._filter_empty_assistant_messages(
-                redis_session.get("messages") or []
-            )
+            session_messages = redis_session.get("messages") or []
+            verbose_logger.debug(f"Redis: Loaded {len(session_messages)} session messages (before filtering)")
+
+            # FILTER: Remove empty assistant messages (safety check for Redis)
+            session_messages = LiteLLMCompletionResponsesConfig._filter_empty_assistant_messages(session_messages)
+            verbose_logger.debug(f"Redis: {len(session_messages)} messages after filtering")
+            verbose_logger.debug(f"Redis: Adding {len(_messages)} new messages")
+
             litellm_completion_request["messages"] = session_messages + _messages
+            verbose_logger.debug(f"Redis: Total messages after merge: {len(litellm_completion_request['messages'])}")
             litellm_completion_request["litellm_trace_id"] = redis_session.get("session_id")
             return litellm_completion_request
 
+        # CARTO PATCH: Fallback to existing enterprise/database logic
+        verbose_logger.debug(f"Enterprise handler available: {ResponsesSessionHandler is not None}")
         chat_completion_session = ChatCompletionSession(messages=[], litellm_session_id=None)
         if previous_response_id:
             chat_completion_session = (

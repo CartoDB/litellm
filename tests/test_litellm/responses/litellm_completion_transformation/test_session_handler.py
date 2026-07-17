@@ -508,3 +508,78 @@ async def test_session_handler_falls_back_to_db_when_redis_empty():
 
     mock_db_get.assert_awaited_once()
     assert result["messages"][-1]["content"] == "hello"
+
+
+@pytest.mark.asyncio
+async def test_streaming_redis_store_key_matches_decoded_lookup_key():
+    """
+    CARTO PATCH regression: the streaming iterator must store the Redis session
+    under the DECODED response id. The response.completed event carries litellm's
+    b64-encoded id, but previous_response_id is decoded (responses/utils.py)
+    before it reaches the session handler - so a session stored under the encoded
+    id can never be read back, and every follow-up turn loses its history.
+    """
+    from types import SimpleNamespace
+
+    from litellm.responses.litellm_completion_transformation.streaming_iterator import (
+        LiteLLMCompletionStreamingIterator,
+    )
+    from litellm.responses.litellm_completion_transformation.transformation import (
+        LiteLLMCompletionResponsesConfig,
+    )
+    from litellm.responses.utils import ResponsesAPIRequestUtils
+    from litellm.types.utils import Delta, ModelResponseStream, StreamingChoices
+
+    def make_chunk(content=None, finish=None):
+        return ModelResponseStream(
+            id="chatcmpl-real-id-123",
+            choices=[StreamingChoices(index=0, delta=Delta(content=content), finish_reason=finish)],
+            model="gemini-pro",
+        )
+
+    class FakeStream:
+        def __init__(self, chunks):
+            self._chunks = list(chunks)
+            self.logging_obj = SimpleNamespace(litellm_trace_id="trace-1", model_call_details={})
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not self._chunks:
+                raise StopAsyncIteration
+            return self._chunks.pop(0)
+
+    iterator = LiteLLMCompletionStreamingIterator(
+        model="gemini-pro",
+        litellm_custom_stream_wrapper=FakeStream(
+            [make_chunk("Hello "), make_chunk("Bristol!"), make_chunk(None, "stop")]
+        ),
+        request_input="Center the map on Bristol",
+        responses_api_request={},
+        custom_llm_provider="gemini",
+        litellm_metadata={},
+        litellm_completion_request={
+            "messages": [{"role": "user", "content": "Center the map on Bristol"}],
+            "litellm_trace_id": "trace-1",
+        },
+    )
+
+    store_mock = AsyncMock()
+    client_visible_id = None
+    with patch.object(LiteLLMCompletionResponsesConfig, "_patch_store_session_in_redis", new=store_mock):
+        async for event in iterator:
+            if "completed" in str(getattr(event, "type", "")).lower():
+                client_visible_id = event.response.id
+
+    assert client_visible_id is not None
+    store_mock.assert_awaited_once()
+    stored_key = store_mock.await_args.kwargs["response_id"]
+    lookup_key = ResponsesAPIRequestUtils.decode_previous_response_id_to_original_previous_response_id(
+        client_visible_id
+    )
+    assert stored_key == lookup_key
+    assert store_mock.await_args.kwargs["messages"] == [
+        {"role": "user", "content": "Center the map on Bristol"},
+        {"role": "assistant", "content": "Hello Bristol!"},
+    ]
