@@ -314,7 +314,22 @@ class LiteLLMCompletionResponsesConfig:
     ) -> dict:
         """
         Async hook to get the chain of previous input and output pairs and return a list of Chat Completion messages
+
+        CARTO PATCH: Redis-first lookup (PR #16). The DB-backed session store is
+        batch-written, so an immediate follow-up turn can miss its own history and
+        derail the conversation. Sessions written by _patch_store_session_in_redis
+        must be read back here before falling through to the DB path.
         """
+        redis_session = await LiteLLMCompletionResponsesConfig._patch_get_session_from_redis(previous_response_id)
+        if redis_session:
+            _messages = litellm_completion_request.get("messages") or []
+            session_messages = LiteLLMCompletionResponsesConfig._filter_empty_assistant_messages(
+                redis_session.get("messages") or []
+            )
+            litellm_completion_request["messages"] = session_messages + _messages
+            litellm_completion_request["litellm_trace_id"] = redis_session.get("session_id")
+            return litellm_completion_request
+
         chat_completion_session = ChatCompletionSession(messages=[], litellm_session_id=None)
         if previous_response_id:
             chat_completion_session = (

@@ -435,3 +435,76 @@ async def test_get_chat_completion_message_history_empty_response_dict():
 
         # Verify the session was still created correctly
         assert result["litellm_session_id"] == "test-session"
+
+
+@pytest.mark.asyncio
+async def test_session_handler_uses_redis_first_carto_patch():
+    """
+    CARTO PATCH regression (PR #16): async_responses_api_session_handler must
+    consult the Redis session store before the DB-backed session handler. The
+    DB store is batch-written, so an immediate follow-up turn misses its own
+    history without the Redis-first read. This wiring was silently dropped in
+    the v1.92.0 upstream sync (helpers survived as orphans) and caused agent
+    conversations to lose context and loop in integration tests.
+    """
+    from litellm.responses.litellm_completion_transformation.transformation import (
+        LiteLLMCompletionResponsesConfig,
+    )
+
+    redis_session = {
+        "messages": [
+            {"role": "user", "content": "who is Michael Jordan"},
+            {"role": "assistant", "content": "A basketball player."},
+        ],
+        "session_id": "trace-abc-123",
+    }
+
+    with patch.object(
+        LiteLLMCompletionResponsesConfig,
+        "_patch_get_session_from_redis",
+        new=AsyncMock(return_value=redis_session),
+    ) as mock_redis_get, patch.object(
+        ResponsesSessionHandler,
+        "get_chat_completion_message_history_for_previous_response_id",
+        new=AsyncMock(),
+    ) as mock_db_get:
+        request = {"messages": [{"role": "user", "content": "and Scottie Pippen?"}]}
+        result = await LiteLLMCompletionResponsesConfig.async_responses_api_session_handler(
+            previous_response_id="resp_123",
+            litellm_completion_request=request,
+        )
+
+    mock_redis_get.assert_awaited_once_with("resp_123")
+    mock_db_get.assert_not_awaited()
+    assert result["litellm_trace_id"] == "trace-abc-123"
+    assert [m["content"] for m in result["messages"]] == [
+        "who is Michael Jordan",
+        "A basketball player.",
+        "and Scottie Pippen?",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_session_handler_falls_back_to_db_when_redis_empty():
+    """CARTO PATCH: with no Redis session, the DB-backed handler is used."""
+    from litellm.responses.litellm_completion_transformation.transformation import (
+        LiteLLMCompletionResponsesConfig,
+    )
+
+    with patch.object(
+        LiteLLMCompletionResponsesConfig,
+        "_patch_get_session_from_redis",
+        new=AsyncMock(return_value=None),
+    ), patch.object(
+        ResponsesSessionHandler,
+        "get_chat_completion_message_history_for_previous_response_id",
+        new=AsyncMock(return_value={"messages": [], "litellm_session_id": None}),
+    ) as mock_db_get:
+        request = {"messages": [{"role": "user", "content": "hello"}]}
+        result = await LiteLLMCompletionResponsesConfig.async_responses_api_session_handler(
+            previous_response_id="resp_456",
+            litellm_completion_request=request,
+        )
+
+    mock_db_get.assert_awaited_once()
+    assert result["messages"][-1]["content"] == "hello"
