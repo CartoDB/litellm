@@ -79,7 +79,8 @@ jobs:
         id: scope
         run: |
           set -eu
-          PATHS=$(python3 - <<'EOF'
+          # uv venv python: PyYAML is a litellm dependency; the runner's bare python3 lacks it
+          PATHS=$(uv run --no-sync python - <<'EOF'
           import pathlib
           import yaml
 
