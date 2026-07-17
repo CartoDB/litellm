@@ -6,10 +6,13 @@ name: CARTO Upstream Sync - Ready Checker
 
 on:
   workflow_run:
+    # "LiteLLM Mock Tests" is upstream-deprecated (workflow_dispatch only, no
+    # pull_request trigger) and "LiteLLM Linting" only triggers for PRs against
+    # upstream's own branches (main, litellm_*), never carto/main - so neither
+    # ever completes for these PRs. CARTO's own Docker CI is the only check
+    # that actually runs against upstream-sync/* branches.
     workflows:
-      - "LiteLLM Mock Tests (folder - tests/test_litellm)"
       - "CARTO - Deploy Docker Image (CI)"
-      - "LiteLLM Linting"
     types:
       - completed
     branches:
