@@ -17,7 +17,10 @@ import pytest
 import litellm
 from litellm import completion, acompletion
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
-from litellm.llms.snowflake.chat.transformation import SnowflakeConfig
+from litellm.llms.snowflake.chat.transformation import (
+    SnowflakeConfig,
+    SnowflakeStreamingHandler,
+)
 from litellm.types.utils import ModelResponse
 
 
@@ -316,6 +319,46 @@ class TestSnowflakeToolTransformation:
         assert "tool_choice" in supported_params
         assert "temperature" in supported_params
         assert "max_tokens" in supported_params
+
+
+class TestSnowflakeStreamingHandlerAnthropic:
+    """Regression tests for streamed tool_use parsing on the native /messages endpoint."""
+
+    def test_input_json_delta_does_not_repeat_tool_name(self):
+        handler = SnowflakeStreamingHandler(streaming_response=iter([]), sync_stream=True)
+
+        start_chunk = handler.chunk_parser(
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {
+                    "type": "tool_use",
+                    "id": "toolu_1",
+                    "name": "set_layer_style",
+                },
+            }
+        )
+        assert start_chunk["tool_use"]["function"]["name"] == "set_layer_style"
+
+        delta_chunks = [
+            handler.chunk_parser(
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "input_json_delta", "partial_json": partial},
+                }
+            )
+            for partial in ['{"col', 'or": "red"}']
+        ]
+
+        accumulated_name = start_chunk["tool_use"]["function"]["name"] or ""
+        accumulated_arguments = start_chunk["tool_use"]["function"]["arguments"] or ""
+        for chunk in delta_chunks:
+            accumulated_name += chunk["tool_use"]["function"]["name"] or ""
+            accumulated_arguments += chunk["tool_use"]["function"]["arguments"] or ""
+
+        assert accumulated_name == "set_layer_style"
+        assert accumulated_arguments == '{"color": "red"}'
 
 
 class TestSnowFlakeCompletion:

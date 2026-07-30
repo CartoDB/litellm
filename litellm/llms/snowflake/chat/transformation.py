@@ -637,7 +637,7 @@ class SnowflakeStreamingHandler(BaseModelResponseIterator):
                         id=self._tool_id,
                         type="function",
                         function={
-                            "name": self._tool_name,
+                            "name": "",
                             "arguments": delta.get("partial_json", ""),
                         },
                         index=self._tool_index,
