@@ -358,7 +358,9 @@ def handle_generic_response(
     return model_response
 
 
-def handle_generic_stream_chunk(dict_chunk: dict) -> ModelResponseStream:
+def handle_generic_stream_chunk(
+    dict_chunk: dict, tool_call_indices: Optional[Dict[str, int]] = None
+) -> ModelResponseStream:
     """Parse a single GENERIC SSE chunk into a LiteLLM ModelResponseStream."""
     # OCI streams tool calls progressively — early chunks may omit required fields.
     if dict_chunk.get("message") and dict_chunk["message"].get("toolCalls"):
@@ -407,17 +409,26 @@ def handle_generic_stream_chunk(dict_chunk: dict) -> ModelResponseStream:
     # GENERIC and Cohere chunks.
     tool_calls: Optional[List[Dict[str, Any]]] = None
     if typed_chunk.message and typed_chunk.message.toolCalls:
-        tool_calls = [
-            {
-                "id": tc.id or _synthesize_oci_tool_call_id(i, tc.name, tc.arguments),
-                "type": "function",
-                "function": {
-                    "name": tc.name,
-                    "arguments": tc.arguments,
-                },
-            }
-            for i, tc in enumerate(typed_chunk.message.toolCalls)
-        ]
+        if tool_call_indices is None:
+            tool_call_indices = {}
+        tool_calls = []
+        for i, tc in enumerate(typed_chunk.message.toolCalls):
+            resolved_id = tc.id or _synthesize_oci_tool_call_id(
+                i, tc.name, tc.arguments
+            )
+            tool_calls.append(
+                {
+                    "id": resolved_id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.name,
+                        "arguments": tc.arguments,
+                    },
+                    "index": tool_call_indices.setdefault(
+                        resolved_id, len(tool_call_indices)
+                    ),
+                }
+            )
 
     finish_reason: Optional[str] = _normalize_oci_finish_reason(typed_chunk.finishReason)
 

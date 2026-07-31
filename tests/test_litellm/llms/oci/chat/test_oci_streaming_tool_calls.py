@@ -15,6 +15,7 @@ import sys
 sys.path.insert(0, os.path.abspath("../../../../.."))
 
 from litellm.llms.oci.chat.generic import handle_generic_stream_chunk
+from litellm.main import stream_chunk_builder
 from litellm.types.utils import ModelResponseStream
 
 
@@ -209,6 +210,96 @@ class TestOCIStreamingToolCalls:
             result.choices[0].delta.tool_calls[2]["function"]["arguments"]
             == '{"expression": "2+2"}'
         )
+
+    def test_stream_chunk_emits_position_index(self):
+        """Each tool-call dict carries its enumerate position as `index`."""
+        chunk_data = {
+            "index": 0,
+            "finishReason": None,
+            "message": {
+                "role": "ASSISTANT",
+                "content": None,
+                "toolCalls": [
+                    {"type": "FUNCTION", "id": "call_1", "name": "get_weather", "arguments": ""},
+                    {"type": "FUNCTION", "id": "call_2", "name": "get_time", "arguments": ""},
+                ],
+            },
+        }
+
+        result = handle_generic_stream_chunk(chunk_data)
+
+        assert result.choices[0].delta.tool_calls[0]["index"] == 0
+        assert result.choices[0].delta.tool_calls[1]["index"] == 1
+
+    def test_concurrent_tool_calls_across_chunks_do_not_collapse(self):
+        """
+        Two distinct tool calls streamed as separate progressive chunks (as OCI
+        does for GENERIC/Grok agent turns issuing more than one call) must both
+        survive stream_chunk_builder reconstruction. Without a stable per-call
+        `index`, every call defaults to index 0 and later calls silently
+        overwrite earlier ones — this is the root cause behind agents reporting
+        "Tool X not found" for whichever call didn't survive.
+        """
+        tool_call_indices = {}
+        chunks = [
+            handle_generic_stream_chunk(c, tool_call_indices)
+            for c in [
+                {
+                    "index": 0,
+                    "finishReason": None,
+                    "message": {
+                        "role": "ASSISTANT",
+                        "content": None,
+                        "toolCalls": [
+                            {"type": "FUNCTION", "id": "call_A", "name": "get_active_filters", "arguments": ""}
+                        ],
+                    },
+                },
+                {
+                    "index": 0,
+                    "finishReason": None,
+                    "message": {
+                        "role": "ASSISTANT",
+                        "content": None,
+                        "toolCalls": [
+                            {"type": "FUNCTION", "id": "call_B", "name": "set_layer_style", "arguments": ""}
+                        ],
+                    },
+                },
+                {
+                    "index": 0,
+                    "finishReason": None,
+                    "message": {
+                        "role": "ASSISTANT",
+                        "content": None,
+                        "toolCalls": [
+                            {"type": "FUNCTION", "id": "call_A", "name": "get_active_filters", "arguments": "{}"}
+                        ],
+                    },
+                },
+                {
+                    "index": 0,
+                    "finishReason": "tool_calls",
+                    "message": {
+                        "role": "ASSISTANT",
+                        "content": None,
+                        "toolCalls": [
+                            {
+                                "type": "FUNCTION",
+                                "id": "call_B",
+                                "name": "set_layer_style",
+                                "arguments": '{"color": "red"}',
+                            }
+                        ],
+                    },
+                },
+            ]
+        ]
+
+        final = stream_chunk_builder(chunks)
+
+        tool_call_names = {tc.function.name for tc in final.choices[0].message.tool_calls}
+        assert tool_call_names == {"get_active_filters", "set_layer_style"}
 
     def test_stream_chunk_missing_id_is_deterministic_across_chunks(self):
         """

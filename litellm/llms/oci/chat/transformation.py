@@ -738,6 +738,7 @@ class OCIStreamWrapper(CustomStreamWrapper):
         # terminal chunk's text is a duplicate to suppress) from the degenerate
         # single-event case (terminal chunk carries the only copy of the text).
         self._cohere_text_emitted = False
+        self._generic_tool_call_indices: Dict[str, int] = {}
 
     def chunk_creator(self, chunk: Any) -> ModelResponseStream:
         if not isinstance(chunk, str):
@@ -769,7 +770,7 @@ class OCIStreamWrapper(CustomStreamWrapper):
                         self._cohere_text_emitted = True
                         break
             return result
-        return handle_generic_stream_chunk(dict_chunk)
+        return handle_generic_stream_chunk(dict_chunk, self._generic_tool_call_indices)
 
 
 __all__ = [
