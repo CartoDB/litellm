@@ -320,6 +320,37 @@ class TestSnowflakeToolTransformation:
         assert "temperature" in supported_params
         assert "max_tokens" in supported_params
 
+    def test_transform_request_strips_openai_annotations_from_replayed_turn(self):
+        config = SnowflakeConfig()
+        messages = [
+            {"role": "user", "content": "What is this map about?"},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "This map shows NYC taxi demand.",
+                        "annotations": [],
+                    }
+                ],
+            },
+            {"role": "user", "content": "Can you show me the busiest area?"},
+        ]
+
+        body = config.transform_request(
+            model="snowflake/claude-opus-4-8",
+            messages=messages,
+            optional_params={},
+            litellm_params={},
+            headers={},
+        )
+
+        assistant_message = body["messages"][1]
+        assert assistant_message["role"] == "assistant"
+        assert assistant_message["content"] == [
+            {"type": "text", "text": "This map shows NYC taxi demand."}
+        ]
+
 
 class TestSnowflakeStreamingHandlerAnthropic:
     """Regression tests for streamed tool_use parsing on the native /messages endpoint."""

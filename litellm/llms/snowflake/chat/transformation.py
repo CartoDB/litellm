@@ -50,21 +50,18 @@ def _is_claude_model(model: str) -> bool:
     return any(name.startswith(p) for p in _CLAUDE_MODEL_PREFIXES)
 
 
-def _strip_openai_annotations(message_dict: Dict[str, Any]) -> None:
-    """
-    Remove the OpenAI-only `annotations` field from each content block.
-    Snowflake Cortex rejects unknown fields inside text content blocks with
-    `390142 Incoming request does not contain a valid payload`. The field
-    appears on assistant messages emitted by OpenAI-compatible providers
-    (for citation parity with the Responses API) and survives the Agents
-    SDK replay on every follow-up turn.
-    """
-    content = message_dict.get("content")
+def _strip_openai_annotations(content: Any) -> Any:
+    """Remove the OpenAI-only `annotations` field from each content block."""
     if not isinstance(content, list):
-        return
-    for block in content:
-        if isinstance(block, dict) and "annotations" in block:
-            block.pop("annotations", None)
+        return content
+    return [
+        (
+            {k: v for k, v in block.items() if k != "annotations"}
+            if isinstance(block, dict)
+            else block
+        )
+        for block in content
+    ]
 
 
 def _content_to_text_blocks(content: Any) -> List[Dict[str, Any]]:
@@ -270,7 +267,12 @@ class SnowflakeConfig(SnowflakeBaseConfig, OpenAIGPTConfig):
                         )
                     conversation.append({"role": "assistant", "content": content_blocks})
                 else:
-                    conversation.append({"role": "assistant", "content": content})
+                    conversation.append(
+                        {
+                            "role": "assistant",
+                            "content": _strip_openai_annotations(content),
+                        }
+                    )
             elif role == "tool":
                 tool_call_id = (
                     msg.get("tool_call_id", "") if isinstance(msg, dict) else getattr(msg, "tool_call_id", "")
@@ -292,7 +294,9 @@ class SnowflakeConfig(SnowflakeBaseConfig, OpenAIGPTConfig):
                 else:
                     conversation.append({"role": "user", "content": [tool_result_block]})
             else:
-                conversation.append({"role": role, "content": content})
+                conversation.append(
+                    {"role": role, "content": _strip_openai_annotations(content)}
+                )
 
         system: Optional[str] = "\n\n".join(system_parts) if system_parts else None
         return system, conversation
