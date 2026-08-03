@@ -165,6 +165,38 @@ def adapt_messages_to_generic_oci_standard_tool_response(role: str, tool_call_id
     )
 
 
+def _reorder_tool_results_to_match_tool_calls(
+    messages: List[OCIMessage],
+) -> List[OCIMessage]:
+    """Reorder each run of TOOL results to match the preceding assistant's toolCalls order.
+
+    OCI GENERIC validates tool results positionally against the assistant
+    message's toolCalls, rejecting out-of-order results with
+    "Invalid parameter: 'toolCallId' of '<id>' not found in 'toolCalls' of
+    previous message". Parallel tool calls executed concurrently return their
+    results in completion order, which need not match the toolCalls order.
+    """
+    reordered: List[OCIMessage] = []
+    i = 0
+    while i < len(messages):
+        msg = messages[i]
+        reordered.append(msg)
+        i += 1
+        if not msg.toolCalls:
+            continue
+        run_start = i
+        while i < len(messages) and messages[i].toolCallId is not None:
+            i += 1
+        run = messages[run_start:i]
+        if len(run) > 1:
+            positions = {tc.id: pos for pos, tc in enumerate(msg.toolCalls)}
+            run = sorted(
+                run, key=lambda m: positions.get(m.toolCallId or "", len(positions))
+            )
+        reordered.extend(run)
+    return reordered
+
+
 def adapt_messages_to_generic_oci_standard(
     messages: List[AllMessageValues],
 ) -> List[OCIMessage]:
@@ -202,7 +234,7 @@ def adapt_messages_to_generic_oci_standard(
                 )
             new_messages.append(adapt_messages_to_generic_oci_standard_tool_response(role, tool_call_id, content))
 
-    return new_messages
+    return _reorder_tool_results_to_match_tool_calls(new_messages)
 
 
 # ---------------------------------------------------------------------------

@@ -20,6 +20,15 @@ features:
       - pattern: "_queue_tool_call_delta_events"
         file: litellm/responses/litellm_completion_transformation/streaming_iterator.py
 
+  - name: "OCI Parallel Tool Result Reordering"
+    source_prs: [121]
+    description: "OCI GENERIC validates tool results positionally against the assistant's toolCalls order, rejecting out-of-order results with \"'toolCallId' of '<id>' not found in 'toolCalls' of previous message\". Parallel tool calls (e.g. xAI Grok) executed concurrently return results in completion order, so the adapter reorders each TOOL run to match the toolCalls order. Not present upstream; candidate for upstreaming."
+    files:
+      - litellm/llms/oci/chat/generic.py
+    verification:
+      - pattern: "_reorder_tool_results_to_match_tool_calls(new_messages)"
+        file: litellm/llms/oci/chat/generic.py
+
   - name: "OCI Inline PEM Key Normalization"
     source_prs: [17159]
     description: "Accepts the PEM private key as a string via oci_key, normalizes escaped newlines, and validates input type. Required for UI-based OCI credentials (textarea field)."

@@ -186,6 +186,61 @@ class TestGenericMessageAdaptation:
         with pytest.raises(OCIError, match="`content` must be a string or list"):
             adapt_messages_to_generic_oci_standard(messages)
 
+    def test_parallel_tool_results_reordered_to_match_tool_calls(self):
+        """
+        OCI GENERIC validates tool results positionally against the assistant's
+        toolCalls, rejecting out-of-order results with "Invalid parameter:
+        'toolCallId' of '<id>' not found in 'toolCalls' of previous message".
+        Parallel tool calls executed concurrently return results in completion
+        order, so the adapter must emit them back in toolCalls order.
+        """
+        uuid = "4800fc6f-9fc5-4ec6-a3f2-53f91476abe5"
+        messages = [
+            {"role": "user", "content": "make a layer"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": f"call-{uuid}-0",
+                        "type": "function",
+                        "function": {"name": "get_active_filters", "arguments": "{}"},
+                    },
+                    {
+                        "id": f"call-{uuid}-1",
+                        "type": "function",
+                        "function": {"name": "get_semantic_model", "arguments": "{}"},
+                    },
+                ],
+            },
+            {"role": "tool", "content": "semantic model", "tool_call_id": f"call-{uuid}-1"},
+            {"role": "tool", "content": "no filters", "tool_call_id": f"call-{uuid}-0"},
+        ]
+
+        result = adapt_messages_to_generic_oci_standard(messages)
+
+        assert [m.role for m in result] == ["USER", "ASSISTANT", "TOOL", "TOOL"]
+        assert result[2].toolCallId == f"call-{uuid}-0"
+        assert result[3].toolCallId == f"call-{uuid}-1"
+
+    def test_tool_results_with_unknown_ids_keep_arrival_order_after_known(self):
+        messages = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "call-a", "type": "function", "function": {"name": "f", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "content": "x", "tool_call_id": "call-unknown-1"},
+            {"role": "tool", "content": "y", "tool_call_id": "call-a"},
+            {"role": "tool", "content": "z", "tool_call_id": "call-unknown-2"},
+        ]
+
+        result = adapt_messages_to_generic_oci_standard(messages)
+
+        assert [m.toolCallId for m in result[1:]] == ["call-a", "call-unknown-1", "call-unknown-2"]
+
 
 # ---------------------------------------------------------------------------
 # handle_generic_response — error and None message paths
