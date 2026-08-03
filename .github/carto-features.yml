@@ -83,15 +83,11 @@ features:
 
   - name: "Snowflake Cortex Claude Function-Calling Follow-up Turns"
     source_prs: [111]
-    description: "Unblocks multi-turn Claude function-calling on Cortex: rebuilds assistant tool_use content_list, merges consecutive text+tool_call assistant turns, and strips OpenAI-only annotations that Cortex rejects (390142). Upstream refactored to use Anthropic Messages API; text_prelude_blocks logic now in _extract_system_and_messages."
+    description: "Strips OpenAI-only 'annotations' fields that the Agents SDK attaches when replaying a prior assistant turn; Cortex's Anthropic-compatible endpoint rejects them as unknown fields on every follow-up turn. Restored as a call site in _extract_system_and_messages after the v1.92.0 rewrite left the original helper defined but unused (CI stayed green because the old pattern only checked the definition existed, not that it was called). NOTE: this PR's original scope also claimed to merge consecutive text+tool_call assistant turns; that behavior is not currently implemented against the new Anthropic-format message builder and is not covered by this entry."
     files:
       - litellm/llms/snowflake/chat/transformation.py
     verification:
-      - pattern: "def _content_to_text_blocks"
-        file: litellm/llms/snowflake/chat/transformation.py
-      - pattern: "def _strip_openai_annotations"
-        file: litellm/llms/snowflake/chat/transformation.py
-      - pattern: "content_blocks"
+      - pattern: "_strip_openai_annotations(content)"
         file: litellm/llms/snowflake/chat/transformation.py
 
   - name: "Snowflake Cortex Array Content Flattening"
