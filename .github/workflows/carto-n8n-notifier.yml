@@ -353,13 +353,16 @@ jobs:
           # GHCR requires lowercase repo paths; github.repository preserves case (CartoDB/litellm).
           REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
           IMAGE="ghcr.io/${REPO_LOWER}-non_root:${{ github.event.release.tag_name }}"
-          for i in 1 2 3 4 5; do
+          # The docker job below only starts once this release is published and its
+          # multi-arch build+manifest-merge has historically taken 8-12 minutes, so
+          # poll well beyond that instead of the image's typical build time.
+          for i in $(seq 1 40); do
             DIGEST=$(docker buildx imagetools inspect "${IMAGE}" --format '{{.Manifest.Digest}}' 2>/dev/null || true)
             if [[ "${DIGEST}" == sha256:* ]]; then
               echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
               exit 0
             fi
-            sleep 15
+            sleep 30
           done
           echo "::error::Could not resolve digest for ${IMAGE}"
           exit 1
