@@ -770,7 +770,27 @@ jobs:
             ## CARTO FEATURES TO PRESERVE
 
             These are the INTENTIONAL CARTO customizations from merged PRs.
-            **Preserve the BEHAVIOR, not necessarily the exact file versions.**
+
+            **VERBATIM-FIRST RULE (do not paraphrase CARTO code).** For any file
+            listed in a feature's `files:` in `.github/carto-features.yml`,
+            restore the CARTO block BYTE-IDENTICAL from carto/main:
+            ```bash
+            git show origin/carto/main:<file>   # source of truth for CARTO blocks
+            ```
+            Copy the exact lines (including comments and debug logging) and
+            confirm with `diff`. Do NOT rewrite from memory or "clean it up" -
+            a paraphrase that looks equivalent is how wiring silently breaks
+            (v1.92.0 dropped a session read-path this way while its helper
+            survived).
+
+            Adaptation is allowed ONLY when an upstream API change makes a
+            verbatim copy impossible (e.g. a signature or data-format change).
+            When it is, keep the change minimal (a few lines), mark it
+            `# CARTO PATCH` with the reason, and prefer adapting the CALL SITE
+            over rewriting the CARTO block. Worked example of a legitimate
+            adaptation: v1.92.0 began b64-encoding response ids, so the Redis
+            session store had to decode `response.id` before keying - the CARTO
+            helper stayed byte-identical, only the 2 call sites changed.
 
             Read the feature context:
             ```bash
@@ -822,6 +842,66 @@ jobs:
 
             If ANY patterns are MISSING, restore them from carto/main or re-implement.
 
+            **The manifest grep proves a string EXISTS, not that it is WIRED.**
+            A helper can exist with no caller; a parameter can be accepted but
+            never passed; a stored key can no longer match its lookup. The three
+            checks below catch what the grep cannot. Do all three before
+            completing the merge.
+
+            ### CHECK 1: Orphan sweep (dropped call sites)
+            For every CARTO helper (functions named `_patch_*` / `_carto_*` and
+            anything marked `# CARTO`), confirm it still has a caller:
+            ```bash
+            for fn in $(git grep -hoE "def (_patch_[a-z_0-9]+|_carto_[a-z_0-9]+)" -- litellm/ | sed -E 's/def //' | sort -u); do
+              refs=$(git grep -c "$fn" -- litellm/ | awk -F: '{s+=$NF} END {print s}')
+              defs=$(git grep -c "def $fn" -- litellm/ | awk -F: '{s+=$NF} END {print s}')
+              [ "$refs" -le "$defs" ] && echo "ORPHAN: $fn (defined, never called)"
+            done
+            ```
+            An orphaned CARTO helper means its feature is only half-restored (the
+            v1.92.0 sync left `_patch_get_session_from_redis` defined but uncalled,
+            so sessions were written to Redis but read from the batch-delayed DB).
+            Restore the call site verbatim from carto/main.
+
+            ### CHECK 2: Cross-file wiring (auto-merged siblings)
+            Git auto-merges files only one side changed - they are NOT in your
+            conflict list, but they can call code you just rewrote. After
+            resolving each conflicted file, for every signature you changed or
+            replaced with upstream's, grep the whole repo for its call sites and
+            confirm every kwarg still exists:
+            ```bash
+            grep -rn "<function_or_class_name>(" litellm/ | grep -v "def "
+            ```
+            (v1.92.0: `streaming_iterator.py` was conflicted and lost a param
+            while the auto-merged `handler.py` kept passing it - every streaming
+            request then raised TypeError.) For any multi-file manifest feature,
+            re-read ALL of its `files:` together, including auto-merged ones.
+
+            ### CHECK 3: Cross-version data-flow
+            For each feature, trace what it CONSUMES and PRODUCES through the new
+            upstream code - ids, message shapes, metadata keys - not just whether
+            its text survived. Ask: does the value this CARTO code stores/sends
+            still match the format the (possibly rewritten) upstream code around
+            it now expects? (v1.92.0 began b64-encoding response ids: CARTO's
+            unchanged store keyed Redis by the encoded id while the lookup used
+            the decoded id, so every session lookup missed.)
+
+            ### Canary tests (the definition of "wired correctly")
+            These regression tests encode the wirings that broke in the v1.92.0
+            sync. The CARTO Feature Tests gate runs them on the PR; your
+            resolution must keep them green. If a test environment is available,
+            run them before completing the merge:
+            ```bash
+            uv run --no-sync pytest \
+              tests/test_litellm/responses/litellm_completion_transformation/test_session_handler.py \
+              tests/test_litellm/responses/litellm_completion_transformation/test_tool_call_streaming_transformation.py \
+              -q 2>&1 | tail -20
+            ```
+            They pin: the streaming iterator's `litellm_completion_request`
+            wiring, the Redis-first session read, and the store-key ==
+            decoded-lookup-key roundtrip. A green grep with a red canary means
+            the feature is broken - fix the wiring, do not touch the test.
+
             ---
 
             ## SYNC-REQUIRED FILES (Always Accept Upstream TAG)
@@ -864,10 +944,16 @@ jobs:
 
             ## KEY PRINCIPLE
 
-            **Upstream TAG code WORKS** - it's from a tested stable release. If something is "missing",
-            the conflict resolver probably kept an old carto/main version instead of the new upstream TAG.
+            **Upstream TAG code works for UPSTREAM's call graph - not necessarily
+            for CARTO's.** It is from a tested stable release, but CARTO adds call
+            sites, parameters, and stored-data contracts that upstream's tests
+            never exercise. So when you accept an upstream file, you are NOT done:
+            you must re-verify that CARTO's callers, attributes, and data formats
+            still line up (see the wiring and data-flow checks above). A file that
+            imports cleanly can still be broken at every CARTO call site.
 
-            When in doubt: Compare file sizes. Bigger = usually newer = probably correct.
+            Do NOT choose versions by file size or "bigger = newer". Decide by what
+            preserves CARTO behavior verbatim while adopting upstream's changes.
 
             ---
 
