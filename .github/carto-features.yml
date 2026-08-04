@@ -11,34 +11,45 @@
 features:
   - name: "OCI Gemini Tool Call UUIDs"
     source_prs: [68]
+    description: "Upstream refactored OCI to use modular helpers. Tool call ID generation now uses setdefault in generic.py; separate UUID generation not required."
     files:
-      - litellm/llms/oci/chat/transformation.py
+      - litellm/llms/oci/chat/generic.py
     verification:
-      - pattern: "uuid.uuid4().hex"
-        file: litellm/llms/oci/chat/transformation.py
-      - pattern: "_handle_tool_call_delta"
+      - pattern: "setdefault"
+        file: litellm/llms/oci/chat/generic.py
+      - pattern: "_queue_tool_call_delta_events"
         file: litellm/responses/litellm_completion_transformation/streaming_iterator.py
+
+  - name: "OCI Parallel Tool Result Reordering"
+    source_prs: [121]
+    description: "OCI GENERIC validates tool results positionally against the assistant's toolCalls order, rejecting out-of-order results with \"'toolCallId' of '<id>' not found in 'toolCalls' of previous message\". Parallel tool calls (e.g. xAI Grok) executed concurrently return results in completion order, so the adapter reorders each TOOL run to match the toolCalls order. Not present upstream; candidate for upstreaming."
+    files:
+      - litellm/llms/oci/chat/generic.py
+    verification:
+      - pattern: "_reorder_tool_results_to_match_tool_calls(new_messages)"
+        file: litellm/llms/oci/chat/generic.py
 
   - name: "OCI Inline PEM Key Normalization"
     source_prs: [17159]
     description: "Accepts the PEM private key as a string via oci_key, normalizes escaped newlines, and validates input type. Required for UI-based OCI credentials (textarea field)."
     files:
-      - litellm/llms/oci/chat/transformation.py
+      - litellm/llms/oci/common_utils.py
     verification:
       - pattern: "oci_key must be a string containing the PEM private key content"
-        file: litellm/llms/oci/chat/transformation.py
+        file: litellm/llms/oci/common_utils.py
       - pattern: "load_private_key_from_str(oci_key_content)"
-        file: litellm/llms/oci/chat/transformation.py
+        file: litellm/llms/oci/common_utils.py
 
   - name: "Snowflake Streaming + Tool Calling"
     source_prs: [38, 58]
+    description: "Upstream refactored Snowflake to use Anthropic Messages API for Claude. Message transformation is now in _extract_system_and_messages."
     files:
       - litellm/llms/snowflake/chat/transformation.py
       - litellm/responses/litellm_completion_transformation/transformation.py
     verification:
       - pattern: "SnowflakeStreamingHandler"
         file: litellm/llms/snowflake/chat/transformation.py
-      - pattern: "_transform_messages"
+      - pattern: "_extract_system_and_messages"
         file: litellm/llms/snowflake/chat/transformation.py
       - pattern: "tool_choice_value is None and tools"
         file: litellm/responses/litellm_completion_transformation/transformation.py
@@ -81,15 +92,11 @@ features:
 
   - name: "Snowflake Cortex Claude Function-Calling Follow-up Turns"
     source_prs: [111]
-    description: "Unblocks multi-turn Claude function-calling on Cortex: rebuilds assistant tool_use content_list, merges consecutive text+tool_call assistant turns, and strips OpenAI-only annotations that Cortex rejects (390142)."
+    description: "Strips OpenAI-only 'annotations' fields that the Agents SDK attaches when replaying a prior assistant turn; Cortex's Anthropic-compatible endpoint rejects them as unknown fields on every follow-up turn. Restored as a call site in _extract_system_and_messages after the v1.92.0 rewrite left the original helper defined but unused (CI stayed green because the old pattern only checked the definition existed, not that it was called). NOTE: this PR's original scope also claimed to merge consecutive text+tool_call assistant turns; that behavior is not currently implemented against the new Anthropic-format message builder and is not covered by this entry."
     files:
       - litellm/llms/snowflake/chat/transformation.py
     verification:
-      - pattern: "def _content_to_text_blocks"
-        file: litellm/llms/snowflake/chat/transformation.py
-      - pattern: "def _strip_openai_annotations"
-        file: litellm/llms/snowflake/chat/transformation.py
-      - pattern: "text_prelude_blocks"
+      - pattern: "_strip_openai_annotations(content)"
         file: litellm/llms/snowflake/chat/transformation.py
 
   - name: "Snowflake Cortex Array Content Flattening"

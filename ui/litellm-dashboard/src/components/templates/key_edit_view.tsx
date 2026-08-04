@@ -16,9 +16,11 @@ import PassThroughRoutesSelector from "../common_components/PassThroughRoutesSel
 import RateLimitTypeFormItem from "../common_components/RateLimitTypeFormItem";
 import OrganizationDropdown from "../common_components/OrganizationDropdown";
 import { extractLoggingSettings, formatMetadataForDisplay, stripTagsFromMetadata } from "../key_info_utils";
+import { BudgetFallbacksEditor } from "../key_team_helpers/BudgetFallbacksEditor";
 import { BudgetWindowEntry, BudgetWindowsEditor } from "../key_team_helpers/BudgetWindowsEditor";
 import { KeyResponse } from "../key_team_helpers/key_list";
 import MCPServerSelector from "../mcp_server_management/MCPServerSelector";
+import { NO_MCP_SERVERS_SENTINEL } from "../mcp_tools/constants";
 import MCPToolPermissions from "../mcp_server_management/MCPToolPermissions";
 import NotificationsManager from "../molecules/notifications_manager";
 import { getPromptsList, modelAvailableCall, tagListCall } from "../networking";
@@ -78,7 +80,6 @@ const getKeyTypeFromRoutes = (allowedRoutes: string[] | null | undefined): strin
   return "default";
 };
 
-
 export function KeyEditView({
   keyData,
   onCancel,
@@ -106,7 +107,10 @@ export function KeyEditView({
   const [neverExpire, setNeverExpire] = useState<boolean>(!keyData.expires);
   const [isKeySaving, setIsKeySaving] = useState(false);
   const [budgetLimits, setBudgetLimits] = useState<BudgetWindowEntry[]>(
-    Array.isArray(keyData.budget_limits) ? keyData.budget_limits : []
+    Array.isArray(keyData.budget_limits) ? keyData.budget_limits : [],
+  );
+  const [budgetFallbacks, setBudgetFallbacks] = useState<Record<string, string[]>>(
+    keyData.budget_fallbacks && typeof keyData.budget_fallbacks === "object" ? keyData.budget_fallbacks : {},
   );
   const { data: organizations, isLoading: isOrganizationsLoading } = useOrganizations();
   const { data: projects } = useProjects();
@@ -116,9 +120,7 @@ export function KeyEditView({
   const projectDisplay = (() => {
     if (!keyData.project_id) return null;
     const project = projects?.find((p) => p.project_id === keyData.project_id);
-    return project?.project_alias
-      ? `${project.project_alias} (${keyData.project_id})`
-      : keyData.project_id;
+    return project?.project_alias ? `${project.project_alias} (${keyData.project_id})` : keyData.project_id;
   })();
 
   useEffect(() => {
@@ -198,9 +200,10 @@ export function KeyEditView({
     access_group_ids: keyData.access_group_ids || [],
     auto_rotate: keyData.auto_rotate || false,
     ...(keyData.rotation_interval && { rotation_interval: keyData.rotation_interval }),
-    allowed_routes: Array.isArray(keyData.allowed_routes) && keyData.allowed_routes.length > 0
-      ? keyData.allowed_routes.join(", ")
-      : "",
+    allowed_routes:
+      Array.isArray(keyData.allowed_routes) && keyData.allowed_routes.length > 0
+        ? keyData.allowed_routes.join(", ")
+        : "",
   };
 
   useEffect(() => {
@@ -226,9 +229,10 @@ export function KeyEditView({
       access_group_ids: keyData.access_group_ids || [],
       auto_rotate: keyData.auto_rotate || false,
       ...(keyData.rotation_interval && { rotation_interval: keyData.rotation_interval }),
-      allowed_routes: Array.isArray(keyData.allowed_routes) && keyData.allowed_routes.length > 0
-        ? keyData.allowed_routes.join(", ")
-        : "",
+      allowed_routes:
+        Array.isArray(keyData.allowed_routes) && keyData.allowed_routes.length > 0
+          ? keyData.allowed_routes.join(", ")
+          : "",
     });
   }, [keyData, form]);
 
@@ -275,13 +279,41 @@ export function KeyEditView({
       }
       // If it's already an array (shouldn't happen, but handle it), keep as is
 
+      // Backend rejects non-empty allowed_routes from non-admins, so re-sending
+      // an unchanged value 403s a team admin. Set compare tolerates reorder.
+      const originalRoutesSet = new Set<string>(Array.isArray(keyData.allowed_routes) ? keyData.allowed_routes : []);
+      const submittedRoutesSet = new Set<string>(Array.isArray(values.allowed_routes) ? values.allowed_routes : []);
+      const allowedRoutesUnchanged =
+        originalRoutesSet.size === submittedRoutesSet.size &&
+        [...submittedRoutesSet].every((r) => originalRoutesSet.has(r));
+      if (allowedRoutesUnchanged) {
+        delete values.allowed_routes;
+      }
+
       if (neverExpire) {
         values.duration = null;
       }
 
-      // Include multi-window budget limits (filter out incomplete entries)
-      const validWindows = budgetLimits.filter((w) => w.budget_duration && w.max_budget !== null && w.max_budget !== undefined);
-      values.budget_limits = validWindows.length > 0 ? validWindows : undefined;
+      // Reconcile multi-window budget limits from the editor state, dropping
+      // incomplete entries (no max_budget). Sending [] tells the backend to clear
+      // all stored windows, so only send it when the user removed every window;
+      // when entries remain but are still incomplete, omit the field so the saved
+      // windows are left untouched (JSON.stringify drops the undefined key).
+      const validWindows = budgetLimits.filter(
+        (w) => w.budget_duration && w.max_budget !== null && w.max_budget !== undefined,
+      );
+      if (validWindows.length > 0) {
+        values.budget_limits = validWindows;
+      } else if (budgetLimits.length === 0) {
+        values.budget_limits = [];
+      }
+
+      const hadExistingFallbacks = keyData.budget_fallbacks != null && Object.keys(keyData.budget_fallbacks).length > 0;
+      if (Object.keys(budgetFallbacks).length > 0) {
+        values.budget_fallbacks = budgetFallbacks;
+      } else if (hadExistingFallbacks) {
+        values.budget_fallbacks = {};
+      }
 
       await onSubmit(values);
     } finally {
@@ -305,9 +337,13 @@ export function KeyEditView({
           {({ getFieldValue, setFieldValue }) => {
             const allowedRoutesValue = getFieldValue("allowed_routes") || "";
             // Convert string to array for checking
-            const allowedRoutes = typeof allowedRoutesValue === "string" && allowedRoutesValue.trim() !== ""
-              ? allowedRoutesValue.split(",").map((r: string) => r.trim()).filter((r: string) => r.length > 0)
-              : [];
+            const allowedRoutes =
+              typeof allowedRoutesValue === "string" && allowedRoutesValue.trim() !== ""
+                ? allowedRoutesValue
+                    .split(",")
+                    .map((r: string) => r.trim())
+                    .filter((r: string) => r.length > 0)
+                : [];
             const isDisabled = allowedRoutes.includes("management_routes") || allowedRoutes.includes("info_routes");
             const models = getFieldValue("models") || [];
 
@@ -348,9 +384,13 @@ export function KeyEditView({
           {({ getFieldValue, setFieldValue }) => {
             const allowedRoutesValue = getFieldValue("allowed_routes") || "";
             // Convert string to array for getKeyTypeFromRoutes
-            const allowedRoutes = typeof allowedRoutesValue === "string" && allowedRoutesValue.trim() !== ""
-              ? allowedRoutesValue.split(",").map((r: string) => r.trim()).filter((r: string) => r.length > 0)
-              : [];
+            const allowedRoutes =
+              typeof allowedRoutesValue === "string" && allowedRoutesValue.trim() !== ""
+                ? allowedRoutesValue
+                    .split(",")
+                    .map((r: string) => r.trim())
+                    .filter((r: string) => r.length > 0)
+                : [];
             const keyTypeValue = getKeyTypeFromRoutes(allowedRoutes);
 
             return (
@@ -374,11 +414,11 @@ export function KeyEditView({
                   }
                 }}
               >
-                <Select.Option value="default" label="Default">
+                <Select.Option value="default" label="Full Access">
                   <div style={{ padding: "4px 0" }}>
-                    <div style={{ fontWeight: 500 }}>Default</div>
+                    <div style={{ fontWeight: 500 }}>Full Access</div>
                     <div style={{ fontSize: "11px", color: "#6b7280", marginTop: "2px" }}>
-                      Can call AI APIs + Management routes
+                      Can call all routes (AI APIs, Management, and read-only)
                     </div>
                   </div>
                 </Select.Option>
@@ -415,9 +455,7 @@ export function KeyEditView({
         }
         name="allowed_routes"
       >
-        <Input
-          placeholder="Enter allowed routes (comma-separated). Special values: llm_api_routes, management_routes. Examples: llm_api_routes, /chat/completions, /keys/*. Leave empty to allow all routes"
-        />
+        <Input placeholder="Enter allowed routes (comma-separated). Special values: llm_api_routes, management_routes. Examples: llm_api_routes, /chat/completions, /keys/*. Leave empty to allow all routes" />
       </Form.Item>
 
       <Form.Item label="Max Budget (USD)" name="max_budget">
@@ -442,9 +480,23 @@ export function KeyEditView({
           </span>
         }
       >
-        <BudgetWindowsEditor
-          value={budgetLimits}
-          onChange={setBudgetLimits}
+        <BudgetWindowsEditor value={budgetLimits} onChange={setBudgetLimits} />
+      </Form.Item>
+
+      <Form.Item
+        label={
+          <span>
+            Budget Fallbacks{" "}
+            <Tooltip title="When a model exceeds its per-model budget, requests automatically reroute to fallback models instead of failing">
+              <InfoCircleOutlined style={{ marginLeft: "4px" }} />
+            </Tooltip>
+          </span>
+        }
+      >
+        <BudgetFallbacksEditor
+          value={budgetFallbacks}
+          onChange={setBudgetFallbacks}
+          availableModels={availableModels}
         />
       </Form.Item>
 
@@ -579,7 +631,7 @@ export function KeyEditView({
               !premiumUser
                 ? "Premium feature - Upgrade to set allowed pass through routes by key"
                 : Array.isArray(keyData.metadata?.allowed_passthrough_routes) &&
-                  keyData.metadata.allowed_passthrough_routes.length > 0
+                    keyData.metadata.allowed_passthrough_routes.length > 0
                   ? `Current: ${keyData.metadata.allowed_passthrough_routes.join(", ")}`
                   : "Select or enter allowed pass through routes"
             }
@@ -603,6 +655,7 @@ export function KeyEditView({
           value={form.getFieldValue("mcp_servers_and_groups")}
           accessToken={accessToken || ""}
           placeholder="Select MCP servers or access groups (optional)"
+          allowNoMcpServers
         />
       </Form.Item>
 
@@ -622,7 +675,9 @@ export function KeyEditView({
           <div className="mb-6">
             <MCPToolPermissions
               accessToken={accessToken || ""}
-              selectedServers={form.getFieldValue("mcp_servers_and_groups")?.servers || []}
+              selectedServers={(form.getFieldValue("mcp_servers_and_groups")?.servers || []).filter(
+                (s: string) => s !== NO_MCP_SERVERS_SENTINEL,
+              )}
               toolPermissions={form.getFieldValue("mcp_tool_permissions") || {}}
               onChange={(toolPerms) => form.setFieldsValue({ mcp_tool_permissions: toolPerms })}
             />
@@ -690,14 +745,13 @@ export function KeyEditView({
             return team.team_alias?.toLowerCase().includes(input.toLowerCase()) ?? false;
           }}
         >
-          {(selectedOrganizationId
-            ? teams?.filter((t) => t.organization_id === selectedOrganizationId)
-            : teams
-          )?.map((team) => (
-            <Select.Option key={team.team_id} value={team.team_id}>
-              {`${team.team_alias} (${team.team_id})`}
-            </Select.Option>
-          ))}
+          {(selectedOrganizationId ? teams?.filter((t) => t.organization_id === selectedOrganizationId) : teams)?.map(
+            (team) => (
+              <Select.Option key={team.team_id} value={team.team_id}>
+                {`${team.team_alias} (${team.team_id})`}
+              </Select.Option>
+            ),
+          )}
         </Select>
       </Form.Item>
       {enableProjectsUI && hasProject && (
@@ -758,7 +812,7 @@ export function KeyEditView({
         <Input />
       </Form.Item>
 
-      <div className="sticky z-10 bg-white p-4 border-t border-gray-200 bottom-[-1.5rem] inset-x-[-1.5rem]">
+      <div className="sticky z-10 bg-white p-4 border-t border-gray-200 -bottom-6 -inset-x-6">
         <div className="flex justify-end items-center gap-2">
           <TremorButton variant="secondary" onClick={onCancel} disabled={isKeySaving}>
             Cancel

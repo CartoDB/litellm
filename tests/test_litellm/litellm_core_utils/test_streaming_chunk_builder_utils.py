@@ -8,7 +8,8 @@ sys.path.insert(
     0, os.path.abspath("../../..")
 )  # Adds the parent directory to the system path
 
-from litellm import stream_chunk_builder
+from litellm import ChatCompletionUsageBlock, stream_chunk_builder
+from litellm.types.utils import GenericStreamingChunk
 from litellm.litellm_core_utils.streaming_chunk_builder_utils import ChunkProcessor
 from litellm.types.utils import (
     ChatCompletionDeltaToolCall,
@@ -325,6 +326,195 @@ def test_cache_read_input_tokens_retained():
     assert usage.prompt_tokens_details.cached_tokens == 11775
 
 
+def test_streaming_preserves_anthropic_1hr_cache_creation_breakdown():
+    """
+    Anthropic emits the cache-creation TTL breakdown (ephemeral 5m/1h split) only
+    on the `message_start` SSE event; the later `message_delta` carries the flat
+    cache-creation count but drops the nested `cache_creation` object. Because
+    prompt_tokens_details is aggregated last-wins, the breakdown used to be
+    clobbered by message_delta, leaving cost calc with no TTL split. It then fell
+    back to the 5-minute write rate and undercounted 1-hour cache writes by ~37.5%.
+
+    Reproduces the trace: input=3, cache_creation=50 (all 1h), cache_read=8728.
+    Correct cache-write cost is 50 * 6e-06 (1h) = 0.0003, not 50 * 3.75e-06 = 0.0001875.
+    """
+    from litellm.llms.anthropic.chat.transformation import AnthropicConfig
+    from litellm.llms.anthropic.cost_calculation import cost_per_token
+
+    config = AnthropicConfig()
+    message_start_usage = config.calculate_usage(
+        usage_object={
+            "input_tokens": 3,
+            "cache_creation_input_tokens": 50,
+            "cache_read_input_tokens": 8728,
+            "output_tokens": 1,
+            "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 50,
+            },
+        },
+        reasoning_content=None,
+    )
+    message_delta_usage = config.calculate_usage(
+        usage_object={
+            "input_tokens": 3,
+            "cache_creation_input_tokens": 50,
+            "cache_read_input_tokens": 8728,
+            "output_tokens": 31,
+        },
+        reasoning_content=None,
+    )
+    # Sanity: the delta event genuinely lacks the breakdown - this is the input
+    # condition that used to defeat cost calc.
+    assert (
+        getattr(message_delta_usage.prompt_tokens_details, "cache_creation_token_details", None)
+        is None
+    )
+
+    def _usage_chunk(usage, finish_reason):
+        return ModelResponseStream(
+            id="chatcmpl-1hr-cache",
+            created=1745513206,
+            model="claude-sonnet-4-6",
+            object="chat.completion.chunk",
+            choices=[
+                StreamingChoices(
+                    finish_reason=finish_reason,
+                    index=0,
+                    delta=Delta(content="" if finish_reason is None else None),
+                )
+            ],
+            stream_options={"include_usage": True},
+            usage=usage,
+        )
+
+    chunks = [
+        _usage_chunk(message_start_usage, None),
+        _usage_chunk(message_delta_usage, "stop"),
+    ]
+    usage = ChunkProcessor(chunks=chunks).calculate_usage(
+        chunks=chunks, model="claude-sonnet-4-6", completion_output="hi"
+    )
+
+    breakdown = getattr(usage.prompt_tokens_details, "cache_creation_token_details", None)
+    assert breakdown is not None, "1h/5m cache-creation breakdown lost during aggregation"
+    assert breakdown.ephemeral_1h_input_tokens == 50
+    assert breakdown.ephemeral_5m_input_tokens == 0
+    assert usage.cache_creation_input_tokens == 50
+    assert usage.cache_read_input_tokens == 8728
+
+    prompt_cost, _ = cost_per_token(model="claude-sonnet-4-6", usage=usage)
+    # text 3*3e-06 + cache_read 8728*3e-07 + cache_write 50*6e-06 (1h rate)
+    expected = 3 * 3e-06 + 8728 * 3e-07 + 50 * 6e-06
+    assert prompt_cost == pytest.approx(expected)
+    # Guard against the regression: 5m-rate fallback would shave the write cost.
+    buggy = 3 * 3e-06 + 8728 * 3e-07 + 50 * 3.75e-06
+    assert prompt_cost != pytest.approx(buggy)
+
+
+def test_streaming_keeps_cache_creation_breakdown_from_final_chunk():
+    """When the final usage chunk itself carries the cache-creation breakdown,
+    aggregation must keep that breakdown instead of re-attaching a stale one
+    captured from an earlier chunk."""
+    from litellm.llms.anthropic.chat.transformation import AnthropicConfig
+
+    config = AnthropicConfig()
+    message_start_usage = config.calculate_usage(
+        usage_object={
+            "input_tokens": 3,
+            "cache_creation_input_tokens": 7,
+            "cache_read_input_tokens": 0,
+            "output_tokens": 1,
+            "cache_creation": {
+                "ephemeral_5m_input_tokens": 7,
+                "ephemeral_1h_input_tokens": 0,
+            },
+        },
+        reasoning_content=None,
+    )
+    message_delta_usage = config.calculate_usage(
+        usage_object={
+            "input_tokens": 3,
+            "cache_creation_input_tokens": 50,
+            "cache_read_input_tokens": 0,
+            "output_tokens": 31,
+            "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 50,
+            },
+        },
+        reasoning_content=None,
+    )
+
+    def _usage_chunk(usage, finish_reason):
+        return ModelResponseStream(
+            id="chatcmpl-final-breakdown",
+            created=1745513206,
+            model="claude-sonnet-4-6",
+            object="chat.completion.chunk",
+            choices=[
+                StreamingChoices(
+                    finish_reason=finish_reason,
+                    index=0,
+                    delta=Delta(content="" if finish_reason is None else None),
+                )
+            ],
+            stream_options={"include_usage": True},
+            usage=usage,
+        )
+
+    chunks = [
+        _usage_chunk(message_start_usage, None),
+        _usage_chunk(message_delta_usage, "stop"),
+    ]
+    usage = ChunkProcessor(chunks=chunks).calculate_usage(
+        chunks=chunks, model="claude-sonnet-4-6", completion_output="hi"
+    )
+
+    breakdown = getattr(usage.prompt_tokens_details, "cache_creation_token_details", None)
+    assert breakdown is not None
+    assert breakdown.ephemeral_1h_input_tokens == 50
+    assert breakdown.ephemeral_5m_input_tokens == 0
+    assert usage.cache_creation_input_tokens == 50
+
+
+def test_cache_read_input_tokens_retained_genericstreamingchunk():
+    chunk1 = GenericStreamingChunk(
+        text="Test1",
+        is_finished=False,
+        finish_reason="",
+        usage=None,
+        index=1,
+    )
+
+    chunk2 = GenericStreamingChunk(
+        text="Test2",
+        is_finished=True,
+        finish_reason="stop",
+        usage=ChatCompletionUsageBlock(
+            completion_tokens=5,
+            prompt_tokens=1234,
+            total_tokens=1239,
+            completion_tokens_details=None,
+            prompt_tokens_details=PromptTokensDetails(
+                audio_tokens=None, cached_tokens=543
+            ).model_dump(),
+        ),
+        index=2,
+    )
+
+    # Use dictionaries directly instead of ModelResponseStream
+    chunks = [chunk1, chunk2]
+    processor = ChunkProcessor(chunks=chunks)
+
+    usage = processor.calculate_usage(
+        chunks=chunks,
+        model="gpt-5.5",
+        completion_output="",
+    )
+
+    assert usage.prompt_tokens_details.cached_tokens == 543
+
 def test_stream_chunk_builder_litellm_usage_chunks():
     """
     Validate ChunkProcessor.calculate_usage uses provided usage fields from streaming chunks
@@ -520,7 +710,10 @@ def test_stream_chunk_builder_anthropic_web_search():
     assert usage.prompt_tokens == 50
     assert usage.completion_tokens == 27
     assert usage.total_tokens == 77
-    assert usage.server_tool_use["web_search_requests"] == 2
+    # server_tool_use must be a ServerToolUse pydantic so downstream cost-calc
+    # (which uses attribute access) works. See issue #26153.
+    assert isinstance(usage.server_tool_use, ServerToolUse)
+    assert usage.server_tool_use.web_search_requests == 2
 
 
 def test_sort_chunks_handles_dict_hidden_params_created_at():
@@ -615,129 +808,151 @@ def test_stream_chunk_builder_dict_snapshot_preserves_hidden_provider_fields():
     )
 
 
-# Tests for _validate_and_repair_tool_arguments()
-# =============================================================================
+def test_stream_chunk_builder_propagates_vertex_ai_metadata_from_chunks():
+    """Vertex AI metadata on streaming chunks must appear on assembled response."""
+    grounding_metadata = [{"webSearchQueries": ["weather in SF"]}]
+    url_context_metadata = [{"urlMetadata": [{"retrievedUrl": "https://example.com"}]}]
 
-from litellm.litellm_core_utils.streaming_chunk_builder_utils import (
-    _validate_and_repair_tool_arguments,
-)
+    chunk1 = ModelResponseStream(
+        id="chatcmpl-vertex-1",
+        created=1,
+        model="gemini-2.5-flash",
+        object="chat.completion.chunk",
+        choices=[
+            StreamingChoices(
+                finish_reason=None,
+                index=0,
+                delta=Delta(content="The weather", role="assistant"),
+            )
+        ],
+    )
+    setattr(chunk1, "vertex_ai_grounding_metadata", grounding_metadata)
+    chunk1._hidden_params["vertex_ai_grounding_metadata"] = grounding_metadata
+
+    chunk2 = ModelResponseStream(
+        id="chatcmpl-vertex-1",
+        created=1,
+        model="gemini-2.5-flash",
+        object="chat.completion.chunk",
+        choices=[
+            StreamingChoices(
+                finish_reason="stop",
+                index=0,
+                delta=Delta(content=" is sunny.", role="assistant"),
+            )
+        ],
+    )
+    setattr(chunk2, "vertex_ai_url_context_metadata", url_context_metadata)
+    chunk2._hidden_params["vertex_ai_url_context_metadata"] = url_context_metadata
+
+    response = stream_chunk_builder(chunks=[chunk1, chunk2])
+    assert response is not None
+    assert getattr(response, "vertex_ai_grounding_metadata") == grounding_metadata
+    assert getattr(response, "vertex_ai_url_context_metadata") == url_context_metadata
+    assert response._hidden_params["vertex_ai_grounding_metadata"] == grounding_metadata
+    assert (
+        response._hidden_params["vertex_ai_url_context_metadata"]
+        == url_context_metadata
+    )
+
+    dumped = response.model_dump()
+    assert dumped["vertex_ai_grounding_metadata"] == grounding_metadata
+    assert dumped["vertex_ai_url_context_metadata"] == url_context_metadata
 
 
-class TestValidateAndRepairToolArguments:
-    """Tests for _validate_and_repair_tool_arguments() function.
+def test_stream_chunk_builder_uses_assembled_model_for_provider_metadata():
+    grounding_metadata = [{"webSearchQueries": ["weather in SF"]}]
 
-    This function uses JSONDecoder.raw_decode() to handle malformed JSON
-    from streaming providers like Gemini that may send duplicate/overlapping chunks.
-    """
+    chunk1 = ModelResponseStream(
+        id="chatcmpl-vertex-router",
+        created=1,
+        model="gpt-4o",
+        object="chat.completion.chunk",
+        choices=[
+            StreamingChoices(
+                finish_reason=None,
+                index=0,
+                delta=Delta(content="The weather", role="assistant"),
+            )
+        ],
+    )
+    chunk2 = ModelResponseStream(
+        id="chatcmpl-vertex-router",
+        created=1,
+        model="gemini-2.5-flash",
+        object="chat.completion.chunk",
+        choices=[
+            StreamingChoices(
+                finish_reason="stop",
+                index=0,
+                delta=Delta(content=" is sunny.", role=None),
+            )
+        ],
+    )
+    setattr(chunk2, "vertex_ai_grounding_metadata", grounding_metadata)
+    chunk2._hidden_params["vertex_ai_grounding_metadata"] = grounding_metadata
 
-    # --- Valid JSON (should pass through unchanged) ---
+    response = stream_chunk_builder(chunks=[chunk1, chunk2])
+    assert response is not None
+    assert response.model == "gemini-2.5-flash"
+    assert getattr(response, "vertex_ai_grounding_metadata") == grounding_metadata
 
-    def test_valid_simple_json(self):
-        """Valid JSON should pass through unchanged."""
-        valid = '{"address": "123 Main St"}'
-        assert _validate_and_repair_tool_arguments(valid) == valid
 
-    def test_valid_nested_json(self):
-        """Deeply nested JSON should work correctly."""
-        valid = '{"outer": {"inner": {"deep": {"value": 123}}}}'
-        assert _validate_and_repair_tool_arguments(valid) == valid
+def test_stream_chunk_builder_propagates_vertex_ai_safety_results():
+    """Assembled response must expose safety data under the non-streaming field name."""
+    safety_ratings = [
+        [{"category": "HARM_CATEGORY_HATE_SPEECH", "probability": "NEGLIGIBLE"}]
+    ]
 
-    def test_valid_json_with_arrays(self):
-        """JSON with arrays should work correctly."""
-        valid = '{"data": [1, 2, {"nested": [3, 4]}]}'
-        assert _validate_and_repair_tool_arguments(valid) == valid
+    chunk = ModelResponseStream(
+        id="chatcmpl-vertex-safety",
+        created=1,
+        model="gemini-2.5-flash",
+        object="chat.completion.chunk",
+        choices=[
+            StreamingChoices(
+                finish_reason="stop",
+                index=0,
+                delta=Delta(content="hello", role="assistant"),
+            )
+        ],
+    )
+    setattr(chunk, "vertex_ai_safety_ratings", safety_ratings)
+    setattr(chunk, "vertex_ai_safety_results", safety_ratings)
+    chunk._hidden_params["vertex_ai_safety_ratings"] = safety_ratings
+    chunk._hidden_params["vertex_ai_safety_results"] = safety_ratings
 
-    def test_valid_json_with_escaped_quotes(self):
-        """JSON with escaped quotes in strings should work."""
-        valid = '{"text": "He said \\"hello\\""}'
-        assert _validate_and_repair_tool_arguments(valid) == valid
+    response = stream_chunk_builder(chunks=[chunk])
+    assert response is not None
+    assert getattr(response, "vertex_ai_safety_results") == safety_ratings
+    assert response._hidden_params["vertex_ai_safety_results"] == safety_ratings
+    assert response.model_dump()["vertex_ai_safety_results"] == safety_ratings
 
-    def test_valid_json_with_unicode(self):
-        """JSON with unicode characters should work."""
-        valid = '{"city": "東京", "greeting": "Привет"}'
-        assert _validate_and_repair_tool_arguments(valid) == valid
 
-    # --- Malformed JSON (duplicate/concatenated chunks) ---
+def test_stream_chunk_builder_propagates_vertex_ai_metadata_from_dict_chunks():
+    """Dict snapshot chunks (model_dump) should also propagate Vertex AI metadata."""
+    chunk_dict = ModelResponseStream(
+        id="chatcmpl-vertex-2",
+        created=1,
+        model="gemini-2.5-flash",
+        object="chat.completion.chunk",
+        choices=[
+            StreamingChoices(
+                finish_reason="stop",
+                index=0,
+                delta=Delta(content="hello", role="assistant"),
+            )
+        ],
+    ).model_dump()
+    chunk_dict["_hidden_params"] = {
+        "vertex_ai_grounding_metadata": [{"webSearchQueries": ["test query"]}]
+    }
 
-    def test_duplicate_simple_json(self):
-        """Duplicate JSON objects should extract the first one."""
-        malformed = '{"address": "School"}{"address": "School"}'
-        expected = '{"address": "School"}'
-        assert _validate_and_repair_tool_arguments(malformed) == expected
-
-    def test_duplicate_nested_json(self):
-        """Duplicate nested JSON should extract the first one."""
-        malformed = '{"a": {"b": 1}}{"a": {"b": 1}}'
-        expected = '{"a": {"b": 1}}'
-        assert _validate_and_repair_tool_arguments(malformed) == expected
-
-    def test_different_concatenated_json(self):
-        """Different JSON objects concatenated should return first."""
-        malformed = '{"first": true}{"second": false}'
-        expected = '{"first": true}'
-        assert _validate_and_repair_tool_arguments(malformed) == expected
-
-    def test_json_with_extra_garbage(self):
-        """JSON followed by garbage data should extract valid JSON."""
-        malformed = '{"valid": true}garbage data here'
-        expected = '{"valid": true}'
-        assert _validate_and_repair_tool_arguments(malformed) == expected
-
-    # --- Edge cases ---
-
-    def test_empty_string(self):
-        """Empty string should return empty object."""
-        assert _validate_and_repair_tool_arguments("") == "{}"
-
-    def test_valid_empty_object(self):
-        """Empty JSON object should work."""
-        assert _validate_and_repair_tool_arguments("{}") == "{}"
-
-    def test_completely_invalid_json(self):
-        """Completely invalid JSON should return as-is with warning."""
-        invalid = "not json at all"
-        result = _validate_and_repair_tool_arguments(invalid)
-        assert result == invalid  # Returns as-is
-
-    # --- Long/complex JSON ---
-
-    def test_long_json_object(self):
-        """Long JSON with many keys should work correctly."""
-        keys = {f"key_{i}": f"value_{i}" for i in range(100)}
-        valid = json.dumps(keys)
-        assert _validate_and_repair_tool_arguments(valid) == valid
-
-    def test_deeply_nested_10_levels(self):
-        """10 levels of nesting should work correctly."""
-        nested = '{"l1": {"l2": {"l3": {"l4": {"l5": {"l6": {"l7": {"l8": {"l9": {"l10": "deep"}}}}}}}}}}'
-        assert _validate_and_repair_tool_arguments(nested) == nested
-
-    def test_large_array_in_json(self):
-        """JSON with large array should work correctly."""
-        large = json.dumps({"numbers": list(range(1000))})
-        assert _validate_and_repair_tool_arguments(large) == large
-
-    # --- Gemini-specific patterns ---
-
-    def test_gemini_geocode_duplicate_pattern(self):
-        """Simulate the actual Gemini geocoding duplicate pattern."""
-        # This is the actual pattern causing the bug
-        malformed = '{"address": "Cotham Brow School BS6 6DT", "country_code": "GB"}{"address": "Cotham Brow School BS6 6DT", "country_code": "GB"}'
-        expected = '{"address": "Cotham Brow School BS6 6DT", "country_code": "GB"}'
-        assert _validate_and_repair_tool_arguments(malformed) == expected
-
-    def test_json_with_braces_in_strings(self):
-        """Braces inside string values should not confuse parser."""
-        valid = '{"regex": "^\\\\{[a-z]+\\\\}$", "note": "contains { and }"}'
-        assert _validate_and_repair_tool_arguments(valid) == valid
-
-    def test_json_with_newlines_in_strings(self):
-        """JSON with newline characters in strings should work."""
-        valid = '{"text": "line1\\nline2\\nline3"}'
-        assert _validate_and_repair_tool_arguments(valid) == valid
-
-    def test_triple_concatenation(self):
-        """Three concatenated JSON objects should return first."""
-        malformed = '{"a": 1}{"b": 2}{"c": 3}'
-        expected = '{"a": 1}'
-        assert _validate_and_repair_tool_arguments(malformed) == expected
+    response = stream_chunk_builder(chunks=[chunk_dict])
+    assert response is not None
+    assert getattr(response, "vertex_ai_grounding_metadata") == [
+        {"webSearchQueries": ["test query"]}
+    ]
+    assert response.model_dump()["vertex_ai_grounding_metadata"] == [
+        {"webSearchQueries": ["test query"]}
+    ]

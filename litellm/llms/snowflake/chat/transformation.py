@@ -1,27 +1,33 @@
 """
-Support for Snowflake REST API
+Snowflake Cortex REST API — Chat Transformation
+
+Routes to native Cortex REST API endpoints based on model:
+  - Claude models → POST /api/v2/cortex/v1/messages (Anthropic format)
+  - All other models → POST /api/v2/cortex/v1/chat/completions (OpenAI format)
+
+Ref: https://docs.snowflake.com/en/user-guide/snowflake-cortex/cortex-rest-api
 """
 
 import json
-import time
-from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, Iterator, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import httpx
 
-from litellm.llms.base_llm.base_model_iterator import BaseModelResponseIterator
-from litellm.types.llms.openai import AllMessageValues
+from litellm.types.llms.openai import AllMessageValues, ChatCompletionToolCallChunk
 from litellm.types.utils import (
-    ChatCompletionDeltaToolCall,
     ChatCompletionMessageToolCall,
+    ChatCompletionUsageBlock,
+    Choices,
     Function,
+    GenericStreamingChunk,
+    Message,
     ModelResponse,
-    ModelResponseStream,
+    Usage,
 )
 
+from ...base_llm.base_model_iterator import BaseModelResponseIterator
 from ...openai_like.chat.transformation import OpenAIGPTConfig
-
 from ..utils import SnowflakeBaseConfig
-
 
 if TYPE_CHECKING:
     from litellm.litellm_core_utils.litellm_logging import Logging as _LiteLLMLoggingObj
@@ -30,22 +36,32 @@ if TYPE_CHECKING:
 else:
     LiteLLMLoggingObj = Any
 
+ANTHROPIC_VERSION = "2023-06-01"
 
-def _strip_openai_annotations(message_dict: Dict[str, Any]) -> None:
-    """
-    Remove the OpenAI-only `annotations` field from each content block.
-    Snowflake Cortex rejects unknown fields inside text content blocks with
-    `390142 Incoming request does not contain a valid payload`. The field
-    appears on assistant messages emitted by OpenAI-compatible providers
-    (for citation parity with the Responses API) and survives the Agents
-    SDK replay on every follow-up turn.
-    """
-    content = message_dict.get("content")
+_CLAUDE_MODEL_PREFIXES = (
+    "claude-",
+    "claude_",
+)
+
+
+def _is_claude_model(model: str) -> bool:
+    """Return True if model name (after stripping snowflake/ prefix) is a Claude model."""
+    name = model.lower().removeprefix("snowflake/")
+    return any(name.startswith(p) for p in _CLAUDE_MODEL_PREFIXES)
+
+
+def _strip_openai_annotations(content: Any) -> Any:
+    """Remove the OpenAI-only `annotations` field from each content block."""
     if not isinstance(content, list):
-        return
-    for block in content:
-        if isinstance(block, dict) and "annotations" in block:
-            block.pop("annotations", None)
+        return content
+    return [
+        (
+            {k: v for k, v in block.items() if k != "annotations"}
+            if isinstance(block, dict)
+            else block
+        )
+        for block in content
+    ]
 
 
 def _content_to_text_blocks(content: Any) -> List[Dict[str, Any]]:
@@ -99,138 +115,293 @@ def _content_to_text_string(content: Any) -> str:
     return ""
 
 
-class SnowflakeStreamingHandler(BaseModelResponseIterator):
-    """
-    Custom streaming handler for Snowflake that handles missing fields in chunk responses.
-    Snowflake's streaming responses may not include all OpenAI-expected fields like 'created'.
-    Also transforms Claude-format tool_use to OpenAI-format tool_calls.
-    """
-
-    def chunk_parser(self, chunk: dict) -> ModelResponseStream:
-        # Snowflake may not include 'created' timestamp, use current time as default
-        created = chunk.get("created", int(time.time()))
-
-        # Transform choices to convert tool_use (Claude format) to tool_calls (OpenAI format)
-        choices = chunk.get("choices", [])
-        for choice in choices:
-            delta = choice.get("delta", {})
-
-            # Check if this is a tool_use block (Claude format via Snowflake)
-            if delta.get("type") == "tool_use":
-                name = delta.get("name")
-
-                # A new tool call begins on the name-introducing chunk;
-                # continuation chunks (name=None) reuse the current index.
-                tool_call_index = getattr(self, "_tool_call_index", -1)
-                if name:
-                    tool_call_index += 1
-                    self._tool_call_index = tool_call_index
-
-                # Normalize `input` into a JSON string for the OpenAI delta shape.
-                # Cortex routes Claude through Bedrock, which emits parameterless
-                # tool_use chunks with `input=""` instead of `input={}`. The SDK
-                # would accumulate the empty string into an invalid arguments
-                # value (JSON.parse fails on ""), which then poisons the
-                # conversation history on the next turn. Seed `"{}"` on the
-                # name-introducing chunk so accumulation ends up valid JSON.
-                input_value = delta.get("input")
-                if isinstance(input_value, dict):
-                    arguments = json.dumps(input_value)
-                elif isinstance(input_value, str):
-                    arguments = input_value
-                else:
-                    arguments = ""
-                if name and not arguments:
-                    arguments = "{}"
-
-                tool_call = ChatCompletionDeltaToolCall(
-                    id=delta.get("tool_use_id") or delta.get("id"),
-                    type="function",
-                    function=Function(
-                        name=name,
-                        arguments=arguments,
-                    ),
-                    index=tool_call_index if tool_call_index >= 0 else 0,
-                )
-                delta["tool_calls"] = [tool_call]
-                delta.pop("type", None)
-                delta.pop("tool_use_id", None)
-                delta.pop("input", None)
-                delta.pop("name", None)
-                delta.pop("content_list", None)
-
-        return ModelResponseStream(
-            id=chunk.get("id", ""),
-            object="chat.completion.chunk",
-            created=created,
-            model=chunk.get("model", ""),
-            choices=choices,
-            usage=chunk.get("usage"),
-        )
-
-
 class SnowflakeConfig(SnowflakeBaseConfig, OpenAIGPTConfig):
     """
-    Reference: https://docs.snowflake.com/en/user-guide/snowflake-cortex/cortex-llm-rest-api
+    Snowflake Cortex REST API — unified provider.
 
-    Snowflake Cortex LLM REST API supports function calling with specific models (e.g., Claude 3.5 Sonnet).
-    This config handles transformation between OpenAI format and Snowflake's tool_spec format.
+    Auto-routes based on model name:
+      - Claude models → /api/v2/cortex/v1/messages (Anthropic Messages format)
+      - All others   → /api/v2/cortex/v1/chat/completions (OpenAI format)
+
+    Auth:
+        PAT:  api_key="pat/<token>"  →  X-Snowflake-Authorization-Token-Type: PROGRAMMATIC_ACCESS_TOKEN
+        JWT:  api_key="<jwt>"        →  X-Snowflake-Authorization-Token-Type: KEYPAIR_JWT
     """
 
     @classmethod
     def get_config(cls):
         return super().get_config()
 
-    def _transform_tool_calls_from_snowflake_to_openai(
-        self, content_list: List[Dict[str, Any]]
-    ) -> Tuple[str, Optional[List[ChatCompletionMessageToolCall]]]:
+    def get_supported_openai_params(self, model: str) -> List[str]:
+        params = [
+            "temperature",
+            "max_tokens",
+            "max_completion_tokens",
+            "top_p",
+            "stream",
+            "tools",
+            "tool_choice",
+        ]
+        if _is_claude_model(model):
+            params.append("thinking")
+        return params
+
+    def get_complete_url(
+        self,
+        api_base: Optional[str],
+        api_key: Optional[str],
+        model: str,
+        optional_params: dict,
+        litellm_params: dict,
+        stream: Optional[bool] = None,
+    ) -> str:
+        # CARTO: skip path construction if api_base already contains the full endpoint
+        # (CARTO platform may pass the full Cortex URL as api_base)
+        if api_base and ("cortex/v1/messages" in api_base or "cortex/v1/chat/completions" in api_base):
+            return api_base
+
+        api_base = self._get_api_base(api_base, optional_params)
+        if _is_claude_model(model):
+            return f"{api_base}/cortex/v1/messages"
+        return f"{api_base}/cortex/v1/chat/completions"
+
+    def validate_environment(
+        self,
+        headers: dict,
+        model: str,
+        messages: List[AllMessageValues],
+        optional_params: dict,
+        litellm_params: dict,
+        api_key: Optional[str] = None,
+        api_base: Optional[str] = None,
+    ) -> dict:
+        headers = super().validate_environment(
+            headers=headers,
+            model=model,
+            messages=messages,
+            optional_params=optional_params,
+            litellm_params=litellm_params,
+            api_key=api_key,
+            api_base=api_base,
+        )
+        if _is_claude_model(model):
+            headers["anthropic-version"] = ANTHROPIC_VERSION
+        return headers
+
+    def _transform_tools_to_anthropic(self, tools: List[Dict]) -> List[Dict]:
         """
-        Transform Snowflake tool calls to OpenAI format.
+        Convert tools from OpenAI format to Anthropic format.
 
-        Args:
-            content_list: Snowflake's content_list array containing text and tool_use items
+        OpenAI: {"type": "function", "function": {"name": ..., "parameters": {...}}}
+        Anthropic: {"name": ..., "description": ..., "input_schema": {...}}
+        """
+        anthropic_tools = []
+        for tool in tools:
+            if tool.get("type") == "function" and "function" in tool:
+                func = tool["function"]
+                anthropic_tool: Dict[str, Any] = {
+                    "name": func.get("name", ""),
+                }
+                if "description" in func:
+                    anthropic_tool["description"] = func["description"]
+                if "parameters" in func:
+                    anthropic_tool["input_schema"] = func["parameters"]
+                else:
+                    anthropic_tool["input_schema"] = {
+                        "type": "object",
+                        "properties": {},
+                    }
+                anthropic_tools.append(anthropic_tool)
+            else:
+                anthropic_tools.append(tool)
+        return anthropic_tools
 
-        Returns:
-            Tuple of (text_content, tool_calls)
+    def _extract_system_and_messages(self, messages: List[AllMessageValues]) -> tuple[Optional[str], List[Dict]]:
+        """
+        Split messages into system prompt and conversation turns for Anthropic format.
 
-        Snowflake format in content_list:
-        {
-          "type": "tool_use",
-          "tool_use": {
-            "tool_use_id": "tooluse_...",
-            "name": "get_weather",
-            "input": {"location": "Paris"}
-          }
+        - system messages → collected and joined (preserves guardrail prompts)
+        - assistant messages with tool_calls → tool_use content blocks
+        - tool role messages → user role with tool_result content blocks
+        """
+        system_parts: List[str] = []
+        conversation: List[Dict] = []
+
+        for msg in messages:
+            if isinstance(msg, dict):
+                role = msg.get("role", "")
+                content: Any = msg.get("content", "")
+            else:
+                role = getattr(msg, "role", "")
+                content = getattr(msg, "content", "")
+
+            if role == "system":
+                if isinstance(content, str) and content:
+                    system_parts.append(content)
+                elif isinstance(content, list):
+                    system_parts.append("\n".join(b.get("text", "") for b in content if b.get("type") == "text"))
+            elif role == "assistant":
+                tool_calls = msg.get("tool_calls") if isinstance(msg, dict) else getattr(msg, "tool_calls", None)
+                if tool_calls:  # type: ignore[truthy-bool]
+                    content_blocks: List[Dict[str, Any]] = []
+                    if content:
+                        content_blocks.append({"type": "text", "text": content})
+                    for tc in tool_calls:  # type: ignore[attr-defined]
+                        func = tc.get("function", {}) if isinstance(tc, dict) else getattr(tc, "function", {})
+                        tc_id = tc.get("id", "") if isinstance(tc, dict) else getattr(tc, "id", "")
+                        func_name = func.get("name", "") if isinstance(func, dict) else getattr(func, "name", "")
+                        func_args = (
+                            func.get("arguments", "{}") if isinstance(func, dict) else getattr(func, "arguments", "{}")
+                        )
+                        try:
+                            input_data = json.loads(func_args) if isinstance(func_args, str) else func_args
+                        except (json.JSONDecodeError, TypeError):
+                            input_data = {}
+                        content_blocks.append(
+                            {
+                                "type": "tool_use",
+                                "id": tc_id,
+                                "name": func_name,
+                                "input": input_data,
+                            }
+                        )
+                    conversation.append({"role": "assistant", "content": content_blocks})
+                else:
+                    conversation.append(
+                        {
+                            "role": "assistant",
+                            "content": _strip_openai_annotations(content),
+                        }
+                    )
+            elif role == "tool":
+                tool_call_id = (
+                    msg.get("tool_call_id", "") if isinstance(msg, dict) else getattr(msg, "tool_call_id", "")
+                )
+                tool_content = content if isinstance(content, str) else json.dumps(content)
+                tool_result_block = {
+                    "type": "tool_result",
+                    "tool_use_id": tool_call_id,
+                    "content": tool_content,
+                }
+                if (
+                    conversation
+                    and conversation[-1]["role"] == "user"
+                    and isinstance(conversation[-1]["content"], list)
+                    and conversation[-1]["content"]
+                    and conversation[-1]["content"][0].get("type") == "tool_result"
+                ):
+                    conversation[-1]["content"].append(tool_result_block)
+                else:
+                    conversation.append({"role": "user", "content": [tool_result_block]})
+            else:
+                conversation.append(
+                    {"role": role, "content": _strip_openai_annotations(content)}
+                )
+
+        system: Optional[str] = "\n\n".join(system_parts) if system_parts else None
+        return system, conversation
+
+    def transform_request(
+        self,
+        model: str,
+        messages: List[AllMessageValues],
+        optional_params: dict,
+        litellm_params: dict,
+        headers: dict,
+    ) -> dict:
+        stream: bool = optional_params.pop("stream", False) or False
+        extra_body = optional_params.pop("extra_body", {})
+
+        if _is_claude_model(model):
+            return self._transform_request_anthropic(model, messages, optional_params, stream, extra_body)
+        return self._transform_request_openai(model, messages, optional_params, stream, extra_body)
+
+    def _transform_request_openai(
+        self,
+        model: str,
+        messages: List[AllMessageValues],
+        optional_params: dict,
+        stream: bool,
+        extra_body: dict,
+    ) -> dict:
+        """OpenAI format for /chat/completions endpoint."""
+        max_tokens = optional_params.pop("max_tokens", None)
+        max_completion_tokens = optional_params.pop("max_completion_tokens", None)
+        resolved_max = max_completion_tokens or max_tokens
+
+        body: dict = {
+            "model": model.removeprefix("snowflake/"),
+            "messages": messages,
+            "stream": stream,
+            **optional_params,
+            **extra_body,
         }
 
-        OpenAI format (returned tool_calls):
-        ChatCompletionMessageToolCall(
-            id="tooluse_...",
-            type="function",
-            function=Function(name="get_weather", arguments='{"location": "Paris"}')
-        )
+        if resolved_max is not None:
+            body["max_completion_tokens"] = resolved_max
+
+        return body
+
+    def _transform_tool_choice_to_anthropic(self, tool_choice: Any) -> Dict[str, Any]:
         """
-        text_content = ""
-        tool_calls: List[ChatCompletionMessageToolCall] = []
+        Convert tool_choice from OpenAI format to Anthropic format.
 
-        for idx, content_item in enumerate(content_list):
-            if content_item.get("type") == "text":
-                text_content += content_item.get("text", "")
+        OpenAI string values: "auto", "required", "none"
+        OpenAI dict: {"type": "function", "function": {"name": "..."}}
+        Anthropic: {"type": "auto"}, {"type": "any"}, {"type": "tool", "name": "..."}
+        """
+        if isinstance(tool_choice, str):
+            mapping = {
+                "auto": {"type": "auto"},
+                "required": {"type": "any"},
+                "none": {"type": "none"},
+            }
+            return mapping.get(tool_choice, {"type": "auto"})
+        elif isinstance(tool_choice, dict):
+            if tool_choice.get("type") == "function":
+                func = tool_choice.get("function", {})
+                return {"type": "tool", "name": func.get("name", "")}
+            return tool_choice
+        return {"type": "auto"}
 
-            ## TOOL CALLING
-            elif content_item.get("type") == "tool_use":
-                tool_use_data = content_item.get("tool_use", {})
-                tool_call = ChatCompletionMessageToolCall(
-                    id=tool_use_data.get("tool_use_id", ""),
-                    type="function",
-                    function=Function(
-                        name=tool_use_data.get("name", ""),
-                        arguments=json.dumps(tool_use_data.get("input", {})),
-                    ),
-                )
-                tool_calls.append(tool_call)
+    def _transform_request_anthropic(
+        self,
+        model: str,
+        messages: List[AllMessageValues],
+        optional_params: dict,
+        stream: bool,
+        extra_body: dict,
+    ) -> dict:
+        """Anthropic Messages format for /messages endpoint."""
+        system, conversation = self._extract_system_and_messages(messages)
 
-        return text_content, tool_calls if tool_calls else None
+        if "tools" in optional_params:
+            optional_params["tools"] = self._transform_tools_to_anthropic(optional_params["tools"])
+
+        if "tool_choice" in optional_params:
+            optional_params["tool_choice"] = self._transform_tool_choice_to_anthropic(optional_params["tool_choice"])
+
+        max_completion_tokens = optional_params.pop("max_completion_tokens", None)
+        if max_completion_tokens and "max_tokens" not in optional_params:
+            optional_params["max_tokens"] = max_completion_tokens
+
+        model_name = model.removeprefix("snowflake/")
+
+        body: Dict[str, Any] = {
+            "model": model_name,
+            "messages": conversation,
+            "stream": stream,
+            **optional_params,
+            **extra_body,
+        }
+
+        if system is not None:
+            body["system"] = system
+
+        if "max_tokens" not in body:
+            body["max_tokens"] = 4096  # reasonable default; Anthropic API max varies by model
+
+        return body
 
     def transform_response(
         self,
@@ -246,6 +417,22 @@ class SnowflakeConfig(SnowflakeBaseConfig, OpenAIGPTConfig):
         api_key: Optional[str] = None,
         json_mode: Optional[bool] = None,
     ) -> ModelResponse:
+        if _is_claude_model(model):
+            return self._transform_response_anthropic(
+                model, raw_response, model_response, logging_obj, request_data, messages
+            )
+        return self._transform_response_openai(model, raw_response, model_response, logging_obj, request_data, messages)
+
+    def _transform_response_openai(
+        self,
+        model: str,
+        raw_response: httpx.Response,
+        model_response: ModelResponse,
+        logging_obj: LiteLLMLoggingObj,
+        request_data: dict,
+        messages: List[AllMessageValues],
+    ) -> ModelResponse:
+        """Parse standard OpenAI chat completions response."""
         response_json = raw_response.json()
 
         logging_obj.post_call(
@@ -255,344 +442,275 @@ class SnowflakeConfig(SnowflakeBaseConfig, OpenAIGPTConfig):
             additional_args={"complete_input_dict": request_data},
         )
 
-        ## RESPONSE TRANSFORMATION
-        # Snowflake returns content_list (not content) with tool_use objects
-        # We need to transform this to OpenAI's format with content + tool_calls
-        if "choices" in response_json and len(response_json["choices"]) > 0:
-            choice = response_json["choices"][0]
-            if "message" in choice and "content_list" in choice["message"]:
-                content_list = choice["message"]["content_list"]
-                (
-                    text_content,
-                    tool_calls,
-                ) = self._transform_tool_calls_from_snowflake_to_openai(content_list)
-
-                # Update the choice message with OpenAI format
-                choice["message"]["content"] = text_content
-                if tool_calls:
-                    choice["message"]["tool_calls"] = tool_calls
-
-                # Remove Snowflake-specific content_list
-                del choice["message"]["content_list"]
-
         returned_response = ModelResponse(**response_json)
-
         returned_response.model = "snowflake/" + (returned_response.model or "")
 
         if model is not None:
             returned_response._hidden_params["model"] = model
+
         return returned_response
 
-    def get_complete_url(
+    def _transform_response_anthropic(
         self,
-        api_base: Optional[str],
-        api_key: Optional[str],
         model: str,
-        optional_params: dict,
-        litellm_params: dict,
-        stream: Optional[bool] = None,
-    ) -> str:
-        """
-        Build the Snowflake Cortex inference URL.
+        raw_response: httpx.Response,
+        model_response: ModelResponse,
+        logging_obj: LiteLLMLoggingObj,
+        request_data: dict,
+        messages: List[AllMessageValues],
+    ) -> ModelResponse:
+        """Parse Anthropic Messages response into OpenAI format."""
+        response_json = raw_response.json()
 
-        Handles both cases:
-        - api_base is just the domain (e.g., https://account.snowflakecomputing.com)
-        - api_base is the full endpoint URL (e.g., https://account.snowflakecomputing.com/api/v2/cortex/inference:complete)
-        """
-        endpoint = "cortex/inference:complete"
+        logging_obj.post_call(
+            input=messages,
+            api_key="",
+            original_response=response_json,
+            additional_args={"complete_input_dict": request_data},
+        )
 
-        # CARTO: skip path construction if api_base already contains the full endpoint
-        # (CARTO platform may pass the full Cortex URL as api_base)
-        if api_base and endpoint in api_base:
-            return api_base
+        text_content = ""
+        tool_calls = []
 
-        api_base = self._get_api_base(api_base, optional_params)
+        for block in response_json.get("content", []):
+            if block.get("type") == "text":
+                text_content += block.get("text", "")
+            elif block.get("type") == "tool_use":
+                tool_calls.append(
+                    ChatCompletionMessageToolCall(
+                        id=block.get("id", ""),
+                        type="function",
+                        function=Function(
+                            name=block.get("name", ""),
+                            arguments=json.dumps(block.get("input", {})),
+                        ),
+                    )
+                )
 
-        return f"{api_base}/{endpoint}"
+        _stop_reason_map = {
+            "end_turn": "stop",
+            "max_tokens": "length",
+            "tool_use": "tool_calls",
+            "stop_sequence": "stop",
+        }
+        finish_reason = _stop_reason_map.get(response_json.get("stop_reason", "end_turn"), "stop")
+
+        message = Message(content=text_content or None, role="assistant")
+        if tool_calls:
+            message.tool_calls = tool_calls
+
+        choice = Choices(
+            finish_reason=finish_reason,
+            index=0,
+            message=message,
+        )
+
+        usage_data = response_json.get("usage", {})
+        usage = Usage(
+            prompt_tokens=usage_data.get("input_tokens", 0),
+            completion_tokens=usage_data.get("output_tokens", 0),
+            total_tokens=usage_data.get("input_tokens", 0) + usage_data.get("output_tokens", 0),
+        )
+
+        model_response.choices = [choice]
+        model_response.usage = usage  # type: ignore[attr-defined]
+        model_response.model = "snowflake/" + response_json.get("model", model)
+        model_response.id = response_json.get("id", "")
+
+        if model is not None:
+            model_response._hidden_params["model"] = model
+
+        return model_response
 
     def get_model_response_iterator(
         self,
-        streaming_response: Union[Iterator[str], AsyncIterator[str], ModelResponse],
+        streaming_response: Any,
         sync_stream: bool,
         json_mode: Optional[bool] = False,
     ) -> Any:
-        """
-        Return custom streaming handler for Snowflake that handles missing 'created' field
-        and transforms Claude-format tool_use to OpenAI-format tool_calls.
-        """
         return SnowflakeStreamingHandler(
             streaming_response=streaming_response,
             sync_stream=sync_stream,
             json_mode=json_mode,
         )
 
-    def _transform_tools(self, tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Transform OpenAI tool format to Snowflake tool format.
 
-        Args:
-            tools: List of tools in OpenAI format
+class SnowflakeStreamingHandler(BaseModelResponseIterator):
+    """
+    Parse streaming events from both Snowflake endpoints.
 
-        Returns:
-            List of tools in Snowflake format
+    - /chat/completions: OpenAI SSE format (has "choices" key)
+    - /messages: Anthropic SSE format (has "type" key like content_block_delta)
+    """
 
-        OpenAI format:
-        {
-            "type": "function",
-            "function": {
-                "name": "get_weather",
-                "description": "...",
-                "parameters": {...}
-            }
-        }
-
-        Snowflake format:
-        {
-            "tool_spec": {
-                "type": "generic",
-                "name": "get_weather",
-                "description": "...",
-                "input_schema": {...}
-            }
-        }
-        """
-        snowflake_tools: List[Dict[str, Any]] = []
-        for tool in tools:
-            if tool.get("type") == "function":
-                function = tool.get("function", {})
-                snowflake_tool: Dict[str, Any] = {
-                    "tool_spec": {
-                        "type": "generic",
-                        "name": function.get("name"),
-                        "input_schema": function.get(
-                            "parameters",
-                            {"type": "object", "properties": {}},
-                        ),
-                    }
-                }
-                # Add description if present
-                if "description" in function:
-                    snowflake_tool["tool_spec"]["description"] = function["description"]
-
-                snowflake_tools.append(snowflake_tool)
-
-        return snowflake_tools
-
-    def _transform_tool_choice(
+    def __init__(
         self,
-        tool_choice: Union[str, Dict[str, Any]],
-        tool_names: Optional[List[str]] = None,
-    ) -> Union[str, Dict[str, Any]]:
-        """
-        Transform OpenAI tool_choice format to Snowflake format.
+        streaming_response: Any,
+        sync_stream: bool,
+        json_mode: Optional[bool] = False,
+    ):
+        super().__init__(streaming_response=streaming_response, sync_stream=sync_stream)
+        self._tool_index = 0
+        self._tool_id = ""
+        self._tool_name = ""
+        self._input_tokens = 0
 
-        String values are converted to Snowflake's required object format:
-        - "auto" -> {"type": "auto"}
-        - "required" -> {"type": "required", "name": [tool_names]}
-        - "none" -> {"type": "none"}
+    def chunk_parser(self, chunk: dict) -> GenericStreamingChunk:
+        if "choices" in chunk:
+            return self._parse_openai_chunk(chunk)
+        return self._parse_anthropic_chunk(chunk)
 
-        Dict values with function type are converted:
-        - {"type": "function", "function": {"name": "x"}} -> {"type": "tool", "name": ["x"]}
-        """
-        if isinstance(tool_choice, str):
-            result: Dict[str, Any] = {"type": tool_choice}
-            if tool_names and tool_choice == "required":
-                result["name"] = tool_names
-            return result
-
-        if isinstance(tool_choice, dict):
-            if tool_choice.get("type") == "function":
-                function_name = tool_choice.get("function", {}).get("name")
-                if function_name:
-                    return {
-                        "type": "tool",
-                        "name": [function_name],  # Snowflake expects array
-                    }
-
-        return tool_choice
-
-    def _transform_messages(
-        self, messages: List[AllMessageValues]
-    ) -> List[Dict[str, Any]]:
-        """
-        Transform OpenAI message format to Snowflake format.
-
-        Handles:
-        - role="tool" messages -> role="user" with content_list containing tool_results
-        - role="assistant" with tool_calls -> content_list with tool_use blocks
-        - consecutive assistant messages (text-only followed by tool_call-only,
-          as the OpenAI Agents SDK replays them) -> merged into a single
-          assistant message with both text and tool_use blocks. Snowflake
-          Cortex rejects role-alternation violations with 390142.
-        - OpenAI `annotations: []` on content blocks -> stripped. Snowflake
-          Cortex rejects unknown fields with 390142.
-        - list-form `content` ([{"type": "text", "text": ...}], the shape the
-          Agents SDK replays a prior assistant turn in) -> flattened to a
-          plain string. Snowflake Cortex rejects array-form `content` with
-          390142, so a plain multi-turn text conversation otherwise fails on
-          the second turn.
-        - content=None -> content="" (Snowflake requires non-null content)
-        """
-        transformed_messages: List[Dict[str, Any]] = []
-        tool_call_map: Dict[str, str] = {}
-
-        for message in messages:
-            msg_dict = message if isinstance(message, dict) else dict(message)
-
-            # Handle tool result messages (role="tool")
-            if msg_dict.get("role") == "tool":
-                tool_call_id = msg_dict.get("tool_call_id")
-                content = msg_dict.get("content", "")
-                tool_name = msg_dict.get("name")
-
-                if not tool_name and tool_call_id and tool_call_id in tool_call_map:
-                    tool_name = tool_call_map[tool_call_id]
-
-                tool_results: Dict[str, Any] = {
-                    "tool_use_id": tool_call_id,
-                    "content": [{"type": "text", "text": str(content)}],
-                }
-                if tool_name:
-                    tool_results["name"] = tool_name
-
-                transformed_messages.append({
-                    "role": "user",
-                    "content": "",
-                    "content_list": [
-                        {"type": "tool_results", "tool_results": tool_results}
-                    ],
-                })
-
-            # Handle assistant messages with tool_calls
-            elif msg_dict.get("role") == "assistant" and msg_dict.get("tool_calls"):
-                tool_use_blocks: List[Dict[str, Any]] = []
-
-                for tool_call in msg_dict.get("tool_calls", []):
-                    if tool_call.get("type") == "function":
-                        function_data = tool_call.get("function", {})
-                        tc_id = tool_call.get("id")
-                        tc_name = function_data.get("name")
-                        arguments_str = function_data.get("arguments", "{}")
-
-                        if tc_id and tc_name:
-                            tool_call_map[tc_id] = tc_name
-
-                        # Empty/missing arguments → parameterless call. The
-                        # Cortex-via-Bedrock streaming path leaves
-                        # `arguments=""` on the SDK side; coerce to a valid
-                        # empty object before serialization.
-                        if not arguments_str:
-                            arguments: Any = {}
-                        else:
-                            try:
-                                arguments = (
-                                    json.loads(arguments_str)
-                                    if isinstance(arguments_str, str)
-                                    else arguments_str
-                                )
-                            except json.JSONDecodeError:
-                                arguments = {}
-
-                        tool_use_blocks.append({
-                            "type": "tool_use",
-                            "tool_use": {
-                                "tool_use_id": tc_id,
-                                "name": tc_name,
-                                "input": arguments,
-                            },
-                        })
-
-                # Merge with the immediately preceding assistant message if it
-                # carried only text and no content_list / tool_calls. The
-                # OpenAI Agents SDK replays a tool-using turn as two separate
-                # assistant messages (text first, tool_call second); Snowflake
-                # Cortex expects a single assistant message per turn whose
-                # content_list contains both text and tool_use blocks.
-                text_prelude_blocks: List[Dict[str, Any]] = []
-                if (
-                    transformed_messages
-                    and transformed_messages[-1].get("role") == "assistant"
-                    and not transformed_messages[-1].get("content_list")
-                    and not transformed_messages[-1].get("tool_calls")
-                ):
-                    prev = transformed_messages.pop()
-                    text_prelude_blocks = _content_to_text_blocks(
-                        prev.get("content")
-                    )
-
-                content_list = text_prelude_blocks + tool_use_blocks
-
-                transformed_messages.append({
-                    "role": "assistant",
-                    # Flatten any list-form content to a string — Snowflake
-                    # rejects array-form `content` with 390142.
-                    "content": _content_to_text_string(msg_dict.get("content")),
-                    "content_list": content_list,
-                })
-
-            else:
-                if isinstance(message, dict):
-                    msg_to_append = message.copy()
-                else:
-                    msg_to_append = dict(message)
-
-                _strip_openai_annotations(msg_to_append)
-
-                # Snowflake Cortex requires `content` to be a plain string, not
-                # an array of content blocks. The OpenAI Agents SDK replays a
-                # prior assistant turn as list-form content
-                # ([{"type": "text", "text": "..."}]); left unflattened it is
-                # rejected with 390142 on the next turn. Flatten to a string.
-                content_value = msg_to_append.get("content")
-                if isinstance(content_value, list):
-                    msg_to_append["content"] = _content_to_text_string(content_value)
-                    content_value = msg_to_append["content"]
-
-                has_content_list = "content_list" in msg_to_append and msg_to_append.get("content_list")
-                if content_value is None and not has_content_list:
-                    msg_to_append["content"] = ""
-
-                transformed_messages.append(msg_to_append)
-
-        return transformed_messages
-
-    def transform_request(
-        self,
-        model: str,
-        messages: List[AllMessageValues],
-        optional_params: dict,
-        litellm_params: dict,
-        headers: dict,
-    ) -> dict:
-        stream: bool = optional_params.pop("stream", None) or False
-        extra_body = optional_params.pop("extra_body", {})
-
-        # Transform messages to handle tool results and assistant tool_calls
-        transformed_messages = self._transform_messages(messages)
-
-        # Transform tools from OpenAI format to Snowflake's tool_spec format
-        tools = optional_params.pop("tools", None)
-        tool_names: List[str] = []
-        if tools:
-            transformed_tools = self._transform_tools(tools)
-            optional_params["tools"] = transformed_tools
-            tool_names = [
-                t.get("tool_spec", {}).get("name")
-                for t in transformed_tools
-                if t.get("tool_spec", {}).get("name")
-            ]
-
-        # Transform tool_choice from OpenAI format to Snowflake's format
-        tool_choice = optional_params.pop("tool_choice", None)
-        if tool_choice:
-            optional_params["tool_choice"] = self._transform_tool_choice(
-                tool_choice, tool_names
+    def _parse_openai_chunk(self, chunk: dict) -> GenericStreamingChunk:
+        choices = chunk.get("choices", [])
+        if not choices:
+            return GenericStreamingChunk(
+                text="",
+                is_finished=False,
+                finish_reason="",
+                usage=None,
+                index=0,
+                tool_use=None,
             )
 
-        return {
-            "model": model,
-            "messages": transformed_messages,
-            "stream": stream,
-            **optional_params,
-            **extra_body,
-        }
+        choice = choices[0]
+        delta = choice.get("delta", {})
+        finish_reason = choice.get("finish_reason") or ""
+        text = delta.get("content") or ""
+
+        tool_use = None
+        tool_calls = delta.get("tool_calls")
+        if tool_calls:
+            tc = tool_calls[0]
+            func = tc.get("function", {})
+            tool_use = ChatCompletionToolCallChunk(
+                id=tc.get("id", ""),
+                type="function",
+                function={
+                    "name": func.get("name", ""),
+                    "arguments": func.get("arguments", ""),
+                },
+                index=tc.get("index", 0),
+            )
+
+        return GenericStreamingChunk(
+            text=text,
+            is_finished=finish_reason != "",
+            finish_reason=finish_reason,
+            usage=None,
+            index=choice.get("index", 0),
+            tool_use=tool_use,
+        )
+
+    def _parse_anthropic_chunk(self, chunk: dict) -> GenericStreamingChunk:
+        event_type = chunk.get("type", "")
+
+        if event_type == "message_start":
+            message = chunk.get("message", {})
+            usage_data = message.get("usage", {})
+            self._input_tokens = usage_data.get("input_tokens", 0)
+            return GenericStreamingChunk(
+                text="",
+                is_finished=False,
+                finish_reason="",
+                usage=None,
+                index=0,
+                tool_use=None,
+            )
+
+        elif event_type == "content_block_delta":
+            delta = chunk.get("delta", {})
+            delta_type = delta.get("type", "")
+
+            if delta_type == "text_delta":
+                return GenericStreamingChunk(
+                    text=delta.get("text", ""),
+                    is_finished=False,
+                    finish_reason="",
+                    usage=None,
+                    index=chunk.get("index", 0),
+                    tool_use=None,
+                )
+            elif delta_type == "input_json_delta":
+                return GenericStreamingChunk(
+                    text="",
+                    is_finished=False,
+                    finish_reason="",
+                    usage=None,
+                    index=chunk.get("index", 0),
+                    tool_use=ChatCompletionToolCallChunk(
+                        id=self._tool_id,
+                        type="function",
+                        function={
+                            "name": "",
+                            "arguments": delta.get("partial_json", ""),
+                        },
+                        index=self._tool_index,
+                    ),
+                )
+
+        elif event_type == "content_block_start":
+            content_block = chunk.get("content_block", {})
+            if content_block.get("type") == "tool_use":
+                self._tool_id = content_block.get("id", "")
+                self._tool_name = content_block.get("name", "")
+                self._tool_index = chunk.get("index", 0)
+                return GenericStreamingChunk(
+                    text="",
+                    is_finished=False,
+                    finish_reason="",
+                    usage=None,
+                    index=chunk.get("index", 0),
+                    tool_use=ChatCompletionToolCallChunk(
+                        id=self._tool_id,
+                        type="function",
+                        function={"name": self._tool_name, "arguments": ""},
+                        index=self._tool_index,
+                    ),
+                )
+
+        elif event_type == "message_delta":
+            delta = chunk.get("delta", {})
+            stop_reason = delta.get("stop_reason", "")
+            usage_data = chunk.get("usage", {})
+            _stop_map = {
+                "end_turn": "stop",
+                "max_tokens": "length",
+                "tool_use": "tool_calls",
+                "stop_sequence": "stop",
+            }
+            usage = None
+            if usage_data or self._input_tokens:
+                output_t = usage_data.get("output_tokens", 0)
+                input_t = self._input_tokens or usage_data.get("input_tokens", 0)
+                usage = ChatCompletionUsageBlock(
+                    prompt_tokens=input_t,
+                    completion_tokens=output_t,
+                    total_tokens=input_t + output_t,
+                )
+            return GenericStreamingChunk(
+                text="",
+                is_finished=True,
+                finish_reason=_stop_map.get(stop_reason, "stop"),
+                usage=usage,
+                index=0,
+                tool_use=None,
+            )
+
+        elif event_type == "message_stop":
+            return GenericStreamingChunk(
+                text="",
+                is_finished=True,
+                finish_reason="stop",
+                usage=None,
+                index=0,
+                tool_use=None,
+            )
+
+        return GenericStreamingChunk(
+            text="",
+            is_finished=False,
+            finish_reason="",
+            usage=None,
+            index=0,
+            tool_use=None,
+        )
