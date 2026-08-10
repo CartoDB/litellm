@@ -165,6 +165,38 @@ def adapt_messages_to_generic_oci_standard_tool_response(role: str, tool_call_id
     )
 
 
+def _reorder_tool_results_to_match_tool_calls(
+    messages: List[OCIMessage],
+) -> List[OCIMessage]:
+    """Reorder each run of TOOL results to match the preceding assistant's toolCalls order.
+
+    OCI GENERIC validates tool results positionally against the assistant
+    message's toolCalls, rejecting out-of-order results with
+    "Invalid parameter: 'toolCallId' of '<id>' not found in 'toolCalls' of
+    previous message". Parallel tool calls executed concurrently return their
+    results in completion order, which need not match the toolCalls order.
+    """
+    reordered: List[OCIMessage] = []
+    i = 0
+    while i < len(messages):
+        msg = messages[i]
+        reordered.append(msg)
+        i += 1
+        if not msg.toolCalls:
+            continue
+        run_start = i
+        while i < len(messages) and messages[i].toolCallId is not None:
+            i += 1
+        run = messages[run_start:i]
+        if len(run) > 1:
+            positions = {tc.id: pos for pos, tc in enumerate(msg.toolCalls)}
+            run = sorted(
+                run, key=lambda m: positions.get(m.toolCallId or "", len(positions))
+            )
+        reordered.extend(run)
+    return reordered
+
+
 def adapt_messages_to_generic_oci_standard(
     messages: List[AllMessageValues],
 ) -> List[OCIMessage]:
@@ -202,7 +234,7 @@ def adapt_messages_to_generic_oci_standard(
                 )
             new_messages.append(adapt_messages_to_generic_oci_standard_tool_response(role, tool_call_id, content))
 
-    return new_messages
+    return _reorder_tool_results_to_match_tool_calls(new_messages)
 
 
 # ---------------------------------------------------------------------------
@@ -358,7 +390,9 @@ def handle_generic_response(
     return model_response
 
 
-def handle_generic_stream_chunk(dict_chunk: dict) -> ModelResponseStream:
+def handle_generic_stream_chunk(
+    dict_chunk: dict, tool_call_indices: Optional[Dict[str, int]] = None
+) -> ModelResponseStream:
     """Parse a single GENERIC SSE chunk into a LiteLLM ModelResponseStream."""
     # OCI streams tool calls progressively — early chunks may omit required fields.
     if dict_chunk.get("message") and dict_chunk["message"].get("toolCalls"):
@@ -407,17 +441,26 @@ def handle_generic_stream_chunk(dict_chunk: dict) -> ModelResponseStream:
     # GENERIC and Cohere chunks.
     tool_calls: Optional[List[Dict[str, Any]]] = None
     if typed_chunk.message and typed_chunk.message.toolCalls:
-        tool_calls = [
-            {
-                "id": tc.id or _synthesize_oci_tool_call_id(i, tc.name, tc.arguments),
-                "type": "function",
-                "function": {
-                    "name": tc.name,
-                    "arguments": tc.arguments,
-                },
-            }
-            for i, tc in enumerate(typed_chunk.message.toolCalls)
-        ]
+        if tool_call_indices is None:
+            tool_call_indices = {}
+        tool_calls = []
+        for i, tc in enumerate(typed_chunk.message.toolCalls):
+            resolved_id = tc.id or _synthesize_oci_tool_call_id(
+                i, tc.name, tc.arguments
+            )
+            tool_calls.append(
+                {
+                    "id": resolved_id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.name,
+                        "arguments": tc.arguments,
+                    },
+                    "index": tool_call_indices.setdefault(
+                        resolved_id, len(tool_call_indices)
+                    ),
+                }
+            )
 
     finish_reason: Optional[str] = _normalize_oci_finish_reason(typed_chunk.finishReason)
 

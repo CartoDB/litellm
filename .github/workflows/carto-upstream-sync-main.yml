@@ -1,0 +1,1039 @@
+################################################################################
+# CARTO - Upstream Sync
+################################################################################
+
+# This workflow automatically syncs CARTO's LiteLLM fork with upstream stable
+# releases from BerriAI/litellm.
+#
+# Branch Strategy:
+#   1. BerriAI/litellm:<tag> -> CartoDB/litellm:main (merge specific stable tag)
+#   2. CartoDB/litellm:main -> CartoDB/litellm:carto/main (PR for manual review)
+#
+# IMPORTANT: We merge the specific stable TAG (e.g., v1.81.0-stable), NOT upstream/main.
+# This ensures the code matches the schema for that release. Merging upstream/main
+# would bring in unreleased code that may require database tables not in the stable schema.
+#
+# The workflow runs every Monday at noon and performs two checks:
+#   - Detects new stable releases (latest non-prerelease, non-draft GitHub release;
+#     BerriAI dropped the "-stable" tag suffix after v1.83.14-stable) and syncs main
+#   - Creates PR to carto/main if carto/main is behind main (regardless of upstream sync)
+#
+# Uses X_GITHUB_SUPERCARTOFANTE token to allow workflow file modifications.
+
+name: CARTO - Upstream Sync # do not change the name since is referenced in the ci-fixer workflow
+
+permissions:
+  contents: write        # Allow push to main branch and modify files (including workflows)
+  pull-requests: write   # Allow PR creation and management
+
+on:
+  schedule:
+    - cron: "0 12 * * 1"  # Every Monday at noon (12:00 UTC)
+
+  workflow_dispatch:  # Manual trigger for testing
+    inputs:
+      silent:
+        description: "Silent mode - skip all Slack and n8n notifications (useful for testing)"
+        type: boolean
+        default: false
+
+jobs:
+  ##############################################################################
+  # Check for New Release
+  ##############################################################################
+
+  check-new-release:
+    runs-on: ubuntu-latest
+    name: "Check for new upstream release"
+    outputs:
+      has-new-release: ${{ steps.detect-release.outputs.has-new-release }}
+      new-version: ${{ steps.detect-release.outputs.new-version }}
+      current-version: ${{ steps.detect-release.outputs.current-version }}
+      current-version-tag: ${{ steps.detect-release.outputs.current-version-tag }}
+    steps:
+      # Checkout carto/main to check what version we currently have in production
+      # NOT main (which has unstable upstream dev code that's always ahead of stable)
+      - name: Checkout carto/main branch
+        uses: actions/checkout@v4
+        with:
+          ref: carto/main
+          fetch-depth: 0
+
+      - name: Add upstream remote
+        run: |
+          set -eu
+          git remote add upstream https://github.com/BerriAI/litellm.git || true
+          git fetch upstream --tags
+
+      - name: Detect new stable release (bash + gh CLI)
+        id: detect-release
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          set -eu
+
+          echo "::group::Detecting new stable releases"
+          echo "[Sync] Using gh CLI to fetch releases from BerriAI/litellm..."
+
+          # Get current version from carto/main's pyproject.toml
+          # This is the version currently deployed in production
+          CURRENT_VERSION=$(grep -E "^version\s*=" pyproject.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "[Sync] Current version in carto/main pyproject.toml: ${CURRENT_VERSION}"
+
+          # Get latest stable release tag (non-prerelease, non-draft).
+          # BerriAI tagged stable releases with a "-stable" suffix through v1.83.14-stable
+          # (2026-05-02); every release since is a plain "vX.Y.Z" tag with isPrerelease=false.
+          # Filtering on isPrerelease/isDraft alone works for both conventions.
+          LATEST_STABLE=$(gh release list --repo BerriAI/litellm --limit 50 --json tagName,isPrerelease,isDraft | \
+            jq -r '.[] | select(.isPrerelease == false and .isDraft == false) | .tagName' | \
+            sort -V | tail -1)
+
+          if [[ -z "${LATEST_STABLE}" ]]; then
+            echo "[Sync] No stable releases found in upstream"
+            echo "has-new-release=false" >> $GITHUB_OUTPUT
+            echo "::endgroup::"
+            exit 0
+          fi
+
+          echo "[Sync] Latest upstream stable release: ${LATEST_STABLE}"
+
+          # Extract version from tag (remove 'v' prefix and '-stable' suffix)
+          # e.g., v1.78.5-stable -> 1.78.5
+          LATEST_VERSION=$(echo "${LATEST_STABLE}" | sed -E 's/^v//; s/-stable$//')
+
+          echo "[Sync] Latest version: ${LATEST_VERSION}"
+          echo "[Sync] Current version: ${CURRENT_VERSION}"
+
+          # Compare versions using sort -V for proper semver comparison
+          # String comparison fails for cases like "1.9.0" vs "1.10.0"
+          HIGHER_VERSION=$(printf '%s\n%s' "${LATEST_VERSION}" "${CURRENT_VERSION}" | sort -V | tail -1)
+          if [[ "${HIGHER_VERSION}" == "${LATEST_VERSION}" && "${LATEST_VERSION}" != "${CURRENT_VERSION}" ]]; then
+            echo "[Sync] ✅ New stable release available: ${LATEST_STABLE}"
+            echo "has-new-release=true" >> $GITHUB_OUTPUT
+            echo "new-version=${LATEST_STABLE}" >> $GITHUB_OUTPUT
+            echo "current-version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
+
+            # Resolve the exact upstream tag for CURRENT_VERSION so compare links work
+            # whether it predates or postdates the "-stable" suffix drop.
+            if git rev-parse "v${CURRENT_VERSION}" >/dev/null 2>&1; then
+              CURRENT_VERSION_TAG="v${CURRENT_VERSION}"
+            elif git rev-parse "v${CURRENT_VERSION}-stable" >/dev/null 2>&1; then
+              CURRENT_VERSION_TAG="v${CURRENT_VERSION}-stable"
+            else
+              CURRENT_VERSION_TAG="v${CURRENT_VERSION}"
+            fi
+            echo "current-version-tag=${CURRENT_VERSION_TAG}" >> $GITHUB_OUTPUT
+
+            echo "::notice title=New Release Detected::${LATEST_STABLE} (current: ${CURRENT_VERSION})"
+          else
+            echo "[Sync] ✅ Already on latest stable: ${CURRENT_VERSION}"
+            echo "has-new-release=false" >> $GITHUB_OUTPUT
+            echo "current-version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
+          fi
+
+          echo "::endgroup::"
+
+  ##############################################################################
+  # Sync main branch with upstream
+  ##############################################################################
+
+  sync-main-branch:
+    runs-on: ubuntu-latest
+    name: "Sync main with upstream"
+    needs:
+      - check-new-release
+    if: needs.check-new-release.outputs.has-new-release == 'true'
+    steps:
+      - name: Checkout main branch
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+
+      - name: Configure Git
+        run: |
+          set -eu
+          git config --global user.email "cartofante@carto.com"
+          git config --global user.name "Cartofante"
+
+      - name: Sync main with upstream stable tag
+        env:
+          NEW_VERSION: ${{ needs.check-new-release.outputs.new-version }}
+        run: |
+          set -eu
+
+          echo "::group::Syncing main branch with upstream stable tag"
+          echo "[Sync] main should sync with the specific stable tag (NOT upstream/main)"
+
+          # Add upstream remote
+          git remote add upstream https://github.com/BerriAI/litellm.git || true
+          git fetch upstream --tags
+
+          # Merge the specific upstream tag (NOT upstream/main!)
+          # IMPORTANT: We merge the tag to ensure code matches the stable release schema
+          # Merging upstream/main would bring in unreleased code that may require
+          # database tables not present in the stable release schema.
+          echo "[Sync] Merging tag ${NEW_VERSION} with -X theirs strategy (preserves commit history)..."
+
+          # Attempt merge - capture output and exit code.
+          # The || prevents set -e from killing the script before fallback runs.
+          # -X theirs resolves content-level conflicts (both sides modified same lines)
+          # but CANNOT resolve tree-level conflicts (rename/rename, modify/delete, rename/delete).
+          MERGE_RESULT=0
+          MERGE_OUTPUT=$(git merge "${NEW_VERSION}" --no-edit -X theirs -m "sync: merge ${NEW_VERSION} tag
+
+          Automatic sync from upstream BerriAI/litellm tag ${NEW_VERSION}
+
+          Strategy: Merge with history preservation (main syncs to stable tag)" 2>&1) || MERGE_RESULT=$?
+
+          # Always show merge output so Auto-merging lines appear in logs
+          echo "$MERGE_OUTPUT"
+
+          if [ $MERGE_RESULT -eq 0 ]; then
+            echo "[Sync] ✅ Merge successful with preserved history"
+          else
+            # Tree-level conflicts (rename/rename, modify/delete, rename/delete) need
+            # explicit resolution. These commonly occur in litellm/proxy/_experimental/out/
+            # where Next.js build artifacts have hashed filenames that change between builds.
+            echo "[Sync] ⚠️ Merge had tree-level conflicts, resolving by accepting upstream..."
+
+            # --- Conflict Classification ---
+            # Parse conflict types from merge output for observability.
+            echo "::group::Conflict Classification"
+
+            RENAME_RENAME=$(echo "$MERGE_OUTPUT" | grep -c "CONFLICT (rename/rename)" || true)
+            MODIFY_DELETE=$(echo "$MERGE_OUTPUT" | grep -c "CONFLICT (modify/delete)" || true)
+            RENAME_DELETE=$(echo "$MERGE_OUTPUT" | grep -c "CONFLICT (rename/delete)" || true)
+            CONTENT_CONFLICTS=$(echo "$MERGE_OUTPUT" | grep -c "CONFLICT (content)" || true)
+
+            echo "[Sync] Conflict types:"
+            [ "$RENAME_RENAME" -gt 0 ] && echo "  rename/rename:  ${RENAME_RENAME}"
+            [ "$MODIFY_DELETE" -gt 0 ] && echo "  modify/delete:  ${MODIFY_DELETE}"
+            [ "$RENAME_DELETE" -gt 0 ] && echo "  rename/delete:  ${RENAME_DELETE}"
+            [ "$CONTENT_CONFLICTS" -gt 0 ] && echo "  content:        ${CONTENT_CONFLICTS}"
+
+            echo "::endgroup::"
+
+            # --- Detect Unmerged Paths ---
+            # git ls-files --unmerged captures every conflict type (unlike --diff-filter=U):
+            #   content, modify/delete, rename/rename, rename/delete
+            UNMERGED_FILES=$(git ls-files --unmerged | awk '{print $4}' | sort -u)
+
+            if [ -z "$UNMERGED_FILES" ]; then
+              echo "[Sync] ❌ Merge failed with no unmerged files detected - unexpected error"
+              exit 1
+            fi
+
+            CONFLICT_COUNT=$(echo "$UNMERGED_FILES" | wc -l | tr -d ' ')
+
+            # Group unmerged files by top-level directory
+            echo "::group::Affected Directories (${CONFLICT_COUNT} files)"
+            echo "$UNMERGED_FILES" | awk -F/ '{
+              if (NF >= 3) print $1"/"$2"/"$3"/";
+              else if (NF == 2) print $1"/"$2"/";
+              else print $1"/";
+            }' | sort | uniq -c | sort -rn | while read -r count dir; do
+              echo "  ${dir} ${count} files"
+            done
+            echo "::endgroup::"
+
+            # --- Resolve Conflicts ---
+            echo "::group::Resolving ${CONFLICT_COUNT} conflicts"
+
+            # For each unmerged path: if it exists in the upstream tag (MERGE_HEAD),
+            # accept their version; if deleted in upstream, remove from our tree.
+            echo "$UNMERGED_FILES" | while read -r file; do
+              if git cat-file -e "MERGE_HEAD:${file}" 2>/dev/null; then
+                echo "  - Accepting upstream: ${file}"
+                git checkout MERGE_HEAD -- "${file}" 2>/dev/null || true
+              else
+                echo "  - Removing (deleted upstream): ${file}"
+                git rm -f "${file}" 2>/dev/null || true
+              fi
+            done
+
+            # Stage remaining unstaged changes (e.g., orphaned files from
+            # rename/rename conflicts where HEAD's rename destination must be cleaned up)
+            git add -A
+
+            echo "::endgroup::"
+
+            # --- Post-Resolution Validation ---
+            REMAINING=$(git ls-files --unmerged | wc -l | tr -d ' ')
+            if [ "$REMAINING" -gt 0 ]; then
+              echo "[Sync] ❌ ${REMAINING} unmerged entries remain after resolution:"
+              git ls-files --unmerged | head -20
+              echo "[Sync] Manual intervention required"
+              exit 1
+            fi
+            echo "[Sync] ✅ Validation passed: no unmerged files remain"
+
+            # Complete the merge commit
+            git commit --no-edit -m "sync: merge ${NEW_VERSION} tag
+
+          Automatic sync from upstream BerriAI/litellm tag ${NEW_VERSION}
+
+          Strategy: Merge with tree-level conflict resolution (accepted all upstream changes)
+          Conflicts resolved: ${CONFLICT_COUNT} files (${RENAME_RENAME} rename/rename, ${MODIFY_DELETE} modify/delete, ${RENAME_DELETE} rename/delete, ${CONTENT_CONFLICTS} content)"
+
+            echo "[Sync] ✅ Tree-level conflicts resolved, merge completed with preserved history"
+          fi
+
+          # Push to origin/main (should always be fast-forward with proper merge)
+          echo "[Sync] Pushing updated main branch to origin..."
+          git push origin main
+
+          echo "[Sync] ✅ main branch synced successfully with preserved upstream commit history"
+          echo "::endgroup::"
+
+  ##############################################################################
+  # Check if carto/main needs sync from main
+  ##############################################################################
+
+  check-carto-main-sync:
+    runs-on: ubuntu-latest
+    name: "Check if carto/main needs sync"
+    needs:
+      - sync-main-branch
+    if: always() && (needs.sync-main-branch.result == 'success' || needs.sync-main-branch.result == 'skipped')
+    outputs:
+      needs-sync: ${{ steps.check-sync.outputs.needs-sync }}
+      commits-behind: ${{ steps.check-sync.outputs.commits-behind }}
+      pr-exists: ${{ steps.check-pr.outputs.pr-exists }}
+      pr-url: ${{ steps.check-pr.outputs.pr-url }}
+      pr-version: ${{ steps.check-pr.outputs.pr-version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check if carto/main is behind main
+        id: check-sync
+        run: |
+          set -eu
+
+          echo "::group::Checking if carto/main needs sync from main"
+
+          # Fetch both branches
+          git fetch origin main
+          git fetch origin carto/main
+
+          # Count commits that carto/main is behind main
+          COMMITS_BEHIND=$(git rev-list --count origin/carto/main..origin/main 2>/dev/null || echo "0")
+
+          echo "[Sync] carto/main is ${COMMITS_BEHIND} commits behind main"
+
+          if [[ "${COMMITS_BEHIND}" -gt 0 ]]; then
+            echo "[Sync] ✅ carto/main needs sync (${COMMITS_BEHIND} commits behind)"
+            echo "needs-sync=true" >> $GITHUB_OUTPUT
+            echo "commits-behind=${COMMITS_BEHIND}" >> $GITHUB_OUTPUT
+            echo "::notice title=Sync Needed::carto/main is ${COMMITS_BEHIND} commits behind main"
+          else
+            echo "[Sync] ✅ carto/main is up to date with main"
+            echo "needs-sync=false" >> $GITHUB_OUTPUT
+            echo "commits-behind=0" >> $GITHUB_OUTPUT
+          fi
+
+          echo "::endgroup::"
+
+      - name: Check for existing PR from upstream-sync branch to carto/main
+        id: check-pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+
+          echo "::group::Checking for existing PR"
+          echo "[Sync] Looking for open upstream-sync PR to carto/main..."
+
+          # Check if PR exists with upstream-sync label targeting carto/main
+          # Head branch pattern: upstream-sync/* (e.g., upstream-sync/v1.79.3-stable)
+          PR_DATA=$(gh pr list \
+            --repo CartoDB/litellm \
+            --base carto/main \
+            --label upstream-sync \
+            --state open \
+            --json url,headRefName \
+            --jq '.[] | select(.headRefName | startswith("upstream-sync/")) | {url, headRefName}' 2>/dev/null | head -1 || echo "")
+
+          PR_URL=$(echo "$PR_DATA" | jq -r '.url // empty' 2>/dev/null || echo "")
+          PR_BRANCH=$(echo "$PR_DATA" | jq -r '.headRefName // empty' 2>/dev/null || echo "")
+          PR_VERSION=$(echo "$PR_BRANCH" | sed -E 's|^upstream-sync/||')
+
+          if [[ -n "${PR_URL}" ]]; then
+            echo "[Sync] PR already exists: ${PR_URL} (branch: ${PR_BRANCH}, version: ${PR_VERSION})"
+            echo "pr-exists=true" >> $GITHUB_OUTPUT
+            echo "pr-url=${PR_URL}" >> $GITHUB_OUTPUT
+            echo "pr-version=${PR_VERSION}" >> $GITHUB_OUTPUT
+            echo "::notice title=PR Already Exists::${PR_URL} (version: ${PR_VERSION})"
+          else
+            echo "[Sync] No existing PR found"
+            echo "pr-exists=false" >> $GITHUB_OUTPUT
+          fi
+
+          echo "::endgroup::"
+
+  ##############################################################################
+  # Create Sync PR (main -> carto/main)
+  ##############################################################################
+
+  create-sync-pr:
+    runs-on: ubuntu-latest
+    name: "Create sync PR to carto/main"
+    needs:
+      - check-new-release
+      - check-carto-main-sync
+    if: needs.check-carto-main-sync.outputs.needs-sync == 'true' && needs.check-carto-main-sync.outputs.pr-exists == 'false'
+    outputs:
+      pr-url: ${{ steps.create-pr.outputs.pr-url }}
+      pr-number: ${{ steps.create-pr.outputs.pr-number }}
+      sync-branch: ${{ steps.create-sync-branch.outputs.branch-name }}
+    steps:
+      - name: Checkout main branch
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+
+      - name: Configure Git
+        run: |
+          git config --global user.email "cartofante@carto.com"
+          git config --global user.name "Cartofante"
+
+      - name: Create sync branch from main
+        id: create-sync-branch
+        env:
+          NEW_VERSION: ${{ needs.check-new-release.outputs.new-version }}
+        run: |
+          set -eu
+
+          echo "::group::Creating sync branch from main"
+
+          # Create a dedicated sync branch that we can push conflict resolutions to
+          # Format: upstream-sync/vX.Y.Z-stable (e.g., upstream-sync/v1.79.3-stable)
+          BRANCH_NAME="upstream-sync/${NEW_VERSION}"
+
+          # Check if branch already exists on remote (from a previous failed run)
+          if git ls-remote --exit-code origin "${BRANCH_NAME}" >/dev/null 2>&1; then
+            echo "[Sync] Branch ${BRANCH_NAME} already exists - resetting to current HEAD"
+            git checkout -B "${BRANCH_NAME}"
+            git push -f origin "${BRANCH_NAME}"
+            echo "[Sync] ✅ Reset existing branch to current HEAD"
+          else
+            echo "[Sync] Creating new branch: ${BRANCH_NAME}"
+            git checkout -b "${BRANCH_NAME}"
+            git push -u origin "${BRANCH_NAME}"
+            echo "[Sync] ✅ Created and pushed new branch"
+          fi
+
+          echo "branch-name=${BRANCH_NAME}" >> $GITHUB_OUTPUT
+          echo "::endgroup::"
+
+      - name: Generate PR body
+        id: generate-pr-body
+        env:
+          NEW_VERSION: ${{ needs.check-new-release.outputs.new-version }}
+          CURRENT_VERSION: ${{ needs.check-new-release.outputs.current-version }}
+          CURRENT_VERSION_TAG: ${{ needs.check-new-release.outputs.current-version-tag }}
+        run: |
+          set -eu
+
+          echo "::group::[Sync] Generating PR body"
+
+          PR_BODY_FILE="sync-pr-body.md"
+
+          # Extract version without v prefix and -stable suffix for comparison
+          NEW_VERSION_CLEAN=$(echo "${NEW_VERSION}" | sed -E 's/^v//; s/-stable$//')
+
+          # Count commits between current and new version
+          git fetch origin carto/main
+          COMMITS_COUNT=$(git rev-list --count origin/carto/main..main 2>/dev/null || echo "unknown")
+          FILES_CHANGED=$(git diff --name-only origin/carto/main..main | wc -l | tr -d ' ')
+
+          # Create PR body
+          cat > ${PR_BODY_FILE} << EOF
+          ## 🔄 Upstream Sync: LiteLLM ${NEW_VERSION}
+
+          Syncs CARTO's LiteLLM fork with upstream stable release **${NEW_VERSION}**.
+
+          | Metric | Value |
+          |--------|-------|
+          | **Version** | \`${CURRENT_VERSION}\` → \`${NEW_VERSION}\` |
+          | **Commits** | ${COMMITS_COUNT} |
+          | **Files Changed** | ${FILES_CHANGED} |
+          | **Upstream Release** | [${NEW_VERSION}](https://github.com/BerriAI/litellm/releases/tag/${NEW_VERSION}) |
+
+          > [!CAUTION]
+          > **⚠️ DO NOT SQUASH MERGE THIS PR**
+          >
+          > Use **"Create a merge commit"** only. Squashing destroys upstream history and breaks future syncs.
+
+          ---
+
+          ### 🧪 Pre-Merge Checklist
+
+          - [ ] CI checks pass (lint, tests, Docker build)
+          - [ ] CARTO customizations preserved
+          - [ ] \`pyproject.toml\` version matches upstream
+
+          ---
+
+          <details>
+          <summary>📊 Release Information (click to expand)</summary>
+
+          - **Upstream Version:** \`${NEW_VERSION}\`
+          - **Current Version:** \`${CURRENT_VERSION}\`
+          - **Commits Ahead:** ${COMMITS_COUNT}
+          - **Files Changed:** ${FILES_CHANGED}
+          - **Upstream Repo:** [BerriAI/litellm](https://github.com/BerriAI/litellm)
+          - **Compare Changes:** [${CURRENT_VERSION_TAG}...${NEW_VERSION}](https://github.com/BerriAI/litellm/compare/${CURRENT_VERSION_TAG}...${NEW_VERSION})
+
+          </details>
+
+          <details>
+          <summary>🔀 Branch Flow (click to expand)</summary>
+
+          1. ✅ \`BerriAI/litellm:main\` merged into \`CartoDB/litellm:main\`
+          2. ✅ Created dedicated sync branch: \`upstream-sync/${NEW_VERSION}\`
+          3. 📝 This PR: \`upstream-sync/${NEW_VERSION}\` → \`carto/main\`
+
+          > [!NOTE]
+          > **Why a dedicated branch?** Allows pushing conflict resolution commits directly to this PR.
+
+          </details>
+
+          <details>
+          <summary>📝 CARTO-Specific File Guidelines (click to expand)</summary>
+
+          When reviewing or resolving conflicts:
+
+          #### ✅ Keep CARTO Versions (Ours)
+          - \`.github/workflows/carto_*.yaml\` - CARTO workflows
+          - \`.github/workflows/carto-*.yml\` - CARTO workflows
+          - \`CARTO_*.md\`, \`docs/CARTO_*.md\` - CARTO documentation
+
+          #### 🔄 Accept Upstream (Theirs)
+          - \`pyproject.toml\` - Version field
+          - \`litellm/\` - Core library code
+          - \`tests/\` - Upstream tests
+          - \`requirements.txt\` - Dependencies
+
+          #### ⚠️ Manual Review Required
+          - \`Dockerfile\`, \`docker/Dockerfile.non_root\` - CARTO customizations
+          - \`Makefile\` - Check \`# CARTO:\` sections
+
+          </details>
+
+          <details>
+          <summary>🔧 Conflict Resolution (click to expand)</summary>
+
+          **If this PR has conflicts:**
+
+          #### Option 1: Automated (Recommended)
+
+          The [carto-upstream-sync-resolver](https://github.com/CartoDB/litellm/actions/workflows/carto-upstream-sync-resolver.yml) workflow triggers automatically.
+
+          **What it does:**
+          1. 🤖 Detects conflicts → 🔀 Merges \`carto/main\` → ✏️ Resolves conflicts → 🧪 Runs tests → 📌 Pushes to this PR
+
+          **You just need to:** Wait for resolution commits, verify CARTO customizations, merge.
+
+          > [!TIP]
+          > **Single PR workflow!** No separate resolution PR needed.
+
+          #### Option 2: Manual Resolution
+
+          \`\`\`bash
+          git fetch origin
+          git checkout upstream-sync/${NEW_VERSION}
+          git merge origin/carto/main  # Creates conflicts
+          # ... resolve conflicts ...
+          make lint && make test-unit
+          git push origin upstream-sync/${NEW_VERSION}
+          \`\`\`
+
+          </details>
+
+          <details>
+          <summary>📚 Documentation Links (click to expand)</summary>
+
+          - [CARTO Release Process](./docs/CARTO_RELEASE_PROCESS.md)
+          - [CARTO Customizations](./CARTO_CLAUDE.md)
+
+          </details>
+
+          ---
+
+          *🤖 This PR was automatically created by the [carto-upstream-sync workflow](https://github.com/CartoDB/litellm/actions/workflows/carto-upstream-sync.yml).*
+          EOF
+
+          echo "[Sync] PR body generated successfully"
+          echo "::endgroup::"
+
+      - name: Create Pull Request
+        id: create-pr
+        env:
+          NEW_VERSION: ${{ needs.check-new-release.outputs.new-version }}
+          SYNC_BRANCH: ${{ steps.create-sync-branch.outputs.branch-name }}
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          SILENT_MODE: ${{ inputs.silent }}
+        run: |
+          set -eu
+
+          echo "::group::Creating Pull Request"
+
+          PR_BODY_FILE="sync-pr-body.md"
+
+          # Build label arguments
+          LABEL_ARGS="--label upstream-sync --label automated"
+          if [[ "${SILENT_MODE}" == "true" ]]; then
+            LABEL_ARGS="${LABEL_ARGS} --label silent-sync"
+            echo "[Sync] Silent mode enabled - adding silent-sync label"
+          fi
+
+          # Create PR from sync branch to carto/main
+          # Using dedicated branch (not main) allows pushing conflict resolution commits
+          PR_URL=$(gh pr create \
+            --repo CartoDB/litellm \
+            --base carto/main \
+            --head "${SYNC_BRANCH}" \
+            --title "🔄 Upstream Sync: LiteLLM ${NEW_VERSION}" \
+            --body-file ${PR_BODY_FILE} \
+            ${LABEL_ARGS})
+
+          echo "[Sync] Pull Request created: ${PR_URL}"
+          echo "pr-url=${PR_URL}" >> $GITHUB_OUTPUT
+          # Extract PR number from URL for downstream steps
+          PR_NUMBER=$(echo "${PR_URL}" | grep -oE '[0-9]+$')
+          echo "pr-number=${PR_NUMBER}" >> $GITHUB_OUTPUT
+          echo "::notice title=PR Created::${PR_URL}"
+
+          echo "::endgroup::"
+
+          # GitHub Actions summary
+          echo "::group::Workflow Summary"
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          ## 🎉 Upstream Sync PR Created Successfully
+
+          - **PR URL:** ${PR_URL}
+          - **Version:** ${NEW_VERSION}
+          - **Branch Flow:** main → carto/main
+
+          ### Next Steps
+          1. Review the PR for any conflicts or issues
+          2. Run tests: \`make lint && make test-unit\`
+          3. Approve and merge when ready
+          EOF
+          echo "::endgroup::"
+
+      - name: Check conflicts and trigger resolver
+        if: steps.create-pr.outputs.pr-url != ''
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+        run: |
+          set -eu
+
+          echo "::group::Checking PR for conflicts"
+
+          # Wait for GitHub to compute mergeable status
+          sleep 15
+
+          PR_NUMBER=$(echo "${{ steps.create-pr.outputs.pr-url }}" | grep -oE '[0-9]+$')
+          echo "[Sync] Checking PR #${PR_NUMBER} for conflicts..."
+
+          # Get mergeable status (may need retries as GitHub computes it)
+          for i in {1..3}; do
+            MERGEABLE=$(gh pr view ${PR_NUMBER} --repo ${{ github.repository }} --json mergeable --jq '.mergeable')
+            if [[ "${MERGEABLE}" != "UNKNOWN" ]]; then
+              break
+            fi
+            echo "[Sync] Waiting for mergeable status (attempt ${i}/3)..."
+            sleep 10
+          done
+
+          echo "[Sync] Mergeable status: ${MERGEABLE}"
+
+          if [[ "${MERGEABLE}" == "CONFLICTING" ]]; then
+            echo "[Sync] ⚠️ PR has conflicts - triggering resolver workflow"
+            gh workflow run carto-upstream-sync-resolver.yml \
+              --repo ${{ github.repository }} \
+              -f pr-number=${PR_NUMBER}
+            echo "[Sync] ✅ Resolver workflow dispatched for PR #${PR_NUMBER}"
+            echo "::notice title=Resolver Triggered::Conflicts detected, resolver workflow started"
+          else
+            echo "[Sync] ✅ PR is clean (status: ${MERGEABLE}) - no resolver needed"
+          fi
+
+          echo "::endgroup::"
+
+  ##############################################################################
+  # Notify Slack
+  ##############################################################################
+
+  notify-slack:
+    runs-on: ubuntu-latest
+    name: "Notify Slack"
+    if: always() && inputs.silent != true
+    needs:
+      - check-new-release
+      - sync-main-branch
+      - check-carto-main-sync
+      - create-sync-pr
+    env:
+      SLACK_CHANNEL_LITELLM: "C0A11FKJHDK"  # litellm-fork changelog
+      DOCS_URL: "https://cartodb.getoutline.com/doc/ci-litellm-fork-pMyvwMTU3l"
+    steps:
+      - name: Send Slack notification
+        id: slack
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HAS_NEW_RELEASE: ${{ needs.check-new-release.outputs.has-new-release }}
+          NEW_VERSION: ${{ needs.check-new-release.outputs.new-version }}
+          CURRENT_VERSION: ${{ needs.check-new-release.outputs.current-version }}
+          CURRENT_VERSION_TAG: ${{ needs.check-new-release.outputs.current-version-tag }}
+          NEEDS_SYNC: ${{ needs.check-carto-main-sync.outputs.needs-sync }}
+          COMMITS_BEHIND: ${{ needs.check-carto-main-sync.outputs.commits-behind }}
+          PR_EXISTS: ${{ needs.check-carto-main-sync.outputs.pr-exists }}
+          EXISTING_PR_URL: ${{ needs.check-carto-main-sync.outputs.pr-url }}
+          EXISTING_PR_VERSION: ${{ needs.check-carto-main-sync.outputs.pr-version }}
+          NEW_PR_URL: ${{ needs.create-sync-pr.outputs.pr-url }}
+          NEW_PR_NUMBER: ${{ needs.create-sync-pr.outputs.pr-number }}
+          # Job results for all dependencies
+          RESULT_CHECK_RELEASE: ${{ needs.check-new-release.result }}
+          RESULT_SYNC_MAIN: ${{ needs.sync-main-branch.result }}
+          RESULT_CHECK_CARTO: ${{ needs.check-carto-main-sync.result }}
+          RESULT_CREATE_PR: ${{ needs.create-sync-pr.result }}
+        run: |
+          set -eu
+
+          echo "::group::Building Slack notification"
+
+          WORKFLOW_RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          # Check if any job failed
+          WORKFLOW_FAILED=false
+          FAILED_JOBS=""
+          for job_result in "check-release:${RESULT_CHECK_RELEASE}" "sync-main:${RESULT_SYNC_MAIN}" "check-carto:${RESULT_CHECK_CARTO}" "create-pr:${RESULT_CREATE_PR}"; do
+            job_name="${job_result%%:*}"
+            result="${job_result##*:}"
+            if [[ "$result" == "failure" ]]; then
+              WORKFLOW_FAILED=true
+              FAILED_JOBS="${FAILED_JOBS} ${job_name}"
+            fi
+          done
+
+          echo "[Slack] Job results: check-release=${RESULT_CHECK_RELEASE}, sync-main=${RESULT_SYNC_MAIN}, check-carto=${RESULT_CHECK_CARTO}, create-pr=${RESULT_CREATE_PR}"
+          echo "[Slack] Workflow failed: ${WORKFLOW_FAILED}, Failed jobs:${FAILED_JOBS:-none}"
+
+          # Extract clean version and PR info
+          NEW_VERSION_CLEAN=$(echo "${NEW_VERSION}" | sed -E 's/^v//; s/-stable$//')
+          PR_URL="${NEW_PR_URL:-${EXISTING_PR_URL}}"
+          PR_NUMBER="${NEW_PR_NUMBER}"
+
+          # Progress bar helper (step 1-4, current step highlighted)
+          # ◻️ = pending, ◼️ = current/done
+          make_progress() {
+            local current=$1
+            local result=""
+            for i in 1 2 3 4; do
+              if [[ $i -le $current ]]; then
+                result="${result}◼️"
+              else
+                result="${result}◻️"
+              fi
+            done
+            echo "$result"
+          }
+
+          # Check for workflow failure first - override other states
+          if [[ "${WORKFLOW_FAILED}" == "true" ]]; then
+            COLOR="#F44336"  # Red - error
+            PROGRESS=$(make_progress 1)
+            TITLE="LiteLLM Upstream Sync Failed"
+            STEP_TEXT="Workflow Error"
+            STEP_EMOJI=":x:"
+            SUMMARY="Workflow failed in:${FAILED_JOBS}"
+            VERSION_FIELD="*Version*\n\`v${CURRENT_VERSION:-unknown}\`"
+            STATUS_FIELD="*Status*\n:x: Failed"
+            NEXT_ACTION="Check workflow logs and fix the issue."
+            PR_URL="${WORKFLOW_RUN_URL}"
+          else
+          # Determine notification type and build content
+          case "${NEEDS_SYNC}:${PR_EXISTS}" in
+            true:false)
+              # New PR created - Step 2: PR Created
+              if [[ -n "${NEW_PR_URL}" ]]; then
+                COLOR="#1E88E5"  # Blue - neutral/informative
+                PROGRESS=$(make_progress 2)
+                TITLE="LiteLLM Upstream Sync"
+                STEP_TEXT="Step 2 of 4: PR Created"
+                STEP_EMOJI=":white_check_mark:"
+
+                if [[ "${HAS_NEW_RELEASE}" == "true" ]]; then
+                  SUMMARY="New upstream release \`v${NEW_VERSION_CLEAN}\` detected"
+                  VERSION_FIELD="*Version*\n\`v${CURRENT_VERSION}\` → \`v${NEW_VERSION_CLEAN}\`"
+                else
+                  SUMMARY="${COMMITS_BEHIND} commits behind upstream"
+                  VERSION_FIELD="*Commits*\n${COMMITS_BEHIND} behind"
+                fi
+                STATUS_FIELD="*Status*\n:hourglass_flowing_sand: Tests running"
+                NEXT_ACTION="Automated tests will run. Review when ready."
+              else
+                COLOR="#1E88E5"  # Blue - neutral/informative
+                PROGRESS=$(make_progress 2)
+                TITLE="LiteLLM Upstream Sync"
+                STEP_TEXT="Step 2: Error"
+                STEP_EMOJI=":warning:"
+                SUMMARY="PR URL missing - sync may have partially failed"
+                VERSION_FIELD="*Version*\n\`v${CURRENT_VERSION}\`"
+                STATUS_FIELD="*Status*\n:x: Error"
+                NEXT_ACTION="Check workflow logs and manually verify sync status."
+                PR_URL="${WORKFLOW_RUN_URL}"
+              fi
+              ;;
+            true:true)
+              # PR already exists — check if it's for the current or an older version
+              PR_VERSION_CLEAN=$(echo "${EXISTING_PR_VERSION}" | sed -E 's/^v//; s/-stable$//')
+
+              if [[ "${HAS_NEW_RELEASE}" == "true" && -n "${EXISTING_PR_VERSION}" && "${EXISTING_PR_VERSION}" != "${NEW_VERSION}" ]]; then
+                # Newer release available but PR is for an older version
+                COLOR="#FF9800"  # Orange - attention needed
+                PROGRESS=$(make_progress 2)
+                TITLE="LiteLLM Upstream Sync"
+                STEP_TEXT="New Release Queued"
+                STEP_EMOJI=":new:"
+                NEXT_MONDAY=$(date -u -d "next Monday" +"%B %d" 2>/dev/null || echo "next Monday")
+                PR_NUM=$(echo "${EXISTING_PR_URL}" | grep -oE '[0-9]+$')
+                SUMMARY="New upstream \`v${NEW_VERSION_CLEAN}\` is available, but <${EXISTING_PR_URL}|PR #${PR_NUM}> is still syncing \`${PR_VERSION_CLEAN}\`. Once that PR is merged, the next sync (_${NEXT_MONDAY}, 12:00 UTC_) will create a new PR for \`v${NEW_VERSION_CLEAN}\`."
+                VERSION_FIELD="*Latest*\n\`v${NEW_VERSION_CLEAN}\`"
+                STATUS_FIELD="*Syncing*\n\`${PR_VERSION_CLEAN}\`"
+                NEXT_ACTION="Merge the current sync PR to unblock the newer version."
+              else
+                # PR exists for the same version (or no new release) - info only
+                COLOR="#1E88E5"  # Blue - neutral/informative
+                PROGRESS=$(make_progress 2)
+                TITLE="LiteLLM Upstream Sync"
+                STEP_TEXT="PR Already Exists"
+                STEP_EMOJI=":information_source:"
+                SUMMARY="Sync PR is open for \`${PR_VERSION_CLEAN:-current version}\`. ${COMMITS_BEHIND} commits behind upstream."
+                VERSION_FIELD="*Version*\n\`v${CURRENT_VERSION}\` → \`${PR_VERSION_CLEAN:-${NEW_VERSION_CLEAN}}\`"
+                STATUS_FIELD="*Status*\n:hourglass_flowing_sand: In Progress"
+                NEXT_ACTION="Review and merge when ready."
+              fi
+              ;;
+            false:*)
+              # Already up to date - minimal notification
+              COLOR="#1E88E5"  # Blue - neutral/informative
+              PROGRESS=$(make_progress 4)
+              TITLE="LiteLLM Upstream Sync"
+              STEP_TEXT="Up to Date"
+              STEP_EMOJI=":white_check_mark:"
+              SUMMARY="\`carto/main\` is fully synced with upstream"
+              VERSION_FIELD="*Version*\n\`v${CURRENT_VERSION}\`"
+              STATUS_FIELD="*Status*\n:white_check_mark: Synced"
+              NEXT_ACTION=""
+              ;;
+            *)
+              # Error state - unexpected combination of NEEDS_SYNC and PR_EXISTS
+              COLOR="#1E88E5"  # Blue - neutral/informative
+              PROGRESS=$(make_progress 1)
+              TITLE="LiteLLM Upstream Sync"
+              if [[ "${RESULT_SYNC_MAIN}" == "failure" ]]; then
+                STEP_TEXT="Sync Failed"
+                SUMMARY="Sync process failed - check workflow logs"
+              else
+                STEP_TEXT="Workflow Error"
+                SUMMARY="Unexpected state - check workflow logs"
+              fi
+              STEP_EMOJI=":warning:"
+              VERSION_FIELD="*Version*\n\`v${CURRENT_VERSION}\`"
+              STATUS_FIELD="*Status*\n:x: Failed"
+              NEXT_ACTION="Review error logs, fix issues, and re-run."
+              PR_URL="${WORKFLOW_RUN_URL}"
+              ;;
+          esac
+          fi  # End of WORKFLOW_FAILED check
+
+          echo "::endgroup::"
+
+          echo "::group::Posting to Slack"
+
+          # Check if SLACK_KEY secret is configured
+          if [[ -z "${{ secrets.SLACK_KEY }}" ]]; then
+            echo "::warning::SLACK_KEY secret not configured - skipping notification"
+            echo "::endgroup::"
+            exit 0
+          fi
+
+          # Build compare URL for viewing changes between versions
+          COMPARE_URL=""
+          if [[ -n "${CURRENT_VERSION_TAG}" && -n "${NEW_VERSION}" ]]; then
+            COMPARE_URL="https://github.com/BerriAI/litellm/compare/${CURRENT_VERSION_TAG}...${NEW_VERSION}"
+          fi
+
+          # Pre-build optional JSON blocks (avoid bash expansion issues in heredoc)
+          NEXT_ACTION_BLOCK=""
+          if [[ -n "${NEXT_ACTION}" ]]; then
+            NEXT_ACTION_BLOCK=',{
+                    "type": "context",
+                    "elements": [
+                      {
+                        "type": "mrkdwn",
+                        "text": ":arrow_right: '"${NEXT_ACTION}"'"
+                      }
+                    ]
+                  }'
+          fi
+
+          COMPARE_BUTTON_BLOCK=""
+          if [[ -n "${COMPARE_URL}" ]]; then
+            COMPARE_BUTTON_BLOCK=',{
+                        "type": "button",
+                        "text": { "type": "plain_text", "text": "View Changes", "emoji": true },
+                        "url": "'"${COMPARE_URL}"'"
+                      }'
+          fi
+
+          # "View PR" button only when a PR URL exists. The "Up to Date" state has
+          # no PR, and Slack rejects any button with an empty url (invalid_attachments).
+          VIEW_PR_BUTTON_BLOCK=""
+          if [[ -n "${PR_URL}" ]]; then
+            VIEW_PR_BUTTON_BLOCK=',{
+                        "type": "button",
+                        "text": { "type": "plain_text", "text": "View PR", "emoji": true },
+                        "style": "primary",
+                        "url": "'"${PR_URL}"'"
+                      }'
+          fi
+
+          # Build Block Kit payload with colored sidebar
+          cat > /tmp/slack_payload.json << EOF
+          {
+            "channel": "${SLACK_CHANNEL_LITELLM}",
+            "unfurl_links": false,
+            "unfurl_media": false,
+            "attachments": [
+              {
+                "color": "${COLOR}",
+                "fallback": "${TITLE}: ${STEP_TEXT}",
+                "blocks": [
+                  {
+                    "type": "section",
+                    "text": {
+                      "type": "mrkdwn",
+                      "text": "*${STEP_EMOJI} ${TITLE}*"
+                    }
+                  },
+                  {
+                    "type": "context",
+                    "elements": [
+                      {
+                        "type": "mrkdwn",
+                        "text": "${PROGRESS}  *${STEP_TEXT}*"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "section",
+                    "text": {
+                      "type": "mrkdwn",
+                      "text": "${SUMMARY}"
+                    }
+                  },
+                  {
+                    "type": "divider"
+                  },
+                  {
+                    "type": "section",
+                    "fields": [
+                      {
+                        "type": "mrkdwn",
+                        "text": "${VERSION_FIELD}"
+                      },
+                      {
+                        "type": "mrkdwn",
+                        "text": "${STATUS_FIELD}"
+                      }
+                    ]
+                  }
+                  ${NEXT_ACTION_BLOCK}
+                  ,{
+                    "type": "actions",
+                    "elements": [
+                      {
+                        "type": "button",
+                        "text": { "type": "plain_text", "text": "View Logs", "emoji": true },
+                        "url": "${WORKFLOW_RUN_URL}"
+                      }
+                      ${VIEW_PR_BUTTON_BLOCK}
+                      ${COMPARE_BUTTON_BLOCK}
+                      ,{
+                        "type": "button",
+                        "text": { "type": "plain_text", "text": "Docs", "emoji": true },
+                        "url": "${DOCS_URL}"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+          EOF
+
+          # Validate JSON
+          if ! jq empty /tmp/slack_payload.json 2>/dev/null; then
+            echo "::error::Invalid JSON payload"
+            cat /tmp/slack_payload.json
+            exit 1
+          fi
+
+          # Send to Slack with retry logic
+          SUCCESS=false
+          THREAD_TS=""
+          for attempt in 1 2 3; do
+            echo "[Slack] Attempt ${attempt}/3..."
+
+            RESPONSE=$(curl -s -X POST https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer ${{ secrets.SLACK_KEY }}" \
+              -H "Content-Type: application/json" \
+              -d @/tmp/slack_payload.json)
+
+            if echo "$RESPONSE" | jq -e '.ok == true' > /dev/null 2>&1; then
+              THREAD_TS=$(echo "$RESPONSE" | jq -r '.ts')
+              echo "thread_ts=${THREAD_TS}" >> $GITHUB_OUTPUT
+              echo "✅ [Slack] Notification sent (ts: ${THREAD_TS})"
+              SUCCESS=true
+              break
+            else
+              ERROR=$(echo "$RESPONSE" | jq -r '.error // "unknown"')
+              echo "⚠️ [Slack] API error: ${ERROR}"
+            fi
+
+            if [ $attempt -lt 3 ]; then
+              echo "[Slack] Retrying in 5 seconds..."
+              sleep 5
+            fi
+          done
+
+          if [ "$SUCCESS" = "false" ]; then
+            echo "::error::Failed to send Slack notification after 3 attempts"
+            echo "::endgroup::"
+            exit 1
+          fi
+
+          echo "::endgroup::"
+
+          # Store thread_ts in PR comment for future notifications to reply in thread
+          if [[ -n "${PR_NUMBER}" && -n "${THREAD_TS}" ]]; then
+            echo "::group::Storing thread_ts for future replies"
+
+            gh pr comment "${PR_NUMBER}" \
+              --repo ${{ github.repository }} \
+              --body "<!-- SLACK_THREAD_TS:${THREAD_TS} -->"
+
+            echo "✅ Stored thread_ts in PR #${PR_NUMBER}"
+            echo "::endgroup::"
+          fi

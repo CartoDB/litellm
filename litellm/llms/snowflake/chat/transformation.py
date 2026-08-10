@@ -50,6 +50,71 @@ def _is_claude_model(model: str) -> bool:
     return any(name.startswith(p) for p in _CLAUDE_MODEL_PREFIXES)
 
 
+def _strip_openai_annotations(content: Any) -> Any:
+    """Remove the OpenAI-only `annotations` field from each content block."""
+    if not isinstance(content, list):
+        return content
+    return [
+        (
+            {k: v for k, v in block.items() if k != "annotations"}
+            if isinstance(block, dict)
+            else block
+        )
+        for block in content
+    ]
+
+
+def _content_to_text_blocks(content: Any) -> List[Dict[str, Any]]:
+    """
+    Convert an OpenAI-style assistant `content` value into a list of Snowflake
+    `{"type": "text", "text": ...}` blocks suitable for inclusion in
+    `content_list`. Empty/whitespace-only text is dropped.
+    """
+    if not content:
+        return []
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}] if content.strip() else []
+    if isinstance(content, list):
+        blocks: List[Dict[str, Any]] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") != "text":
+                continue
+            text = block.get("text") or ""
+            if isinstance(text, str) and text.strip():
+                blocks.append({"type": "text", "text": text})
+        return blocks
+    return []
+
+
+def _content_to_text_string(content: Any) -> str:
+    """
+    Flatten an OpenAI-style `content` value into a plain string.
+
+    Snowflake Cortex `inference:complete` rejects a message whose `content`
+    is an array of content blocks (e.g. `[{"type": "text", "text": "..."}]`)
+    with `390142 Incoming request does not contain a valid payload`; it
+    requires `content` to be a plain string. The OpenAI Agents SDK replays a
+    prior assistant turn with exactly that list-of-blocks shape on every
+    follow-up turn, so a plain multi-turn text conversation (no tools
+    involved) hits 390142 on the second turn. Concatenating the text blocks
+    back into a string is the form Cortex accepts. Non-text blocks are
+    ignored here — tool_use / tool_results are carried in `content_list`.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+    return ""
+
+
 class SnowflakeConfig(SnowflakeBaseConfig, OpenAIGPTConfig):
     """
     Snowflake Cortex REST API — unified provider.
@@ -90,6 +155,11 @@ class SnowflakeConfig(SnowflakeBaseConfig, OpenAIGPTConfig):
         litellm_params: dict,
         stream: Optional[bool] = None,
     ) -> str:
+        # CARTO: skip path construction if api_base already contains the full endpoint
+        # (CARTO platform may pass the full Cortex URL as api_base)
+        if api_base and ("cortex/v1/messages" in api_base or "cortex/v1/chat/completions" in api_base):
+            return api_base
+
         api_base = self._get_api_base(api_base, optional_params)
         if _is_claude_model(model):
             return f"{api_base}/cortex/v1/messages"
@@ -197,7 +267,12 @@ class SnowflakeConfig(SnowflakeBaseConfig, OpenAIGPTConfig):
                         )
                     conversation.append({"role": "assistant", "content": content_blocks})
                 else:
-                    conversation.append({"role": "assistant", "content": content})
+                    conversation.append(
+                        {
+                            "role": "assistant",
+                            "content": _strip_openai_annotations(content),
+                        }
+                    )
             elif role == "tool":
                 tool_call_id = (
                     msg.get("tool_call_id", "") if isinstance(msg, dict) else getattr(msg, "tool_call_id", "")
@@ -219,7 +294,9 @@ class SnowflakeConfig(SnowflakeBaseConfig, OpenAIGPTConfig):
                 else:
                     conversation.append({"role": "user", "content": [tool_result_block]})
             else:
-                conversation.append({"role": role, "content": content})
+                conversation.append(
+                    {"role": role, "content": _strip_openai_annotations(content)}
+                )
 
         system: Optional[str] = "\n\n".join(system_parts) if system_parts else None
         return system, conversation
@@ -564,7 +641,7 @@ class SnowflakeStreamingHandler(BaseModelResponseIterator):
                         id=self._tool_id,
                         type="function",
                         function={
-                            "name": self._tool_name,
+                            "name": "",
                             "arguments": delta.get("partial_json", ""),
                         },
                         index=self._tool_index,

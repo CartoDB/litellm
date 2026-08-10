@@ -1,7 +1,9 @@
 import base64
 import time
+from json import JSONDecoder, JSONDecodeError
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union, cast
 
+from litellm._logging import verbose_logger
 from litellm.types.llms.openai import (
     ChatCompletionAssistantContentValue,
     ChatCompletionAudioDelta,
@@ -32,6 +34,51 @@ if TYPE_CHECKING:
         ChatCompletionRedactedThinkingBlock,
         ChatCompletionThinkingBlock,
     )
+
+
+# Module-level decoder instance (reusable, avoids recreation overhead)
+_json_decoder = JSONDecoder()
+
+
+def _validate_and_repair_tool_arguments(raw_arguments: str) -> str:
+    """
+    Validates and repairs tool call arguments using JSONDecoder.raw_decode().
+
+    Uses CPython's C-optimized JSON parser for O(n) single-pass extraction
+    of the first valid JSON object from potentially concatenated chunks.
+
+    This handles the case where streaming providers like Gemini send
+    duplicate/overlapping JSON chunks, resulting in malformed strings like:
+    '{"address":"School"}{"address":"School"}'
+
+    Args:
+        raw_arguments: The raw joined argument string
+
+    Returns:
+        A valid JSON string, or the original string with a warning if unrecoverable
+    """
+    if not raw_arguments:
+        return "{}"
+
+    try:
+        # raw_decode returns (obj, end_index) - single pass, C-optimized
+        # It extracts the first valid JSON object and tells us where it ends
+        _, end_idx = _json_decoder.raw_decode(raw_arguments)
+        result = raw_arguments[:end_idx]
+
+        # Log warning if extra data was truncated (indicates concatenation bug)
+        if end_idx < len(raw_arguments):
+            verbose_logger.warning(
+                f"Repaired malformed tool call arguments. "
+                f"Original length: {len(raw_arguments)}, Repaired length: {end_idx}"
+            )
+
+        return result
+    except JSONDecodeError:
+        verbose_logger.warning(
+            f"Failed to parse tool call arguments: {raw_arguments[:100]}..."
+        )
+        return raw_arguments or "{}"
 
 
 class ChunkProcessor:
@@ -300,7 +347,8 @@ class ChunkProcessor:
         for index in sorted(tool_call_map.keys()):
             tool_call_data = tool_call_map[index]
             if tool_call_data["id"] and tool_call_data["name"]:
-                combined_arguments = "".join(tool_call_data["arguments"]) or "{}"
+                raw_arguments = "".join(tool_call_data["arguments"])
+                combined_arguments = _validate_and_repair_tool_arguments(raw_arguments)
 
                 # Build function - provider_specific_fields should be on tool_call level, not function level
                 function = Function(
@@ -342,7 +390,8 @@ class ChunkProcessor:
                     arguments = function_call.arguments
                     argument_list.append(arguments)
 
-        combined_arguments = "".join(argument_list)
+        raw_arguments = "".join(argument_list)
+        combined_arguments = _validate_and_repair_tool_arguments(raw_arguments)
 
         return FunctionCall(
             name=function_call_name,
@@ -467,7 +516,6 @@ class ChunkProcessor:
         cache_read_input_tokens: Optional[int] = None
         completion_tokens_details: Optional[CompletionTokensDetails] = None
         prompt_tokens_details: Optional[PromptTokensDetailsWrapper] = None
-        cost: Optional[float] = None
 
         if "prompt_tokens" in usage_chunk:
             prompt_tokens = usage_chunk.get("prompt_tokens", 0) or 0
@@ -477,8 +525,6 @@ class ChunkProcessor:
             cache_creation_input_tokens = usage_chunk.get("cache_creation_input_tokens")
         if "cache_read_input_tokens" in usage_chunk:
             cache_read_input_tokens = usage_chunk.get("cache_read_input_tokens")
-        if "cost" in usage_chunk:
-            cost = usage_chunk.get("cost")
         if hasattr(usage_chunk, "completion_tokens_details"):
             if isinstance(usage_chunk.completion_tokens_details, dict):
                 completion_tokens_details = CompletionTokensDetails(**usage_chunk.completion_tokens_details)
@@ -497,7 +543,6 @@ class ChunkProcessor:
             "cache_read_input_tokens": cache_read_input_tokens,
             "completion_tokens_details": completion_tokens_details,
             "prompt_tokens_details": prompt_tokens_details,
-            "cost": cost,
         }
 
     def count_reasoning_tokens(self, response: ModelResponse) -> Optional[int]:
@@ -515,22 +560,6 @@ class ChunkProcessor:
                 )
 
         return reasoning_tokens
-
-    @staticmethod
-    def _extract_usage_chunk(chunk: dict[str, Any] | ModelResponse | ModelResponseStream) -> Usage | None:
-        usage_chunk: Usage | dict[str, Any] | None = None
-        if hasattr(chunk, "usage") and chunk.usage is not None:
-            usage_chunk = chunk.usage
-        elif "usage" in chunk:
-            usage_chunk = chunk["usage"]
-        elif (isinstance(chunk, ModelResponse) or isinstance(chunk, ModelResponseStream)) and hasattr(
-            chunk, "_hidden_params"
-        ):
-            usage_chunk = chunk._hidden_params.get("usage", None)
-
-        if isinstance(usage_chunk, dict):
-            return Usage(**usage_chunk)
-        return usage_chunk
 
     def _calculate_usage_per_chunk(
         self,
@@ -568,12 +597,18 @@ class ChunkProcessor:
         # is last-wins, so without preserving this separately the 1h breakdown is
         # lost and 1h cache writes get billed at the 5m rate.
         cache_creation_token_details: Optional[CacheCreationTokenDetails] = None
-        cost: Optional[float] = None
-
         for chunk in chunks:
-            usage_chunk = self._extract_usage_chunk(chunk)
+            usage_chunk: Optional[Usage] = None
+            if "usage" in chunk:
+                usage_chunk = chunk["usage"]
+            elif (isinstance(chunk, ModelResponse) or isinstance(chunk, ModelResponseStream)) and hasattr(
+                chunk, "_hidden_params"
+            ):
+                usage_chunk = chunk._hidden_params.get("usage", None)
 
             if usage_chunk is not None:
+                if isinstance(usage_chunk, dict):
+                    usage_chunk = Usage(**usage_chunk)
                 usage_chunk_dict = self._usage_chunk_calculation_helper(usage_chunk)
                 if usage_chunk_dict["prompt_tokens"] is not None and usage_chunk_dict["prompt_tokens"] > 0:
                     prompt_tokens = usage_chunk_dict["prompt_tokens"]
@@ -624,9 +659,6 @@ class ChunkProcessor:
                     prompt_tokens_details, cache_creation_token_details
                 )
 
-                if usage_chunk_dict["cost"] is not None:
-                    cost = usage_chunk_dict["cost"]
-
         prompt_tokens_details = self._attach_cache_creation_token_details(
             prompt_tokens_details, cache_creation_token_details
         )
@@ -646,7 +678,6 @@ class ChunkProcessor:
             web_search_requests=web_search_requests,
             completion_tokens_details=completion_tokens_details,
             prompt_tokens_details=prompt_tokens_details,
-            cost=cost,
         )
 
     @staticmethod
@@ -745,7 +776,6 @@ class ChunkProcessor:
         prompt_tokens_details: Optional[PromptTokensDetailsWrapper] = calculated_usage_per_chunk[
             "prompt_tokens_details"
         ]
-        cost: Optional[float] = calculated_usage_per_chunk["cost"]
 
         try:
             returned_usage.prompt_tokens = prompt_tokens or token_counter(model=model, messages=messages)
@@ -802,9 +832,6 @@ class ChunkProcessor:
                 )
             else:
                 returned_usage.prompt_tokens_details.web_search_requests = web_search_requests
-
-        if cost is not None:
-            setattr(returned_usage, "cost", cost)
 
         # Return a new usage object with the new values
 
