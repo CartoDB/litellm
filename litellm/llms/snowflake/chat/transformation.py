@@ -115,6 +115,41 @@ def _content_to_text_string(content: Any) -> str:
     return ""
 
 
+def _flatten_messages_content(messages: List[AllMessageValues]) -> List[Dict[str, Any]]:
+    """
+    Transform messages by flattening array-form content to strings.
+
+    Snowflake Cortex rejects messages with array-form content
+    (e.g. [{"type": "text", "text": "..."}]) with error 390142. This function
+    ensures all message content is in plain string form while preserving
+    other message fields like tool_calls.
+    """
+    transformed: List[Dict[str, Any]] = []
+    for msg in messages:
+        if isinstance(msg, dict):
+            msg_dict = dict(msg)
+        else:
+            msg_dict = {
+                "role": getattr(msg, "role", ""),
+                "content": getattr(msg, "content", ""),
+            }
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                msg_dict["tool_calls"] = msg.tool_calls
+            if hasattr(msg, "tool_call_id"):
+                msg_dict["tool_call_id"] = msg.tool_call_id
+            if hasattr(msg, "name"):
+                msg_dict["name"] = msg.name
+
+        content = msg_dict.get("content")
+        if isinstance(content, list):
+            msg_dict["content"] = _content_to_text_string(content)
+        elif content is None:
+            msg_dict["content"] = ""
+
+        transformed.append(msg_dict)
+    return transformed
+
+
 class SnowflakeConfig(SnowflakeBaseConfig, OpenAIGPTConfig):
     """
     Snowflake Cortex REST API — unified provider.
@@ -329,9 +364,11 @@ class SnowflakeConfig(SnowflakeBaseConfig, OpenAIGPTConfig):
         max_completion_tokens = optional_params.pop("max_completion_tokens", None)
         resolved_max = max_completion_tokens or max_tokens
 
+        transformed_messages = _flatten_messages_content(messages)
+
         body: dict = {
             "model": model.removeprefix("snowflake/"),
-            "messages": messages,
+            "messages": transformed_messages,
             "stream": stream,
             **optional_params,
             **extra_body,
