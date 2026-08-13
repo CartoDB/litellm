@@ -904,6 +904,34 @@ jobs:
 
             ---
 
+            ## CROSS-FILE WIRING CHECK (CRITICAL)
+
+            Git auto-merges files that only one side changed - those files are NOT in your
+            conflict list, but they can still call code you are rewriting. This caused a
+            production outage in PR #121: streaming_iterator.py (conflicted) lost a CARTO
+            __init__ parameter while handler.py (auto-merged, same package) still passed it,
+            so every streaming request failed with TypeError.
+
+            After resolving each conflicted Python file, verify its wiring against the whole
+            package, not just the conflicted set:
+
+            1. For every function/method whose SIGNATURE you changed or replaced with the
+               upstream version, grep the repo for its call sites and confirm every kwarg
+               they pass still exists in the signature:
+            ```bash
+            grep -rn "<function_or_class_name>(" litellm/ | grep -v "def "
+            ```
+            2. For every `self.<attr>` read inside methods you kept (especially CARTO patch
+               methods like _store_session_in_redis), confirm the attribute is assigned in
+               __init__ or before use.
+            3. If a CARTO feature spans multiple files (check the manifest `files:` lists),
+               re-read ALL of that feature's files together after resolution - including the
+               ones git auto-merged - and confirm params, attributes, and imports line up.
+
+            A feature whose strings grep OK but whose wiring is broken is NOT preserved.
+
+            ---
+
             ## SYNC-REQUIRED FILES (Always Accept Upstream TAG)
 
             These files MUST match upstream regardless of CARTO history:
@@ -1246,8 +1274,12 @@ jobs:
             exit 0
           fi
 
+          # Blocking check: Claude updates the manifest itself when upstream legitimately
+          # substitutes a feature (as in PR #121), so a pattern still missing at this
+          # point means the feature was dropped without accounting for it. Failing here
+          # blocks the sync-ready label instead of surfacing 3 repos downstream.
           python3 -c "
-          import yaml, subprocess
+          import yaml, subprocess, sys
           with open('.github/carto-features.yml') as f:
               data = yaml.safe_load(f)
           missing = []
@@ -1260,11 +1292,12 @@ jobs:
                       print(f'MISSING: {feat[\"name\"]} - {v[\"pattern\"]} in {v[\"file\"]}')
                       missing.append(f'{feat[\"name\"]}: {v[\"pattern\"]} in {v[\"file\"]}')
           if missing:
-              print(f'\n::warning::CARTO features manifest: {len(missing)} pattern(s) missing (Claude may have intentionally changed code):')
+              print(f'\n::error::CARTO features manifest: {len(missing)} pattern(s) missing after resolution:')
               for m in missing:
                   print(f'  - {m}')
-          else:
-              print('\nAll CARTO feature patterns verified.')
+              print('If upstream legitimately substituted a feature, the manifest must be updated in the same resolution.')
+              sys.exit(1)
+          print('\nAll CARTO feature patterns verified.')
           "
 
           echo "::endgroup::"
