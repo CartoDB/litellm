@@ -171,6 +171,115 @@ def test_dump_response_object_handles_model_and_unknown_values():
     assert streaming_module._dump_response_object(object()) == {}
 
 
+def _make_completed_response(response_id: str = "resp_test") -> ResponseCompletedEvent:
+    return ResponseCompletedEvent(
+        type=ResponsesAPIStreamEvents.RESPONSE_COMPLETED,
+        response=ResponsesAPIResponse(
+            id=response_id,
+            created_at=int(datetime.now().timestamp()),
+            status="completed",
+            model="test-model",
+            object="response",
+            output=[
+                {
+                    "type": "message",
+                    "id": f"msg_{response_id}",
+                    "status": "completed",
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "cached streamed response",
+                            "annotations": [],
+                        }
+                    ],
+                }
+            ],
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_log_background_task_failure_logs_task_exceptions(monkeypatch):
+    error_logger = MagicMock()
+    monkeypatch.setattr(streaming_module.verbose_logger, "error", error_logger)
+
+    async def _boom():
+        raise RuntimeError("boom")
+
+    task = asyncio.create_task(_boom())
+    with suppress(RuntimeError):
+        await task
+
+    streaming_module._log_background_task_failure(task, task_name="cache write")
+
+    error_logger.assert_called_once()
+    assert error_logger.call_args.args == (
+        "%s failed: %s",
+        "cache write",
+        task.exception(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_log_background_task_failure_ignores_cancelled_tasks(monkeypatch):
+    error_logger = MagicMock()
+    monkeypatch.setattr(streaming_module.verbose_logger, "error", error_logger)
+
+    task = asyncio.create_task(asyncio.sleep(1))
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+
+    streaming_module._log_background_task_failure(task, task_name="cache write")
+
+    error_logger.assert_not_called()
+
+
+def test_content_part_done_event_supports_refusal_and_reasoning_text():
+    refusal_event = streaming_module._build_content_part_done_event(
+        item_id="msg_1",
+        output_index=0,
+        content_index=0,
+        part_payload={"type": "refusal", "refusal": "no"},
+    )
+    reasoning_event = streaming_module._build_content_part_done_event(
+        item_id="msg_1",
+        output_index=0,
+        content_index=1,
+        part_payload={"type": "reasoning_text", "reasoning": "because"},
+    )
+    unsupported_event = streaming_module._build_content_part_done_event(
+        item_id="msg_1",
+        output_index=0,
+        content_index=2,
+        part_payload={"type": "image"},
+    )
+
+    assert refusal_event.part.type == "refusal"
+    assert refusal_event.part.refusal == "no"
+    assert reasoning_event.part.type == "reasoning_text"
+    assert reasoning_event.part.reasoning == "because"
+    assert unsupported_event is None
+
+
+def test_dump_response_object_handles_model_and_unknown_values():
+    response = ResponsesAPIResponse(
+        id="resp_dump",
+        created_at=int(datetime.now().timestamp()),
+        status="completed",
+        model="gpt-4.1-mini",
+        object="response",
+        output=[],
+    )
+
+    assert streaming_module._dump_response_object(response)["id"] == "resp_dump"
+    assert streaming_module._dump_response_object({"type": "message"}) == {
+        "type": "message"
+    }
+    assert streaming_module._dump_response_object(object()) == {}
+
+
 @pytest.mark.asyncio
 async def test_responses_streaming_triggers_hooks(monkeypatch):
     """

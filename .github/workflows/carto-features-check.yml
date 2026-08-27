@@ -1,0 +1,64 @@
+name: CARTO Features Manifest Check
+
+on:
+  push:
+    branches:
+      - 'upstream-sync/**'
+  pull_request:
+    branches:
+      - 'carto/main'
+
+jobs:
+  verify-manifest:
+    name: Verify CARTO Features
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check manifest exists
+        id: check-manifest
+        run: |
+          if [ ! -f .github/carto-features.yml ]; then
+            echo "::notice::carto-features.yml not found - skipping verification"
+            echo "exists=false" >> $GITHUB_OUTPUT
+          else
+            echo "exists=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Verify manifest patterns
+        if: steps.check-manifest.outputs.exists == 'true'
+        run: |
+          echo "::group::Verifying CARTO features manifest patterns"
+
+          python3 -c "
+          import yaml, subprocess, sys
+
+          with open('.github/carto-features.yml') as f:
+              data = yaml.safe_load(f)
+
+          total = 0
+          missing = []
+
+          for feat in data.get('features', []):
+              for v in feat.get('verification', []):
+                  total += 1
+                  r = subprocess.run(['grep', '-q', v['pattern'], v['file']], capture_output=True)
+                  if r.returncode == 0:
+                      print(f'✅ {feat[\"name\"]} - {v[\"pattern\"]} in {v[\"file\"]}')
+                  else:
+                      print(f'❌ {feat[\"name\"]} - {v[\"pattern\"]} in {v[\"file\"]}')
+                      missing.append(f'{feat[\"name\"]}: {v[\"pattern\"]} in {v[\"file\"]}')
+
+          print(f'\n--- Results: {total - len(missing)}/{total} patterns verified ---')
+
+          if missing:
+              print(f'\n{len(missing)} MISSING pattern(s):')
+              for m in missing:
+                  print(f'  - {m}')
+              sys.exit(1)
+          else:
+              print('\nAll CARTO feature patterns verified.')
+          "
+
+          echo "::endgroup::"

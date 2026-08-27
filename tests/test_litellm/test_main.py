@@ -1204,6 +1204,60 @@ def test_responses_api_bridge_check_gpt_5_tools_without_summary_stays_chat():
     assert model_info.get("mode") != "responses"
 
 
+def test_responses_api_bridge_check_gpt_5_4_reasoning_summary_without_tools_routes_to_responses():
+    """gpt-5.4+ with reasoning_effort + reasoningSummary but no tools should bridge (AI SDK)."""
+    from litellm.main import responses_api_bridge_check
+
+    with patch("litellm.main._get_model_info_helper") as mock_get_model_info:
+        mock_get_model_info.return_value = {"max_tokens": 128000}
+        model_info, model = responses_api_bridge_check(
+            model="gpt-5.4",
+            custom_llm_provider="openai",
+            tools=None,
+            reasoning_effort="medium",
+            reasoning_summary="auto",
+        )
+
+    assert model == "gpt-5.4"
+    assert model_info.get("mode") == "responses"
+
+
+def test_responses_api_bridge_check_gpt_5_reasoning_summary_routes_to_responses():
+    """Bare ``gpt-5`` with reasoning_effort + reasoningSummary should bridge (not 5.4+)."""
+    from litellm.main import responses_api_bridge_check
+
+    with patch("litellm.main._get_model_info_helper") as mock_get_model_info:
+        mock_get_model_info.return_value = {"max_tokens": 128000}
+        model_info, model = responses_api_bridge_check(
+            model="gpt-5",
+            custom_llm_provider="openai",
+            tools=None,
+            reasoning_effort="medium",
+            reasoning_summary="auto",
+        )
+
+    assert model == "gpt-5"
+    assert model_info.get("mode") == "responses"
+
+
+def test_responses_api_bridge_check_gpt_5_tools_without_summary_stays_chat():
+    """gpt-5 with tools + reasoning_effort but no summary should stay on chat."""
+    from litellm.main import responses_api_bridge_check
+
+    with patch("litellm.main._get_model_info_helper") as mock_get_model_info:
+        mock_get_model_info.return_value = {"max_tokens": 128000}
+        model_info, model = responses_api_bridge_check(
+            model="gpt-5",
+            custom_llm_provider="openai",
+            tools=[{"type": "function", "function": {"name": "get_capital"}}],
+            reasoning_effort="medium",
+            reasoning_summary=None,
+        )
+
+    assert model == "gpt-5"
+    assert model_info.get("mode") != "responses"
+
+
 @patch("litellm.completion_extras.responses_api_bridge.completion")
 def test_gpt_5_4_responses_bridge_preserves_reasoning_summary_dict(
     mock_responses_completion,
