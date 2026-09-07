@@ -8,6 +8,7 @@ from typing import (
     Any,
     AsyncIterator,
     Coroutine,
+    Final,
     Iterator,
     List,
     Literal,
@@ -28,6 +29,10 @@ from litellm.litellm_core_utils.llm_response_utils.convert_dict_to_response impo
 )
 from litellm.litellm_core_utils.prompt_templates.common_utils import (
     strip_name_from_message,
+)
+from litellm.litellm_core_utils.prompt_templates.factory import (
+    THOUGHT_SIGNATURE_SEPARATOR,
+    _get_thought_signature_from_tool,  # pyright: ignore[reportPrivateUsage, reportUnknownVariableType]  # reused shared thought-signature extractor, underscore-private upstream
 )
 from litellm.llms.base_llm.base_model_iterator import BaseModelResponseIterator
 from litellm.types.llms.anthropic import AllAnthropicToolsValues
@@ -193,6 +198,70 @@ def _strip_openai_annotations(message_dict: dict[str, Any]) -> None:
     for block in content:
         if isinstance(block, dict) and "annotations" in block:
             block.pop("annotations", None)
+
+
+# CARTO: round-trip Gemini thought_signature on Databricks Model Serving tool calls [sc-572123]
+def _apply_gemini_thought_signature(message_dict: dict[str, Any], model: str) -> None:
+    """
+    Databricks Model Serving proxies Gemini via Google's OpenAI-compat convention,
+    where a function call's thought signature travels in
+    ``tool_calls[].extra_content.google.thought_signature``. Gemini 3.x rejects a
+    replayed tool call whose functionCall part omits it (HTTP 400 INVALID_ARGUMENT,
+    "Function call is missing a thought_signature"). A standard OpenAI client drops
+    the non-standard ``extra_content`` on replay, so re-attach it from the signature
+    LiteLLM smuggled into the tool_call id (or ``provider_specific_fields``), and for
+    gemini-3 with no signature use Google's ``skip_thought_signature_validator``
+    sentinel. The signature is then stripped back out of the id, on both the assistant
+    tool_call and the matching ``tool`` result, so the two ids still agree and Databricks
+    sees clean values. See sc-572123.
+    """
+    if "gemini" not in model:
+        return
+    if message_dict.get("role") == "tool":
+        tool_call_id: Final = message_dict.get("tool_call_id")
+        if isinstance(tool_call_id, str) and THOUGHT_SIGNATURE_SEPARATOR in tool_call_id:
+            message_dict["tool_call_id"] = tool_call_id.split(THOUGHT_SIGNATURE_SEPARATOR, 1)[0]
+        return
+    tool_calls: Final = message_dict.get("tool_calls")
+    if not isinstance(tool_calls, list):
+        return
+    for tc in tool_calls:
+        if not isinstance(tc, dict):
+            continue
+        signature = _get_thought_signature_from_tool(tc, model=model)
+        if signature:
+            base_extra = tc.get("extra_content") if isinstance(tc.get("extra_content"), dict) else {}
+            base_google = base_extra.get("google") if isinstance(base_extra.get("google"), dict) else {}
+            tc["extra_content"] = {**base_extra, "google": {**base_google, "thought_signature": signature}}
+        tc_id = tc.get("id")
+        if isinstance(tc_id, str) and THOUGHT_SIGNATURE_SEPARATOR in tc_id:
+            tc["id"] = tc_id.split(THOUGHT_SIGNATURE_SEPARATOR, 1)[0]
+
+
+# CARTO: capture Gemini thought_signature from Databricks responses into the tool_call id [sc-572123]
+def _capture_gemini_thought_signature(tool_call: dict[str, Any]) -> dict[str, Any]:
+    """
+    Databricks returns Gemini's thought signature under
+    ``extra_content.google.thought_signature``. A standard OpenAI client (e.g. the
+    Agents SDK driving the conversation) drops that non-standard field on replay, so
+    fold it into the tool_call id, the round-trip channel LiteLLM already uses for the
+    native Vertex/Gemini path, and mirror it into ``provider_specific_fields``. The raw
+    ``extra_content`` is dropped once folded in. Returns the tool_call unchanged when no
+    signature is present. See sc-572123.
+    """
+    extra_content: Final = tool_call.get("extra_content")
+    google: Final = extra_content.get("google") if isinstance(extra_content, dict) else None
+    signature: Final = google.get("thought_signature") if isinstance(google, dict) else None
+    if not signature:
+        return tool_call
+    base_provider: Final = (
+        tool_call.get("provider_specific_fields") if isinstance(tool_call.get("provider_specific_fields"), dict) else {}
+    )
+    return {
+        **{key: value for key, value in tool_call.items() if key != "extra_content"},
+        "id": f"{tool_call.get('id') or ''}{THOUGHT_SIGNATURE_SEPARATOR}{signature}",
+        "provider_specific_fields": {**base_provider, "thought_signature": signature},
+    }
 
 
 if TYPE_CHECKING:
@@ -477,6 +546,7 @@ class DatabricksConfig(DatabricksBase, OpenAILikeChatConfig, AnthropicConfig):
             _sanitize_empty_content(cast(dict[str, Any], _message))
             _strip_openai_annotations(cast(dict[str, Any], _message))
             _normalize_empty_tool_call_arguments(cast(dict[str, Any], _message))
+            _apply_gemini_thought_signature(cast(dict[str, Any], _message), model)  # cast-ok: sibling helper pattern
             new_messages.append(_message)
 
         if "claude" not in model:
@@ -582,7 +652,13 @@ class DatabricksConfig(DatabricksBase, OpenAILikeChatConfig, AnthropicConfig):
         transformed_choices = []
 
         for choice in choices:
-            tool_calls = choice["message"].get("tool_calls", None)
+            raw_tool_calls = choice["message"].get("tool_calls", None)
+            captured_tool_calls = (
+                [_capture_gemini_thought_signature(tc) for tc in raw_tool_calls]
+                if isinstance(raw_tool_calls, list)
+                else raw_tool_calls
+            )
+            tool_calls = captured_tool_calls
             if tool_calls is not None:
                 _openai_tool_calls = []
                 for _tc in tool_calls:
@@ -619,7 +695,7 @@ class DatabricksConfig(DatabricksBase, OpenAILikeChatConfig, AnthropicConfig):
                     content=content_str,
                     reasoning_content=reasoning_content,
                     thinking_blocks=thinking_blocks,
-                    tool_calls=choice["message"].get("tool_calls"),
+                    tool_calls=captured_tool_calls,
                     provider_specific_fields=({"citations": citations} if citations is not None else None),
                 )
 

@@ -127,3 +127,18 @@ features:
     verification:
       - pattern: "def _strip_openai_annotations"
         file: litellm/llms/databricks/chat/transformation.py
+
+  - name: "Databricks Gemini Thought Signature Round-Trip"
+    source_prs: [132]
+    description: "Round-trips Gemini's thought_signature across multi-turn tool calls on Databricks Model Serving. Re-attaches it under extra_content.google.thought_signature on the replayed request (the captured signature, or Google's skip_thought_signature_validator sentinel for gemini-3) and captures it back off the response into the tool_call id, so Gemini 3.x does not reject the follow-up turn with 'Function call is missing a thought_signature'."
+    files:
+      - litellm/llms/databricks/chat/transformation.py
+    verification:
+      - pattern: "def _apply_gemini_thought_signature"
+        file: litellm/llms/databricks/chat/transformation.py
+      - pattern: "_apply_gemini_thought_signature(cast("
+        file: litellm/llms/databricks/chat/transformation.py
+      - pattern: "def _capture_gemini_thought_signature"
+        file: litellm/llms/databricks/chat/transformation.py
+      - pattern: "_capture_gemini_thought_signature(tc)"
+        file: litellm/llms/databricks/chat/transformation.py
