@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import sys
@@ -8,11 +9,14 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, os.path.abspath("../../../../.."))  # Adds the parent directory to the system path
 from unittest.mock import MagicMock, patch
 
+from litellm.litellm_core_utils.prompt_templates.factory import THOUGHT_SIGNATURE_SEPARATOR
 from litellm.llms.databricks.chat.transformation import (
     DatabricksChatResponseIterator,
     DatabricksConfig,
     _sanitize_empty_content,
 )
+
+DUMMY_THOUGHT_SIGNATURE = base64.b64encode(b"skip_thought_signature_validator").decode("utf-8")
 
 
 def test_transform_choices():
@@ -423,3 +427,185 @@ def test_databricks_config_probes_capabilities_under_databricks_namespace():
     without this override they probed the ``anthropic`` cost-map namespace and
     ignored the exact ``databricks/databricks-claude-*`` entries."""
     assert DatabricksConfig().custom_llm_provider == "databricks"
+
+
+def _streaming_chunk(usage=None, choices=None):
+    base = {
+        "id": "chatcmpl-test",
+        "created": 1234567890,
+        "model": "databricks-claude-sonnet-5",
+        "choices": [{"delta": {"content": "hi"}}] if choices is None else choices,
+    }
+    return base if usage is None else {**base, "usage": usage}
+
+
+@pytest.mark.parametrize(
+    "cache_read, cache_creation, expected_cached, expected_written",
+    [
+        (12002, 0, 12002, 0),
+        (0, 12002, 0, 12002),
+    ],
+    ids=["warm_cache_read", "cold_cache_write"],
+)
+def test_chunk_parser_surfaces_prompt_cache_usage(cache_read, cache_creation, expected_cached, expected_written):
+    iterator = DatabricksChatResponseIterator(streaming_response=None, sync_stream=True)
+
+    result = iterator.chunk_parser(
+        _streaming_chunk(
+            usage={
+                "prompt_tokens": 12011,
+                "completion_tokens": 8,
+                "total_tokens": 12019,
+                "cache_read_input_tokens": cache_read,
+                "cache_creation_input_tokens": cache_creation,
+            }
+        )
+    )
+
+    assert result.usage is not None
+    assert result.usage.prompt_tokens == 12011
+    assert result.usage.completion_tokens == 8
+    assert result.usage.prompt_tokens_details is not None
+    assert result.usage.prompt_tokens_details.cached_tokens == expected_cached
+    assert result.usage._cache_creation_input_tokens == expected_written
+
+
+def test_chunk_parser_surfaces_usage_only_final_chunk():
+    """stream_options={"include_usage": True} emits a trailing chunk whose choices
+    list is empty; usage must still reach the caller."""
+    iterator = DatabricksChatResponseIterator(streaming_response=None, sync_stream=True)
+
+    result = iterator.chunk_parser(
+        _streaming_chunk(
+            usage={
+                "prompt_tokens": 100,
+                "completion_tokens": 5,
+                "total_tokens": 105,
+                "cache_read_input_tokens": 90,
+            },
+            choices=[],
+        )
+    )
+
+    assert result.choices == []
+    assert result.usage is not None
+    assert result.usage.prompt_tokens_details.cached_tokens == 90
+
+
+def test_chunk_parser_without_usage_still_parses_content():
+    iterator = DatabricksChatResponseIterator(streaming_response=None, sync_stream=True)
+
+    result = iterator.chunk_parser(_streaming_chunk())
+
+    assert result.id == "chatcmpl-test"
+    assert result.model == "databricks-claude-sonnet-5"
+    assert result.choices[0]["delta"]["content"] == "hi"
+
+
+def _query_history(tool_call):
+    return [
+        {"role": "user", "content": "how many rows are there?"},
+        {"role": "assistant", "content": None, "tool_calls": [tool_call]},
+        {"role": "tool", "tool_call_id": tool_call["id"], "content": "4265"},
+    ]
+
+
+def _transform(config, model, tool_call):
+    result = config.transform_request(
+        model=model, messages=_query_history(tool_call), optional_params={}, litellm_params={}, headers={}
+    )["messages"]
+    assistant = next(m for m in result if m.get("role") == "assistant" and m.get("tool_calls"))
+    tool_message = next(m for m in result if m.get("role") == "tool")
+    return assistant["tool_calls"][0], tool_message
+
+
+def test_transform_request_injects_dummy_thought_signature_for_gemini_3():
+    """Regression for sc-572123: Databricks-Gemini 3.x 400s on the follow-up turn with
+    'Function call is missing a thought_signature'. With no captured signature the replayed
+    tool call must carry Google's skip_thought_signature_validator sentinel under
+    extra_content.google so Databricks/Gemini accepts it."""
+    config = DatabricksConfig()
+    tool_call = {"id": "call_1", "type": "function", "function": {"name": "execute_query", "arguments": "{}"}}
+
+    transformed_tc, _ = _transform(config, "databricks-gemini-3-7-flash", tool_call)
+
+    assert transformed_tc["extra_content"]["google"]["thought_signature"] == DUMMY_THOUGHT_SIGNATURE
+
+
+def test_transform_request_round_trips_real_signature_and_keeps_ids_consistent():
+    config = DatabricksConfig()
+    real_signature = "AbC123+/xyz=="
+    encoded_id = f"call_1{THOUGHT_SIGNATURE_SEPARATOR}{real_signature}"
+    tool_call = {"id": encoded_id, "type": "function", "function": {"name": "execute_query", "arguments": "{}"}}
+
+    transformed_tc, tool_message = _transform(config, "databricks-gemini-3-1-pro", tool_call)
+
+    assert transformed_tc["extra_content"]["google"]["thought_signature"] == real_signature
+    assert transformed_tc["id"] == "call_1"
+    assert tool_message["tool_call_id"] == "call_1"
+
+
+def test_transform_request_leaves_non_gemini_tool_calls_untouched():
+    config = DatabricksConfig()
+    tool_call = {"id": "call_1", "type": "function", "function": {"name": "execute_query", "arguments": "{}"}}
+
+    transformed_tc, _ = _transform(config, "databricks-claude-sonnet-4-6", tool_call)
+
+    assert "extra_content" not in transformed_tc
+
+
+def test_transform_request_does_not_inject_sentinel_for_gemini_2_5():
+    config = DatabricksConfig()
+    tool_call = {"id": "call_1", "type": "function", "function": {"name": "execute_query", "arguments": "{}"}}
+
+    transformed_tc, _ = _transform(config, "databricks-gemini-2-5-flash", tool_call)
+
+    assert "extra_content" not in transformed_tc
+
+
+def test_transform_choices_captures_thought_signature_into_id():
+    config = DatabricksConfig()
+    databricks_choices = [
+        {
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "querying"}],
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "execute_query", "arguments": "{}"},
+                        "extra_content": {"google": {"thought_signature": "SiG123=="}},
+                    }
+                ],
+            },
+            "index": 0,
+            "finish_reason": "tool_calls",
+        }
+    ]
+
+    tool_call = config._transform_dbrx_choices(choices=databricks_choices)[0].message.tool_calls[0]
+
+    assert tool_call.id == f"call_1{THOUGHT_SIGNATURE_SEPARATOR}SiG123=="
+    assert tool_call.provider_specific_fields["thought_signature"] == "SiG123=="
+
+
+def test_transform_choices_without_thought_signature_leaves_id_untouched():
+    config = DatabricksConfig()
+    databricks_choices = [
+        {
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "hi"}],
+                "tool_calls": [
+                    {"id": "call_1", "type": "function", "function": {"name": "execute_query", "arguments": "{}"}}
+                ],
+            },
+            "index": 0,
+            "finish_reason": "tool_calls",
+        }
+    ]
+
+    tool_call = config._transform_dbrx_choices(choices=databricks_choices)[0].message.tool_calls[0]
+
+    assert tool_call.id == "call_1"

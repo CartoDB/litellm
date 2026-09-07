@@ -316,6 +316,26 @@ class SnowflakeConfig(SnowflakeBaseConfig, OpenAIGPTConfig):
             return self._transform_request_anthropic(model, messages, optional_params, stream, extra_body)
         return self._transform_request_openai(model, messages, optional_params, stream, extra_body)
 
+    def _flatten_messages_content(
+        self, messages: List[AllMessageValues]
+    ) -> List[Dict[str, Any]]:
+        """
+        Flatten array-form content in messages to plain strings.
+
+        Snowflake Cortex /chat/completions rejects messages whose `content` is
+        an array of content blocks with error 390142. The OpenAI Agents SDK
+        replays prior assistant turns as array-form content, so plain multi-turn
+        conversations fail on the second turn. Flatten to strings here.
+        """
+        transformed: List[Dict[str, Any]] = []
+        for msg in messages:
+            msg_dict = dict(msg) if not isinstance(msg, dict) else msg.copy()
+            content = msg_dict.get("content")
+            if isinstance(content, list):
+                msg_dict["content"] = _content_to_text_string(content)
+            transformed.append(msg_dict)
+        return transformed
+
     def _transform_request_openai(
         self,
         model: str,
@@ -329,9 +349,11 @@ class SnowflakeConfig(SnowflakeBaseConfig, OpenAIGPTConfig):
         max_completion_tokens = optional_params.pop("max_completion_tokens", None)
         resolved_max = max_completion_tokens or max_tokens
 
+        transformed_messages = self._flatten_messages_content(messages)
+
         body: dict = {
             "model": model.removeprefix("snowflake/"),
-            "messages": messages,
+            "messages": transformed_messages,
             "stream": stream,
             **optional_params,
             **extra_body,
