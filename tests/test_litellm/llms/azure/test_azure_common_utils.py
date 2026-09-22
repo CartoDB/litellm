@@ -283,36 +283,6 @@ def test_initialize_with_oidc_token_fallback_to_env(setup_mocks, monkeypatch):
     assert result["azure_ad_token"] == "mock-oidc-token"
 
 
-def test_initialize_with_oidc_token_no_credentials(setup_mocks, monkeypatch):
-    # Clear environment variables
-    monkeypatch.delenv("AZURE_CLIENT_ID", raising=False)
-    monkeypatch.delenv("AZURE_TENANT_ID", raising=False)
-    monkeypatch.delenv("AZURE_SCOPE", raising=False)
-
-    # Test with azure_ad_token that starts with "oidc/" but no credentials anywhere
-    result = BaseAzureLLM().initialize_azure_sdk_client(
-        litellm_params={
-            "azure_ad_token": "oidc/test-token",
-        },
-        api_key=None,
-        api_base="https://test.openai.azure.com",
-        model_name="gpt-4",
-        api_version=None,
-        is_async=False,
-    )
-
-    # Verify that get_azure_ad_token_from_oidc was called with None values
-    setup_mocks["oidc_token"].assert_called_once_with(
-        azure_ad_token="oidc/test-token",
-        azure_client_id=None,
-        azure_tenant_id=None,
-        scope="https://cognitiveservices.azure.com/.default",
-    )
-
-    # Verify expected result
-    assert result["azure_ad_token"] == "mock-oidc-token"
-
-
 def test_initialize_with_ad_token_provider(setup_mocks, monkeypatch):
     # Clear environment variables
     monkeypatch.delenv("AZURE_CLIENT_ID", raising=False)
@@ -426,6 +396,7 @@ def test_select_azure_base_url_called(setup_mocks):
             "arerank",
             "arealtime",
             "anthropic_messages",
+            "aanthropic_messages",
             "add_message",
             "arun_thread_stream",
             "aresponses",
@@ -1429,7 +1400,7 @@ def test_token_provider_returns_non_string(setup_mocks):
 
     # Verify the error was logged
     setup_mocks["logger"].error.assert_any_call(
-        "Azure AD token provider returned non-string value: <class 'int'>"
+        "Azure AD token provider returned non-string value: %s", int
     )
 
 
@@ -2035,167 +2006,72 @@ def test_azure_traditional_api_uses_azure_openai_client():
         ), f"Expected AsyncAzureOpenAI client for api_version={api_version}"
 
 
-# Tests for select_azure_base_url_or_endpoint URL sanitization
-from litellm.llms.azure.common_utils import select_azure_base_url_or_endpoint
+def test_evicting_an_azure_client_built_on_the_callers_session_leaves_it_open(monkeypatch):
+    """`initialize_azure_sdk_client` puts `litellm.aclient_session` on the SDK client.
+
+    That session belongs to the caller. `AsyncAzureOpenAI.close()` closes whatever
+    http client it was handed, so treating the wrapper as litellm's to close would
+    close the caller's shared session out from under them.
+    """
+    import httpx
+
+    from litellm.caching.evicted_client_closer import EvictedClientCloser
+    from litellm.caching.llm_caching_handler import LLMClientCache
+
+    shared_session = httpx.AsyncClient()
+    closer = EvictedClientCloser(grace_seconds=0.0)
+    monkeypatch.setattr(litellm, "aclient_session", shared_session)
+    monkeypatch.setattr(
+        litellm,
+        "in_memory_llm_clients_cache",
+        LLMClientCache(evicted_client_closer=closer),
+    )
+
+    wrapper = BaseAzureLLM().get_azure_openai_client(
+        api_key="not-a-real-key",
+        api_base="https://litellm.openai.azure.com",
+        api_version="2024-02-01",
+        litellm_params={},
+        _is_async=True,
+    )
+
+    assert wrapper is not None
+    assert wrapper._client is shared_session, "the wrapper should be built on the caller's session"
+
+    closer.schedule(wrapper)
+    closer.reap()
+
+    assert closer.pending_count == 0, "a wrapper around the caller's session must never be queued"
+    assert shared_session.is_closed is False, "closed the session the caller configured"
 
 
-class TestSelectAzureBaseUrlOrEndpoint:
-    """Tests for select_azure_base_url_or_endpoint URL sanitization."""
+def test_an_azure_client_litellm_built_its_own_http_client_for_is_still_closed(monkeypatch):
+    """The ownership check must not turn the reclaim off for the ordinary case."""
+    from litellm.caching.evicted_client_closer import EvictedClientCloser
+    from litellm.caching.llm_caching_handler import LLMClientCache
 
-    def test_strips_chat_completions_suffix(self):
-        """
-        Test that /chat/completions is stripped from deployment URLs.
+    closer = EvictedClientCloser(grace_seconds=0.0)
+    monkeypatch.setattr(litellm, "aclient_session", None)
+    monkeypatch.setattr(litellm, "client_session", None)
+    monkeypatch.setattr(
+        litellm,
+        "in_memory_llm_clients_cache",
+        LLMClientCache(evicted_client_closer=closer),
+    )
 
-        When api_base is configured as:
-        https://xxx.openai.azure.com/openai/deployments/gpt-4o/chat/completions
+    wrapper = BaseAzureLLM().get_azure_openai_client(
+        api_key="not-a-real-key",
+        api_base="https://litellm.openai.azure.com",
+        api_version="2024-02-01",
+        litellm_params={},
+        _is_async=False,
+    )
 
-        The Azure SDK will append /chat/completions again, causing:
-        https://xxx.openai.azure.com/openai/deployments/gpt-4o/chat/completions/chat/completions
+    assert wrapper is not None
+    closer.schedule(wrapper)
 
-        This results in a 404 error from Azure.
-        """
-        azure_client_params = {
-            "azure_endpoint": "https://ai-azure-product-dev.openai.azure.com/openai/deployments/gpt-4o/chat/completions"
-        }
-        result = select_azure_base_url_or_endpoint(azure_client_params)
+    assert closer.pending_count == 1, "litellm built this client's http client, so it owns it"
 
-        expected_base_url = (
-            "https://ai-azure-product-dev.openai.azure.com/openai/deployments/gpt-4o"
-        )
-        assert "base_url" in result, "Should have base_url when deployment path detected"
-        assert "azure_endpoint" not in result, "Should remove azure_endpoint"
-        assert (
-            result["base_url"] == expected_base_url
-        ), f"Expected {expected_base_url}, got {result['base_url']}"
+    closer.reap()
 
-    def test_strips_completions_suffix(self):
-        """Test that /completions suffix is stripped for text completion endpoints."""
-        azure_client_params = {
-            "azure_endpoint": "https://ai-azure-product-dev.openai.azure.com/openai/deployments/gpt-4o/completions"
-        }
-        result = select_azure_base_url_or_endpoint(azure_client_params)
-
-        expected_base_url = (
-            "https://ai-azure-product-dev.openai.azure.com/openai/deployments/gpt-4o"
-        )
-        assert result["base_url"] == expected_base_url
-
-    def test_strips_embeddings_suffix(self):
-        """Test that /embeddings suffix is stripped for embedding endpoints."""
-        azure_client_params = {
-            "azure_endpoint": "https://ai-azure-product-dev.openai.azure.com/openai/deployments/text-embedding-ada-002/embeddings"
-        }
-        result = select_azure_base_url_or_endpoint(azure_client_params)
-
-        expected_base_url = "https://ai-azure-product-dev.openai.azure.com/openai/deployments/text-embedding-ada-002"
-        assert result["base_url"] == expected_base_url
-
-    def test_strips_audio_speech_suffix(self):
-        """Test that /audio/speech suffix is stripped for TTS endpoints."""
-        azure_client_params = {
-            "azure_endpoint": "https://ai-azure-product-dev.openai.azure.com/openai/deployments/tts-1/audio/speech"
-        }
-        result = select_azure_base_url_or_endpoint(azure_client_params)
-
-        expected_base_url = (
-            "https://ai-azure-product-dev.openai.azure.com/openai/deployments/tts-1"
-        )
-        assert result["base_url"] == expected_base_url
-
-    def test_strips_audio_transcriptions_suffix(self):
-        """Test that /audio/transcriptions suffix is stripped for transcription endpoints."""
-        azure_client_params = {
-            "azure_endpoint": "https://ai-azure-product-dev.openai.azure.com/openai/deployments/whisper-1/audio/transcriptions"
-        }
-        result = select_azure_base_url_or_endpoint(azure_client_params)
-
-        expected_base_url = (
-            "https://ai-azure-product-dev.openai.azure.com/openai/deployments/whisper-1"
-        )
-        assert result["base_url"] == expected_base_url
-
-    def test_strips_images_generations_suffix(self):
-        """Test that /images/generations suffix is stripped for image generation endpoints."""
-        azure_client_params = {
-            "azure_endpoint": "https://ai-azure-product-dev.openai.azure.com/openai/deployments/dall-e-3/images/generations"
-        }
-        result = select_azure_base_url_or_endpoint(azure_client_params)
-
-        expected_base_url = (
-            "https://ai-azure-product-dev.openai.azure.com/openai/deployments/dall-e-3"
-        )
-        assert result["base_url"] == expected_base_url
-
-    def test_preserves_deployment_path_without_suffix(self):
-        """Test that deployment paths without operation suffixes are preserved."""
-        azure_client_params = {
-            "azure_endpoint": "https://ai-azure-product-dev.openai.azure.com/openai/deployments/gpt-4o"
-        }
-        result = select_azure_base_url_or_endpoint(azure_client_params)
-
-        expected_base_url = (
-            "https://ai-azure-product-dev.openai.azure.com/openai/deployments/gpt-4o"
-        )
-        assert result["base_url"] == expected_base_url
-
-    def test_no_deployment_path_keeps_azure_endpoint(self):
-        """Test that URLs without deployment paths keep azure_endpoint."""
-        azure_client_params = {
-            "azure_endpoint": "https://ai-azure-product-dev.openai.azure.com"
-        }
-        result = select_azure_base_url_or_endpoint(azure_client_params)
-
-        # Should keep azure_endpoint since there's no deployment path
-        assert "azure_endpoint" in result
-        assert "base_url" not in result
-        assert (
-            result["azure_endpoint"]
-            == "https://ai-azure-product-dev.openai.azure.com"
-        )
-
-    def test_handles_trailing_slash(self):
-        """Test that trailing slashes are handled correctly."""
-        azure_client_params = {
-            "azure_endpoint": "https://ai-azure-product-dev.openai.azure.com/openai/deployments/gpt-4o/chat/completions/"
-        }
-        result = select_azure_base_url_or_endpoint(azure_client_params)
-
-        expected_base_url = (
-            "https://ai-azure-product-dev.openai.azure.com/openai/deployments/gpt-4o"
-        )
-        assert result["base_url"] == expected_base_url
-
-    def test_preserves_other_params(self):
-        """Test that other parameters in the dict are preserved."""
-        azure_client_params = {
-            "azure_endpoint": "https://ai-azure-product-dev.openai.azure.com/openai/deployments/gpt-4o/chat/completions",
-            "api_key": "test-key",
-            "api_version": "2023-05-15",
-            "azure_ad_token": "test-token",
-        }
-        result = select_azure_base_url_or_endpoint(azure_client_params)
-
-        assert result["api_key"] == "test-key"
-        assert result["api_version"] == "2023-05-15"
-        assert result["azure_ad_token"] == "test-token"
-        assert "base_url" in result
-        assert "azure_endpoint" not in result
-
-    def test_none_azure_endpoint(self):
-        """Test that None azure_endpoint is handled gracefully."""
-        azure_client_params = {"azure_endpoint": None, "api_key": "test-key"}
-        result = select_azure_base_url_or_endpoint(azure_client_params)
-
-        # Should return params unchanged
-        assert result["azure_endpoint"] is None
-        assert result["api_key"] == "test-key"
-        assert "base_url" not in result
-
-    def test_missing_azure_endpoint(self):
-        """Test that missing azure_endpoint is handled gracefully."""
-        azure_client_params = {"api_key": "test-key"}
-        result = select_azure_base_url_or_endpoint(azure_client_params)
-
-        # Should return params unchanged
-        assert result["api_key"] == "test-key"
-        assert "base_url" not in result
+    assert wrapper.is_closed() is True

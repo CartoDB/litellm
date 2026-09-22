@@ -451,6 +451,30 @@ def test_parse_headers():
     assert providers.parse_headers("no-equals") == {}
 
 
+def test_parse_headers_percent_decodes_values():
+    """A percent-encoded OTLP header value reaches the exporter decoded.
+
+    ``OTEL_EXPORTER_OTLP_HEADERS`` is W3C Baggage encoded, and Grafana Cloud
+    documents ``Authorization=Basic%20<token>``. Forwarding the literal ``%20``
+    makes the backend reject the export as a malformed credential.
+    """
+    token = "MTMzNzc4MzpnbGNfZXlKdklqb2lNVEl6TkNJPQ=="
+    assert providers.parse_headers(f"Authorization=Basic%20{token}") == {"authorization": f"Basic {token}"}
+    assert providers.parse_headers("x-scope-orgid=team%20a") == {"x-scope-orgid": "team a"}
+
+
+def test_parse_headers_keeps_unencoded_values_working():
+    """Values that are not percent-encoded keep parsing unchanged.
+
+    Vendors that document a bare space, and litellm's own presets, must survive
+    the switch to the spec-compliant parser. Base64 padding also means a value
+    can contain ``=``, so only the first one may split the pair.
+    """
+    assert providers.parse_headers("Authorization=Bearer sk-123") == {"authorization": "Bearer sk-123"}
+    assert providers.parse_headers("api_key=abc,space_id=xyz") == {"api_key": "abc", "space_id": "xyz"}
+    assert providers.parse_headers("api_key=YWJjZA==") == {"api_key": "YWJjZA=="}
+
+
 def test_otlp_traces_endpoint_normalization():
     norm = providers._otlp_traces_endpoint
     # A base endpoint gets the signal path appended (the common OTLP env shape).
@@ -485,6 +509,24 @@ def test_build_span_exporter_variants():
         OpenTelemetryV2Config(exporter="otlp_http", endpoint="http://h:4318")
     )
     assert "OTLPSpanExporter" in type(http_exporter).__name__
+
+
+def test_otlp_metric_exporter_uses_cumulative_histogram_temporality():
+    """Histograms must export as cumulative, not delta.
+
+    Prometheus-backed OTLP receivers (Grafana Cloud / Mimir) reject delta
+    histograms with ``invalid temporality and type combination`` and drop the
+    entire metric batch, so a delta default silently loses every GenAI metric.
+    """
+    from opentelemetry.sdk.metrics import Histogram
+    from opentelemetry.sdk.metrics.export import AggregationTemporality
+
+    reader = providers.build_metric_reader(
+        OpenTelemetryV2Config(exporter="otlp_http", endpoint="http://h:4318")
+    )
+    temporality = reader._exporter._preferred_temporality  # noqa: SLF001  # exporter exposes no public accessor
+
+    assert temporality[Histogram] is AggregationTemporality.CUMULATIVE
 
 
 def test_otlp_logs_endpoint_normalization():
@@ -672,8 +714,7 @@ def test_error_details_stamped_as_span_attributes_for_labels_ingest():
     """OTel-defined keys and litellm-specific detail keys both ride span
     attributes so backends that flatten attrs into label indexes (Elastic APM
     ``labels.*``, Datadog span tags) render them. The exception event with the
-    full untruncated message stays alongside — both places, matching v1's
-    shape."""
+    full untruncated message stays alongside."""
     from litellm.integrations.otel.model.semconv import Error, ExceptionEvent, LiteLLMError
     from litellm.integrations.otel.emitter import SpanEmitter
 
@@ -706,8 +747,8 @@ def test_error_details_stamped_as_span_attributes_for_labels_ingest():
     # OTel-defined keys (from the ``error.*`` semconv registry).
     assert span.attributes[Error.TYPE] == "litellm.BadRequestError"
     assert span.attributes[Error.MESSAGE] == "400: violated moderation policy"
-    # LiteLLM-specific detail keys — vendor-namespaced under ``error.*``
-    # for v1-parity, not defined by OTel semconv.
+    # LiteLLM-specific detail keys, under the ``litellm.provider.error.*``
+    # vendor namespace, not defined by OTel semconv.
     assert span.attributes[LiteLLMError.CODE] == "400"
     assert span.attributes[LiteLLMError.STACK_TRACE] == "File proxy_server.py line 8570 ..."
     assert span.attributes[LiteLLMError.LLM_PROVIDER] == "openai"
@@ -734,19 +775,18 @@ def test_error_details_omitted_when_span_error_carries_only_message():
     assert LiteLLMError.LLM_PROVIDER not in span.attributes
 
 
-def test_v2_error_attribute_keys_match_v1_error_attributes_byte_for_byte():
-    """v1 (``opentelemetry.py``) and v2 (``otel/`` package) stamp identical
-    span-attribute keys so consumers reading ``labels.error_message`` don't
-    care which integration produced the span. Renaming either side is a
-    breaking change for downstream dashboards; this test locks the vocabulary."""
-    from litellm.integrations._types.open_inference import ErrorAttributes
+def test_error_attribute_keys_are_pinned():
+    """``error.type`` and ``error.message`` come from the semconv ``error.*``
+    registry; the litellm-specific detail keys are vendor keys under
+    ``litellm.provider.error.*``. Pins the exact strings so the emitted
+    vocabulary can't drift silently."""
     from litellm.integrations.otel.model.semconv import Error, LiteLLMError
 
-    assert Error.TYPE == ErrorAttributes.ERROR_TYPE
-    assert Error.MESSAGE == ErrorAttributes.ERROR_MESSAGE
-    assert LiteLLMError.CODE == ErrorAttributes.ERROR_CODE
-    assert LiteLLMError.STACK_TRACE == ErrorAttributes.ERROR_STACK_TRACE
-    assert LiteLLMError.LLM_PROVIDER == ErrorAttributes.ERROR_LLM_PROVIDER
+    assert Error.TYPE == "error.type"
+    assert Error.MESSAGE == "error.message"
+    assert LiteLLMError.CODE == "litellm.provider.error.code"
+    assert LiteLLMError.STACK_TRACE == "litellm.provider.error.stack_trace"
+    assert LiteLLMError.LLM_PROVIDER == "litellm.provider.error.llm_provider"
 
 
 def test_error_message_falls_back_to_error_type_when_message_absent():
