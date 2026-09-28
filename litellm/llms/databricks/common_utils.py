@@ -21,6 +21,22 @@ class DatabricksException(BaseLLMException):
     pass
 
 
+_DATABRICKS_GPT_VERSION_PATTERN: Final = re.compile(r"^(?:databricks-)?gpt-(\d+)(?:[.-](\d+))?(?:-|$)")
+
+
+def is_databricks_gpt_tools_require_responses_model(model: str) -> bool:
+    """Return True for Databricks-served GPT names (gpt-5.6+ and gpt-6+) whose chat endpoint
+    rejects function tools while reasoning is on, e.g. ``databricks-gpt-5-6-terra`` or
+    ``databricks/databricks-gpt-6-sol``. Earlier GPT-5 endpoints still serve that combination
+    on chat completions, so they are left out."""
+    match: Final = _DATABRICKS_GPT_VERSION_PATTERN.match(model.split("/")[-1])
+    if match is None:
+        return False
+    major: Final = int(match.group(1))
+    minor: Final = int(match.group(2)) if match.group(2) is not None else 0
+    return major >= 6 or (major == 5 and minor >= 6)
+
+
 class DatabricksBase:
     """
     Base class for Databricks integration with authentication,
