@@ -19,6 +19,10 @@ from litellm.litellm_core_utils.prompt_templates.common_utils import (
     strip_litellm_internal_message_fields,
     strip_name_from_message,
 )
+from litellm.litellm_core_utils.prompt_templates.factory import (
+    THOUGHT_SIGNATURE_SEPARATOR,
+    _get_thought_signature_from_tool,  # pyright: ignore[reportPrivateUsage, reportUnknownVariableType]  # reused shared thought-signature extractor, underscore-private upstream
+)
 from litellm.llms.base_llm.base_model_iterator import BaseModelResponseIterator
 from litellm.types.llms.anthropic import AllAnthropicToolsValues
 from litellm.types.llms.databricks import (
@@ -145,6 +149,135 @@ def _split_parallel_tool_calls(messages: list[AllMessageValues]) -> list[AllMess
                 index += 1
 
     return list(_generate())
+
+
+def _normalize_empty_tool_call_arguments(message_dict: dict[str, Any]) -> None:
+    """
+    Restore `tool_calls[].function.arguments` to a valid JSON empty object
+    when it is missing or an empty string.
+
+    Databricks's streaming protocol emits parameterless tool_call arguments
+    as one or two empty-string deltas (no `{}`), which accumulate to `""` in
+    the consumer. When that assistant message is replayed on a follow-up
+    turn (e.g. via the OpenAI Agents SDK conversation history), Databricks
+    Model Serving rejects it with:
+
+        INVALID_PARAMETER_VALUE: Param 'arguments' in the tool_calls
+        function specification is not a valid JSON string. No content to
+        map due to end-of-input
+
+    Coercing empty/missing arguments to `"{}"` is safe because that is the
+    canonical JSON representation of a parameterless call.
+    """
+    tool_calls: Final = message_dict.get("tool_calls")
+    if not isinstance(tool_calls, list):
+        return
+    for tc in tool_calls:
+        if not isinstance(tc, dict):
+            continue
+        fn = tc.get("function")
+        if not isinstance(fn, dict):
+            continue
+        if not fn.get("arguments"):
+            fn["arguments"] = "{}"
+
+
+def _strip_openai_annotations(message_dict: dict[str, Any]) -> None:
+    """
+    Remove the OpenAI-only `annotations` field from each content block.
+    Databricks Model Serving uses Anthropic Messages API spec and rejects
+    `annotations` with `Extra inputs are not permitted`. The field appears
+    on chat-completion assistant messages emitted by OpenAI-compatible
+    providers (for citation parity with the Responses API) and survives the
+    Agents SDK replay on every follow-up turn.
+    """
+    content: Final = message_dict.get("content")
+    if not isinstance(content, list):
+        return
+    for block in content:
+        if isinstance(block, dict) and "annotations" in block:
+            block.pop("annotations", None)
+
+
+# CARTO: round-trip Gemini thought_signature on Databricks Model Serving tool calls [sc-572123]
+DATABRICKS_THOUGHT_SIGNATURE_FIELD: Final = "thoughtSignature"
+
+
+def _apply_gemini_thought_signature(message_dict: dict[str, Any], model: str) -> None:
+    """
+    Databricks Model Serving proxies Gemini through its OpenAI-compatible surface and
+    carries a function call's thought signature as a top-level ``thoughtSignature``
+    field on each ``tool_calls[]`` entry, in both directions. It does not honour
+    Google's own ``extra_content.google.thought_signature`` convention. Gemini 3.x
+    rejects a replayed tool call whose functionCall part omits the signature (HTTP 400
+    INVALID_ARGUMENT, "Function call is missing a thought_signature"). A standard OpenAI
+    client drops the non-standard field on replay, so re-attach it from the signature
+    LiteLLM smuggled into the tool_call id (or ``provider_specific_fields``), and for
+    gemini-3 with no signature use Google's ``skip_thought_signature_validator``
+    sentinel, which Databricks accepts. The signature is then stripped back out of the
+    id, on both the assistant tool_call and the matching ``tool`` result, so the two ids
+    still agree and Databricks sees clean values. See sc-572123.
+    """
+    if "gemini" not in model:
+        return
+    if message_dict.get("role") == "tool":
+        tool_call_id: Final = message_dict.get("tool_call_id")
+        if isinstance(tool_call_id, str) and THOUGHT_SIGNATURE_SEPARATOR in tool_call_id:
+            message_dict["tool_call_id"] = tool_call_id.split(THOUGHT_SIGNATURE_SEPARATOR, 1)[0]
+        return
+    tool_calls: Final = message_dict.get("tool_calls")
+    if not isinstance(tool_calls, list):
+        return
+    for tc in tool_calls:
+        if not isinstance(tc, dict):
+            continue
+        signature = _get_thought_signature_from_tool(tc, model=model)
+        if signature:
+            tc[DATABRICKS_THOUGHT_SIGNATURE_FIELD] = signature
+        tc_id = tc.get("id")
+        if isinstance(tc_id, str) and THOUGHT_SIGNATURE_SEPARATOR in tc_id:
+            tc["id"] = tc_id.split(THOUGHT_SIGNATURE_SEPARATOR, 1)[0]
+
+
+# CARTO: capture Gemini thought_signature from Databricks responses into the tool_call id [sc-572123]
+def _extract_databricks_thought_signature(tool_call: Mapping[str, Any]) -> str | None:
+    """Read the signature Databricks put on a response tool call: its native top-level
+    ``thoughtSignature``, or Google's ``extra_content.google.thought_signature`` should
+    Databricks ever switch to that convention."""
+    native: Final = tool_call.get(DATABRICKS_THOUGHT_SIGNATURE_FIELD)
+    if isinstance(native, str) and native:
+        return native
+    extra_content: Final = tool_call.get("extra_content")
+    google: Final = extra_content.get("google") if isinstance(extra_content, dict) else None
+    nested: Final = google.get("thought_signature") if isinstance(google, dict) else None
+    return nested if isinstance(nested, str) and nested else None
+
+
+def _capture_gemini_thought_signature(tool_call: dict[str, Any]) -> dict[str, Any]:
+    """
+    Databricks returns Gemini's thought signature as ``tool_calls[].thoughtSignature``
+    (non-streaming and streaming alike; in a stream the whole tool call arrives in one
+    delta). A standard OpenAI client (e.g. the Agents SDK driving the conversation)
+    drops that non-standard field on replay, so fold it into the tool_call id, the
+    round-trip channel LiteLLM already uses for the native Vertex/Gemini path, and
+    mirror it into ``provider_specific_fields``. The raw carrier fields are dropped once
+    folded in. Returns the tool_call unchanged when no signature is present. See sc-572123.
+    """
+    signature: Final = _extract_databricks_thought_signature(tool_call)
+    if signature is None:
+        return tool_call
+    base_provider: Final = (
+        tool_call.get("provider_specific_fields") if isinstance(tool_call.get("provider_specific_fields"), dict) else {}
+    )
+    return {
+        **{
+            key: value
+            for key, value in tool_call.items()
+            if key not in ("extra_content", DATABRICKS_THOUGHT_SIGNATURE_FIELD)
+        },
+        "id": f"{tool_call.get('id') or ''}{THOUGHT_SIGNATURE_SEPARATOR}{signature}",
+        "provider_specific_fields": {**base_provider, "thought_signature": signature},
+    }
 
 
 if TYPE_CHECKING:
@@ -460,6 +593,9 @@ class DatabricksConfig(DatabricksBase, OpenAILikeChatConfig, AnthropicConfig):
             if "cache_control" in _message and isinstance(_message.get("content"), str):
                 _message = self._move_cache_control_into_string_content_block(_message)
             _sanitize_empty_content(cast(dict[str, Any], _message))
+            _strip_openai_annotations(cast(dict[str, Any], _message))
+            _normalize_empty_tool_call_arguments(cast(dict[str, Any], _message))
+            _apply_gemini_thought_signature(cast(dict[str, Any], _message), model)
             if _is_bare_assistant_message(_message):
                 continue
             new_messages.append(_message)
@@ -579,12 +715,18 @@ class DatabricksConfig(DatabricksBase, OpenAILikeChatConfig, AnthropicConfig):
         transformed_choices: Final = []
 
         for choice in choices:
-            ## HANDLE JSON MODE - anthropic returns single function call]
-            tool_calls = choice["message"].get("tool_calls", None)
+            # CARTO: capture Gemini thought signatures before processing [sc-572123]
+            raw_tool_calls: Final = choice["message"].get("tool_calls", None)
+            captured_tool_calls = (
+                [_capture_gemini_thought_signature(tc) for tc in raw_tool_calls]
+                if isinstance(raw_tool_calls, list)
+                else raw_tool_calls
+            )
+            tool_calls = captured_tool_calls
             if tool_calls is not None:
                 _openai_tool_calls = []
                 for _tc in tool_calls:
-                    _openai_tc = ChatCompletionMessageToolCall(**_tc)
+                    _openai_tc = ChatCompletionMessageToolCall(**_tc)  # type: ignore
                     _openai_tool_calls.append(_openai_tc)
                 fixed_tool_calls = _handle_invalid_parallel_tool_calls(_openai_tool_calls)
 
@@ -619,7 +761,7 @@ class DatabricksConfig(DatabricksBase, OpenAILikeChatConfig, AnthropicConfig):
                     content=content_str,
                     reasoning_content=reasoning_content,
                     thinking_blocks=thinking_blocks,
-                    tool_calls=choice["message"].get("tool_calls"),
+                    tool_calls=captured_tool_calls,
                     provider_specific_fields=({"citations": citations} if citations is not None else None),
                 )
 
@@ -750,8 +892,12 @@ class DatabricksChatResponseIterator(BaseModelResponseIterator):
                             choice["delta"]["tool_calls"] = None
                 elif tool_calls:
                     for _tc in tool_calls:
-                        if _tc.get("function", {}).get("arguments") == "{}":
-                            _tc["function"]["arguments"] = ""  # avoid invalid json
+                        fn = _tc.get("function") or {}
+                        if fn.get("name") and not fn.get("arguments"):
+                            fn["arguments"] = "{}"
+                            _tc["function"] = fn
+                    # CARTO: fold the streamed thoughtSignature into the tool_call id [sc-572123]
+                    choice["delta"]["tool_calls"] = [_capture_gemini_thought_signature(_tc) for _tc in tool_calls]
                 if isinstance(choice["delta"].get("content"), list) and (content := choice["delta"]["content"]):
                     if citations := content[0].get("citations"):
                         # TODO: Databricks delta does not include supported text or chunk type.
