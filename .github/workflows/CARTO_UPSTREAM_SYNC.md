@@ -351,6 +351,55 @@ The workflow sends Slack notifications to `#cartodb-ops`:
 3. Run locally: `make lint && make test-unit`
 4. Push fixes to the sync branch
 
+### A CARTO feature broke after a sync (silent wiring loss)
+
+The v1.92.0 sync is the case study: the merge left CARTO customizations
+that PASSED every presence check yet were functionally broken. Three
+distinct wiring failures, each invisible to string-grep verification, only
+surfaced in cloud-native integration tests three repos downstream. When a
+feature misbehaves after a sync but its manifest patterns still grep OK,
+check these in order.
+
+**1. Dropped call site across an auto-merged file.** Git auto-merges files
+only one side changed; they are not in the resolver's conflict list, so a
+signature rewritten in a conflicted file can leave a caller in an
+auto-merged sibling passing a now-removed argument. Symptom: `TypeError:
+... got an unexpected keyword argument`. In v1.92.0, `streaming_iterator.py`
+(conflicted) lost a param while `handler.py` (auto-merged) kept passing it.
+Find it by grepping call sites of any rewritten signature:
+```bash
+grep -rn "LiteLLMCompletionStreamingIterator(" litellm/ | grep -v "def "
+```
+
+**2. Orphaned CARTO helper (present but never called).** A helper survives
+the merge byte-for-byte, so its `def` pattern greps OK, but the code that
+CALLED it was replaced by the upstream version. Symptom: the feature simply
+does nothing. In v1.92.0, `_patch_get_session_from_redis` was defined but
+had zero callers, so sessions were written to Redis but read from the
+batch-delayed DB, and multi-turn conversations lost context. Find orphans:
+```bash
+for fn in $(git grep -hoE "def (_patch_[a-z_0-9]+|_carto_[a-z_0-9]+)" -- litellm/ | sed -E 's/def //' | sort -u); do
+  refs=$(git grep -c "$fn" -- litellm/ | awk -F: '{s+=$NF} END {print s}')
+  defs=$(git grep -c "def $fn" -- litellm/ | awk -F: '{s+=$NF} END {print s}')
+  [ "$refs" -le "$defs" ] && echo "ORPHAN: $fn"
+done
+```
+
+**3. Cross-version data-format drift.** CARTO code is unchanged and fully
+wired, but upstream changed the format of a value flowing through it, so a
+stored key no longer matches its lookup. Symptom: silent 100% cache/lookup
+miss. In v1.92.0, upstream began b64-encoding response ids; CARTO's Redis
+store keyed by the encoded id while the lookup used the decoded id. This
+class cannot be found by grep - only by tracing what each feature consumes
+and produces across the version boundary, or by a behavioral test.
+
+**Fix approach for all three:** restore the CARTO block verbatim from
+`origin/carto/main` (never paraphrase); adapt only the call site or the
+data-format handling, minimally, marked `# CARTO PATCH`. The regression
+canaries in `tests/test_litellm/responses/litellm_completion_transformation/`
+pin these three wirings; the CARTO Feature Tests gate runs them on every
+sync PR, and the CI fixer reacts to that gate's failures.
+
 ### Workflow Not Detecting New Releases
 
 1. Check `gh release list --repo BerriAI/litellm` for the latest non-prerelease, non-draft tag (BerriAI dropped the `-stable` suffix after `v1.83.14-stable`, published 2026-05-02 — releases since are plain `vX.Y.Z` tags)

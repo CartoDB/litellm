@@ -10,9 +10,7 @@ describe("LabeledField", () => {
   });
 
   it("should render the icon when provided", () => {
-    render(
-      <LabeledField label="Name" value="Alice" icon={<span data-testid="test-icon" />} />,
-    );
+    render(<LabeledField label="Name" value="Alice" icon={<span data-testid="test-icon" />} />);
     expect(screen.getByTestId("test-icon")).toBeInTheDocument();
   });
 
@@ -22,9 +20,7 @@ describe("LabeledField", () => {
   });
 
   it("should show 'Default Proxy Admin' tag when value is default_user_id and defaultUserIdCheck is true", () => {
-    render(
-      <LabeledField label="User ID" value="default_user_id" copyable defaultUserIdCheck />,
-    );
+    render(<LabeledField label="User ID" value="default_user_id" copyable defaultUserIdCheck />);
     expect(screen.getByText("Default Proxy Admin")).toBeInTheDocument();
     expect(screen.queryByText("default_user_id")).not.toBeInTheDocument();
   });
@@ -36,22 +32,22 @@ describe("LabeledField", () => {
   });
 
   it("should not be copyable when value is empty", () => {
-    const { container } = render(<LabeledField label="User ID" value="" copyable />);
-    // antd adds a .ant-typography-copy element when copyable; should not be present
-    expect(container.querySelector(".ant-typography-copy")).not.toBeInTheDocument();
+    render(<LabeledField label="User ID" value="" copyable />);
+    expect(screen.queryByRole("button", { name: "Copy User ID" })).not.toBeInTheDocument();
   });
 
   it("should not be copyable when value is default_user_id and defaultUserIdCheck is true", () => {
-    const { container } = render(
-      <LabeledField label="User ID" value="default_user_id" copyable defaultUserIdCheck />,
-    );
-    expect(container.querySelector(".ant-typography-copy")).not.toBeInTheDocument();
+    render(<LabeledField label="User ID" value="default_user_id" copyable defaultUserIdCheck />);
+    expect(screen.queryByRole("button", { name: "Copy User ID" })).not.toBeInTheDocument();
+  });
+
+  it("should not be copyable when copyable is false", () => {
+    render(<LabeledField label="User ID" value="user-123" />);
+    expect(screen.queryByRole("button", { name: "Copy User ID" })).not.toBeInTheDocument();
   });
 
   it("should be copyable when copyable is true and value is present", () => {
-    const { container } = render(
-      <LabeledField label="User ID" value="user-123" copyable />,
-    );
-    expect(container.querySelector(".ant-typography-copy")).toBeInTheDocument();
+    render(<LabeledField label="User ID" value="user-123" copyable />);
+    expect(screen.getByRole("button", { name: "Copy User ID" })).toBeInTheDocument();
   });
 });

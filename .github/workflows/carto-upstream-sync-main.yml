@@ -588,7 +588,9 @@ jobs:
           PR_BODY_FILE="sync-pr-body.md"
 
           # Build label arguments
-          LABEL_ARGS="--label upstream-sync --label automated"
+          # The PR title ("Upstream Sync: LiteLLM vX.Y.Z") never matches Conventional
+          # Commits, so it must always be exempted from the title-lint gate.
+          LABEL_ARGS="--label upstream-sync --label automated --label ignore-semantic-pull-request"
           if [[ "${SILENT_MODE}" == "true" ]]; then
             LABEL_ARGS="${LABEL_ARGS} --label silent-sync"
             echo "[Sync] Silent mode enabled - adding silent-sync label"

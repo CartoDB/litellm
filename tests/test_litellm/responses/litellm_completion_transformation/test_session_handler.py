@@ -435,3 +435,151 @@ async def test_get_chat_completion_message_history_empty_response_dict():
 
         # Verify the session was still created correctly
         assert result["litellm_session_id"] == "test-session"
+
+
+@pytest.mark.asyncio
+async def test_session_handler_uses_redis_first_carto_patch():
+    """
+    CARTO PATCH regression (PR #16): async_responses_api_session_handler must
+    consult the Redis session store before the DB-backed session handler. The
+    DB store is batch-written, so an immediate follow-up turn misses its own
+    history without the Redis-first read. This wiring was silently dropped in
+    the v1.92.0 upstream sync (helpers survived as orphans) and caused agent
+    conversations to lose context and loop in integration tests.
+    """
+    from litellm.responses.litellm_completion_transformation.transformation import (
+        LiteLLMCompletionResponsesConfig,
+    )
+
+    redis_session = {
+        "messages": [
+            {"role": "user", "content": "who is Michael Jordan"},
+            {"role": "assistant", "content": "A basketball player."},
+        ],
+        "session_id": "trace-abc-123",
+    }
+
+    with patch.object(
+        LiteLLMCompletionResponsesConfig,
+        "_patch_get_session_from_redis",
+        new=AsyncMock(return_value=redis_session),
+    ) as mock_redis_get, patch.object(
+        ResponsesSessionHandler,
+        "get_chat_completion_message_history_for_previous_response_id",
+        new=AsyncMock(),
+    ) as mock_db_get:
+        request = {"messages": [{"role": "user", "content": "and Scottie Pippen?"}]}
+        result = await LiteLLMCompletionResponsesConfig.async_responses_api_session_handler(
+            previous_response_id="resp_123",
+            litellm_completion_request=request,
+        )
+
+    mock_redis_get.assert_awaited_once_with("resp_123")
+    mock_db_get.assert_not_awaited()
+    assert result["litellm_trace_id"] == "trace-abc-123"
+    assert [m["content"] for m in result["messages"]] == [
+        "who is Michael Jordan",
+        "A basketball player.",
+        "and Scottie Pippen?",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_session_handler_falls_back_to_db_when_redis_empty():
+    """CARTO PATCH: with no Redis session, the DB-backed handler is used."""
+    from litellm.responses.litellm_completion_transformation.transformation import (
+        LiteLLMCompletionResponsesConfig,
+    )
+
+    with patch.object(
+        LiteLLMCompletionResponsesConfig,
+        "_patch_get_session_from_redis",
+        new=AsyncMock(return_value=None),
+    ), patch.object(
+        ResponsesSessionHandler,
+        "get_chat_completion_message_history_for_previous_response_id",
+        new=AsyncMock(return_value={"messages": [], "litellm_session_id": None}),
+    ) as mock_db_get:
+        request = {"messages": [{"role": "user", "content": "hello"}]}
+        result = await LiteLLMCompletionResponsesConfig.async_responses_api_session_handler(
+            previous_response_id="resp_456",
+            litellm_completion_request=request,
+        )
+
+    mock_db_get.assert_awaited_once()
+    assert result["messages"][-1]["content"] == "hello"
+
+
+@pytest.mark.asyncio
+async def test_streaming_redis_store_key_matches_decoded_lookup_key():
+    """
+    CARTO PATCH regression: the streaming iterator must store the Redis session
+    under the DECODED response id. The response.completed event carries litellm's
+    b64-encoded id, but previous_response_id is decoded (responses/utils.py)
+    before it reaches the session handler - so a session stored under the encoded
+    id can never be read back, and every follow-up turn loses its history.
+    """
+    from types import SimpleNamespace
+
+    from litellm.responses.litellm_completion_transformation.streaming_iterator import (
+        LiteLLMCompletionStreamingIterator,
+    )
+    from litellm.responses.litellm_completion_transformation.transformation import (
+        LiteLLMCompletionResponsesConfig,
+    )
+    from litellm.responses.utils import ResponsesAPIRequestUtils
+    from litellm.types.utils import Delta, ModelResponseStream, StreamingChoices
+
+    def make_chunk(content=None, finish=None):
+        return ModelResponseStream(
+            id="chatcmpl-real-id-123",
+            choices=[StreamingChoices(index=0, delta=Delta(content=content), finish_reason=finish)],
+            model="gemini-pro",
+        )
+
+    class FakeStream:
+        def __init__(self, chunks):
+            self._chunks = list(chunks)
+            self.logging_obj = SimpleNamespace(litellm_trace_id="trace-1", model_call_details={})
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not self._chunks:
+                raise StopAsyncIteration
+            return self._chunks.pop(0)
+
+    iterator = LiteLLMCompletionStreamingIterator(
+        model="gemini-pro",
+        litellm_custom_stream_wrapper=FakeStream(
+            [make_chunk("Hello "), make_chunk("Bristol!"), make_chunk(None, "stop")]
+        ),
+        request_input="Center the map on Bristol",
+        responses_api_request={},
+        custom_llm_provider="gemini",
+        litellm_metadata={},
+        litellm_completion_request={
+            "messages": [{"role": "user", "content": "Center the map on Bristol"}],
+            "litellm_trace_id": "trace-1",
+        },
+    )
+
+    store_mock = AsyncMock()
+    client_visible_id = None
+    with patch.object(LiteLLMCompletionResponsesConfig, "_patch_store_session_in_redis", new=store_mock):
+        async for event in iterator:
+            if "completed" in str(getattr(event, "type", "")).lower():
+                client_visible_id = event.response.id
+
+    assert client_visible_id is not None
+    store_mock.assert_awaited_once()
+    stored_key = store_mock.await_args.kwargs["response_id"]
+    lookup_key = ResponsesAPIRequestUtils.decode_previous_response_id_to_original_previous_response_id(
+        client_visible_id
+    )
+    assert stored_key == lookup_key
+    assert store_mock.await_args.kwargs["messages"] == [
+        {"role": "user", "content": "Center the map on Bristol"},
+        {"role": "assistant", "content": "Hello Bristol!"},
+    ]

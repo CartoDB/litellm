@@ -6,10 +6,17 @@ name: CARTO Upstream Sync - Ready Checker
 
 on:
   workflow_run:
+    # Only workflows that actually run against carto/main PRs. "LiteLLM Mock
+    # Tests" is upstream-deprecated (workflow_dispatch only) and "LiteLLM
+    # Linting" only triggers for upstream's own branches, never carto/main -
+    # both were removed. "CARTO Feature Tests" is CARTO's own unit-test gate
+    # (carto-feature-tests.yml); it must be listed here so sync-ready waits for
+    # the tests, not just the Docker build. workflow_run only re-invokes this
+    # workflow when a LISTED workflow completes, so an unlisted test gate that
+    # finishes after the Docker build would never get sync-ready applied.
     workflows:
-      - "LiteLLM Mock Tests (folder - tests/test_litellm)"
       - "CARTO - Deploy Docker Image (CI)"
-      - "LiteLLM Linting"
+      - "CARTO Feature Tests"
     types:
       - completed
     branches:

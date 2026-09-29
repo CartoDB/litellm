@@ -107,10 +107,10 @@ async def test_new_project(prisma_client):
             description="Test project for unit testing",
             team_id=_team_id,
             metadata={"use_case_id": "TEST-001", "responsible_ai_id": "RAI-001"},
-            models=["gpt-4", "gpt-3.5-turbo"],
+            models=["gpt-5.5", "gpt-5-mini"],
             max_budget=100.0,
-            model_rpm_limit={"gpt-4": 100},
-            model_tpm_limit={"gpt-4": 1000},
+            model_rpm_limit={"gpt-5.5": 100},
+            model_tpm_limit={"gpt-5.5": 1000},
         )
 
         response = await new_project(
@@ -130,12 +130,12 @@ async def test_new_project(prisma_client):
         assert response.project_alias == "test-project"
         assert response.description == "Test project for unit testing"
         assert response.team_id == _team_id
-        assert response.models == ["gpt-4", "gpt-3.5-turbo"]
+        assert response.models == ["gpt-5.5", "gpt-5-mini"]
         # model_rpm_limit and model_tpm_limit are stored in metadata
         assert response.metadata["use_case_id"] == "TEST-001"
         assert response.metadata["responsible_ai_id"] == "RAI-001"
-        assert response.metadata["model_rpm_limit"] == {"gpt-4": 100}
-        assert response.metadata["model_tpm_limit"] == {"gpt-4": 1000}
+        assert response.metadata["model_rpm_limit"] == {"gpt-5.5": 100}
+        assert response.metadata["model_tpm_limit"] == {"gpt-5.5": 1000}
         assert response.litellm_budget_table is not None
         assert response.litellm_budget_table.max_budget == 100.0
 
@@ -181,7 +181,7 @@ async def test_update_project(prisma_client):
             metadata={
                 "use_case_id": "TEST-002",
             },
-            models=["gpt-4"],
+            models=["gpt-5.5"],
             max_budget=50.0,
         )
 
@@ -207,10 +207,10 @@ async def test_update_project(prisma_client):
                 "use_case_id": "TEST-002-UPDATED",
                 "additional_field": "new_value",
             },
-            models=["gpt-4", "gpt-3.5-turbo", "claude-3"],
+            models=["gpt-5.5", "gpt-5-mini", "claude-3"],
             max_budget=200.0,
-            model_rpm_limit={"gpt-4": 200, "claude-3": 50},
-            model_tpm_limit={"gpt-4": 2000, "claude-3": 500},
+            model_rpm_limit={"gpt-5.5": 200, "claude-3": 50},
+            model_tpm_limit={"gpt-5.5": 2000, "claude-3": 500},
         )
 
         update_response = await update_project(
@@ -229,16 +229,16 @@ async def test_update_project(prisma_client):
         assert update_response.project_id == project_id
         assert update_response.project_alias == "test-project-updated"
         assert update_response.description == "Updated description"
-        assert update_response.models == ["gpt-4", "gpt-3.5-turbo", "claude-3"]
+        assert update_response.models == ["gpt-5.5", "gpt-5-mini", "claude-3"]
         # model_rpm_limit and model_tpm_limit are stored in metadata
         assert update_response.metadata["use_case_id"] == "TEST-002-UPDATED"
         assert update_response.metadata["additional_field"] == "new_value"
         assert update_response.metadata["model_rpm_limit"] == {
-            "gpt-4": 200,
+            "gpt-5.5": 200,
             "claude-3": 50,
         }
         assert update_response.metadata["model_tpm_limit"] == {
-            "gpt-4": 2000,
+            "gpt-5.5": 2000,
             "claude-3": 500,
         }
         assert update_response.litellm_budget_table is not None
@@ -282,7 +282,7 @@ async def test_delete_project(prisma_client):
         project_data = NewProjectRequest(
             project_alias="test-project-delete",
             team_id=_team_id,
-            models=["gpt-4"],
+            models=["gpt-5.5"],
             max_budget=50.0,
         )
 
@@ -374,10 +374,10 @@ async def test_project_info(prisma_client):
             description="Test project info endpoint",
             team_id=_team_id,
             metadata={"use_case_id": "TEST-003", "cost_center": "engineering"},
-            models=["gpt-4", "claude-3"],
+            models=["gpt-5.5", "claude-3"],
             max_budget=150.0,
-            model_rpm_limit={"gpt-4": 150},
-            model_tpm_limit={"gpt-4": 1500},
+            model_rpm_limit={"gpt-5.5": 150},
+            model_tpm_limit={"gpt-5.5": 1500},
         )
 
         create_response = await new_project(
@@ -410,12 +410,12 @@ async def test_project_info(prisma_client):
         assert info_response.project_alias == "test-project-info"
         assert info_response.description == "Test project info endpoint"
         assert info_response.team_id == _team_id
-        assert info_response.models == ["gpt-4", "claude-3"]
+        assert info_response.models == ["gpt-5.5", "claude-3"]
         # model_rpm_limit and model_tpm_limit are stored in metadata
         assert info_response.metadata["use_case_id"] == "TEST-003"
         assert info_response.metadata["cost_center"] == "engineering"
-        assert info_response.metadata["model_rpm_limit"] == {"gpt-4": 150}
-        assert info_response.metadata["model_tpm_limit"] == {"gpt-4": 1500}
+        assert info_response.metadata["model_rpm_limit"] == {"gpt-5.5": 150}
+        assert info_response.metadata["model_tpm_limit"] == {"gpt-5.5": 1500}
         assert info_response.litellm_budget_table is not None
         assert info_response.litellm_budget_table.max_budget == 150.0
 
@@ -439,12 +439,12 @@ def test_check_team_project_limits_models_not_in_team():
 
     team = LiteLLM_TeamTable(
         team_id="test-team",
-        models=["gpt-4", "gpt-3.5-turbo"],
+        models=["gpt-5.5", "gpt-5-mini"],
     )
 
     data = NewProjectRequest(
         team_id="test-team",
-        models=["gpt-4", "claude-3"],  # claude-3 not in team
+        models=["gpt-5.5", "claude-3"],  # claude-3 not in team
     )
 
     with pytest.raises(Exception) as exc_info:
@@ -465,13 +465,13 @@ def test_check_team_project_limits_budget_exceeds_team():
 
     team = LiteLLM_TeamTable(
         team_id="test-team",
-        models=["gpt-4"],
+        models=["gpt-5.5"],
         max_budget=100.0,
     )
 
     data = NewProjectRequest(
         team_id="test-team",
-        models=["gpt-4"],
+        models=["gpt-5.5"],
         max_budget=150.0,  # exceeds team's 100.0
     )
 
@@ -492,13 +492,13 @@ def test_check_team_project_limits_valid_subset():
 
     team = LiteLLM_TeamTable(
         team_id="test-team",
-        models=["gpt-4", "gpt-3.5-turbo", "claude-3"],
+        models=["gpt-5.5", "gpt-5-mini", "claude-3"],
         max_budget=1000.0,
     )
 
     data = NewProjectRequest(
         team_id="test-team",
-        models=["gpt-4", "gpt-3.5-turbo"],
+        models=["gpt-5.5", "gpt-5-mini"],
         max_budget=500.0,
     )
 
@@ -522,7 +522,7 @@ def test_check_team_project_limits_all_proxy_models():
 
     data = NewProjectRequest(
         team_id="test-team",
-        models=["gpt-4", "claude-3", "anything-goes"],
+        models=["gpt-5.5", "claude-3", "anything-goes"],
     )
 
     # Should not raise - team allows all models
@@ -540,13 +540,13 @@ def test_check_team_project_limits_tpm_exceeds_team():
 
     team = LiteLLM_TeamTable(
         team_id="test-team",
-        models=["gpt-4"],
+        models=["gpt-5.5"],
         tpm_limit=10000,
     )
 
     data = NewProjectRequest(
         team_id="test-team",
-        models=["gpt-4"],
+        models=["gpt-5.5"],
         tpm_limit=20000,  # exceeds team's 10000
     )
 
@@ -567,12 +567,12 @@ def test_check_team_project_limits_negative_budget():
 
     team = LiteLLM_TeamTable(
         team_id="test-team",
-        models=["gpt-4"],
+        models=["gpt-5.5"],
     )
 
     data = NewProjectRequest(
         team_id="test-team",
-        models=["gpt-4"],
+        models=["gpt-5.5"],
         max_budget=-10.0,
     )
 
@@ -593,12 +593,12 @@ def test_check_team_project_limits_soft_budget_gte_max():
 
     team = LiteLLM_TeamTable(
         team_id="test-team",
-        models=["gpt-4"],
+        models=["gpt-5.5"],
     )
 
     data = NewProjectRequest(
         team_id="test-team",
-        models=["gpt-4"],
+        models=["gpt-5.5"],
         max_budget=100.0,
         soft_budget=100.0,  # equal to max, should fail
     )
@@ -864,3 +864,178 @@ def test_litellm_project_table_has_timestamp_fields():
     fields = LiteLLM_ProjectTable.model_fields
     assert "created_at" in fields, "LiteLLM_ProjectTable must have created_at field"
     assert "updated_at" in fields, "LiteLLM_ProjectTable must have updated_at field"
+
+
+@pytest.mark.asyncio
+async def test_update_project_invalidates_cached_project_object(monkeypatch):
+    """
+    LIT-3803 regression: auth reads projects cache-first with no freshness check,
+    so /project/update must evict the cached project. Before the fix, a project
+    cached with models=[] kept bypassing the new allowlist until the TTL expired.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from litellm.proxy.auth.auth_checks import get_project_object
+    from litellm.proxy.common_utils.user_api_key_cache import UserApiKeyCache
+
+    project_id = f"project-{uuid.uuid4()}"
+    cache = UserApiKeyCache()
+
+    stale_row = MagicMock()
+    stale_row.model_dump = lambda: {"project_id": project_id, "team_id": None, "models": []}
+
+    mock_prisma = MagicMock()
+    mock_prisma.jsonify_object = lambda data: data
+    mock_prisma.db.litellm_projecttable.find_unique = AsyncMock(return_value=stale_row)
+
+    seeded = await get_project_object(
+        project_id=project_id, prisma_client=mock_prisma, user_api_key_cache=cache
+    )
+    assert seeded is not None and seeded.models == []
+
+    updated_models = ["gemini-2.5-flash-image", "gemini-3.1-flash-lite-preview"]
+    existing_row = MagicMock(team_id=None, budget_id=None, object_permission_id=None)
+    updated_row = MagicMock()
+    updated_row.model_dump = lambda: {
+        "project_id": project_id,
+        "team_id": None,
+        "models": updated_models,
+    }
+
+    mock_prisma.db.litellm_projecttable.find_unique = AsyncMock(return_value=existing_row)
+    mock_prisma.db.litellm_projecttable.update = AsyncMock(return_value=updated_row)
+
+    monkeypatch.setattr(litellm.proxy.proxy_server, "premium_user", True)
+    monkeypatch.setattr(litellm.proxy.proxy_server, "prisma_client", mock_prisma)
+    monkeypatch.setattr(litellm.proxy.proxy_server, "user_api_key_cache", cache)
+
+    await update_project(
+        data=UpdateProjectRequest(project_id=project_id, models=updated_models),
+        http_request=Request(scope={"type": "http"}),
+        user_api_key_dict=UserAPIKeyAuth(
+            user_role=LitellmUserRoles.PROXY_ADMIN,
+            api_key="sk-1234",
+            user_id="1234",
+        ),
+    )
+
+    mock_prisma.db.litellm_projecttable.find_unique = AsyncMock(return_value=updated_row)
+    refreshed = await get_project_object(
+        project_id=project_id, prisma_client=mock_prisma, user_api_key_cache=cache
+    )
+    assert refreshed is not None
+    assert refreshed.models == updated_models
+
+
+@pytest.mark.asyncio
+async def test_delete_project_invalidates_cached_project_object(monkeypatch):
+    """
+    LIT-3803 regression: /project/delete must evict the cached project so auth
+    stops enforcing (or trusting) a project that no longer exists.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from litellm.proxy.auth.auth_checks import get_project_object
+    from litellm.proxy.common_utils.user_api_key_cache import UserApiKeyCache
+
+    project_id = f"project-{uuid.uuid4()}"
+    cache = UserApiKeyCache()
+
+    row = MagicMock()
+    row.model_dump = lambda: {"project_id": project_id, "team_id": None, "models": ["gpt-5.5"]}
+
+    mock_prisma = MagicMock()
+    mock_prisma.db.litellm_projecttable.find_unique = AsyncMock(return_value=row)
+
+    seeded = await get_project_object(
+        project_id=project_id, prisma_client=mock_prisma, user_api_key_cache=cache
+    )
+    assert seeded is not None
+
+    mock_prisma.db.litellm_verificationtoken.find_many = AsyncMock(return_value=[])
+    mock_prisma.db.litellm_projecttable.delete = AsyncMock(return_value=row)
+
+    monkeypatch.setattr(litellm.proxy.proxy_server, "premium_user", True)
+    monkeypatch.setattr(litellm.proxy.proxy_server, "prisma_client", mock_prisma)
+    monkeypatch.setattr(litellm.proxy.proxy_server, "user_api_key_cache", cache)
+
+    await delete_project(
+        data=DeleteProjectRequest(project_ids=[project_id]),
+        http_request=Request(scope={"type": "http"}),
+        user_api_key_dict=UserAPIKeyAuth(
+            user_role=LitellmUserRoles.PROXY_ADMIN,
+            api_key="sk-1234",
+            user_id="1234",
+        ),
+    )
+
+    mock_prisma.db.litellm_projecttable.find_unique = AsyncMock(return_value=None)
+    assert (
+        await get_project_object(
+            project_id=project_id, prisma_client=mock_prisma, user_api_key_cache=cache
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_update_project_succeeds_when_cache_eviction_fails(monkeypatch):
+    """
+    The DB write has already committed when eviction runs, so a cache backend
+    error must not turn a successful update into a 500; the stale entry is
+    bounded by the TTL instead.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    project_id = f"project-{uuid.uuid4()}"
+    failing_cache = MagicMock()
+    failing_cache.async_delete_cache = AsyncMock(side_effect=ConnectionError("redis down"))
+
+    existing_row = MagicMock(team_id=None, budget_id=None, object_permission_id=None)
+    updated_row = MagicMock()
+
+    mock_prisma = MagicMock()
+    mock_prisma.jsonify_object = lambda data: data
+    mock_prisma.db.litellm_projecttable.find_unique = AsyncMock(return_value=existing_row)
+    mock_prisma.db.litellm_projecttable.update = AsyncMock(return_value=updated_row)
+
+    monkeypatch.setattr(litellm.proxy.proxy_server, "premium_user", True)
+    monkeypatch.setattr(litellm.proxy.proxy_server, "prisma_client", mock_prisma)
+    monkeypatch.setattr(litellm.proxy.proxy_server, "user_api_key_cache", failing_cache)
+
+    response = await update_project(
+        data=UpdateProjectRequest(project_id=project_id, models=["gpt-oss-120b"]),
+        http_request=Request(scope={"type": "http"}),
+        user_api_key_dict=UserAPIKeyAuth(
+            user_role=LitellmUserRoles.PROXY_ADMIN,
+            api_key="sk-1234",
+            user_id="1234",
+        ),
+    )
+
+    assert response is updated_row
+    failing_cache.async_delete_cache.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_project_eviction_publishes_cross_worker_invalidation(monkeypatch):
+    """
+    Single-worker eviction only fixes the handling worker; the broadcast is what
+    lets every other worker drop its in-memory copy instead of serving the stale
+    project until the TTL expires.
+    """
+    from unittest.mock import AsyncMock, patch
+
+    from litellm.proxy.auth.auth_checks import delete_cached_project_object
+    from litellm.proxy.common_utils.user_api_key_cache import UserApiKeyCache
+
+    project_id = f"project-{uuid.uuid4()}"
+    with patch(
+        "litellm.proxy.common_utils.auth_cache_invalidation_pubsub.publish_auth_cache_invalidation",
+        new=AsyncMock(),
+    ) as mock_publish:
+        await delete_cached_project_object(
+            project_id=project_id, user_api_key_cache=UserApiKeyCache()
+        )
+
+    mock_publish.assert_awaited_once_with(cache_key=f"project_id:{project_id}")

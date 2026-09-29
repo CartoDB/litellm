@@ -446,6 +446,28 @@ jobs:
           | PRESERVED_CARTO | Full CARTO implementation kept | CARTO code present, upstream version not used |
           | INCORRECTLY_DROPPED | CARTO feature was lost (BUG!) | CARTO code missing, upstream doesn't provide equivalent |
 
+          ## Judge by WIRING, not string presence
+
+          A feature is PRESERVED_CARTO only if it is fully WIRED, not merely
+          present. Code that greps OK can still be dead. Before classifying any
+          feature as preserved, verify:
+
+          - **No orphaned helpers:** every CARTO helper the feature defines
+            (`_patch_*` / `_carto_*`) has at least one caller. A helper defined
+            with zero call sites means the feature is INCORRECTLY_DROPPED, even
+            though its `def` string is present. (v1.92.0 left
+            `_patch_get_session_from_redis` defined but uncalled - a real bug the
+            string-presence check reported as "preserved".)
+          - **Call sites intact across auto-merged files:** parameters the
+            feature relies on are still passed by callers (which may live in
+            files git auto-merged, not just the conflicted ones).
+          - **Data-flow contracts hold:** values the feature stores/sends still
+            match the format the surrounding upstream code now expects (e.g. id
+            encoding, message shape).
+
+          If any of these fail, the correct decision is INCORRECTLY_DROPPED with
+          the specific broken wiring named in the evidence.
+
           CONTEXT_EOF
 
           # Add CARTO features list

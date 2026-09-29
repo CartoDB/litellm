@@ -6,10 +6,15 @@ name: CARTO Upstream Sync - CI Fixer
 
 on:
   workflow_run:
+    # Only workflows that actually run against carto/main PRs. "LiteLLM Mock
+    # Tests" is upstream-deprecated (workflow_dispatch only) and "LiteLLM
+    # Linting" only triggers for upstream's own branches, never carto/main -
+    # both were removed. "CARTO Feature Tests" is CARTO's own unit-test gate
+    # (carto-feature-tests.yml); listing it here is what lets the fixer react
+    # to a failing test suite the way it used to react to Mock Tests.
     workflows:
-      - "LiteLLM Mock Tests (folder - tests/test_litellm)"
       - "CARTO - Deploy Docker Image (CI)"
-      - "LiteLLM Linting"
+      - "CARTO Feature Tests"
     types:
       - completed
     branches:
@@ -207,11 +212,14 @@ jobs:
             touch /tmp/docker_full_log.txt
           fi
 
-          # Extract Mock Tests errors - get the FULL failed job log
+          # Extract CARTO Feature Tests errors - get the FULL failed job log.
+          # This is CARTO's own unit-test gate (carto-feature-tests.yml); it
+          # replaced the upstream-deprecated "LiteLLM Mock Tests" workflow as
+          # the source of test-failure signal on carto/main PRs.
           echo "" >> /tmp/all_errors.txt
-          echo "## Mock Tests Errors" >> /tmp/all_errors.txt
+          echo "## CARTO Feature Tests Errors" >> /tmp/all_errors.txt
           TESTS_RUN=$(gh run list --repo ${{ github.repository }} \
-            --workflow="LiteLLM Mock Tests (folder - tests/test_litellm)" \
+            --workflow="CARTO Feature Tests" \
             --branch="${BRANCH}" \
             --status=failure \
             --json databaseId \
@@ -223,10 +231,10 @@ jobs:
             gh run view $TESTS_RUN --repo ${{ github.repository }} --log-failed 2>&1 > /tmp/tests_full_log.txt
             TESTS_LINES=$(wc -l < /tmp/tests_full_log.txt)
             echo "[CI Fixer] Tests log: ${TESTS_LINES} lines"
-            echo "Mock Tests Run ID: $TESTS_RUN (${TESTS_LINES} lines)" >> /tmp/all_errors.txt
+            echo "CARTO Feature Tests Run ID: $TESTS_RUN (${TESTS_LINES} lines)" >> /tmp/all_errors.txt
             echo "Full log saved to: /tmp/tests_full_log.txt" >> /tmp/all_errors.txt
           else
-            echo "No failed Mock Tests found" >> /tmp/all_errors.txt
+            echo "No failed CARTO Feature Tests found" >> /tmp/all_errors.txt
             touch /tmp/tests_full_log.txt
           fi
 
@@ -414,10 +422,14 @@ jobs:
             **PR:** #${{ needs.check-ci-status.outputs.pr-number }}
             **Branch:** `${{ needs.check-ci-status.outputs.branch-name }}`
             **Docker Build Failed:** ${{ steps.extract-errors.outputs.docker-failed }}
-            **Mock Tests Failed:** ${{ steps.extract-errors.outputs.tests-failed }}
+            **CARTO Feature Tests Failed:** ${{ steps.extract-errors.outputs.tests-failed }}
 
-            **Key insight:** The upstream TAG code is TESTED and WORKING. If something is "missing",
-            the conflict resolver likely kept an old carto/main version instead of the new upstream TAG.
+            **Key insight:** Upstream TAG code works for UPSTREAM's call graph, not
+            necessarily for CARTO's. It is tested, but CARTO adds call sites,
+            parameters, and stored-data contracts upstream never exercises. When a
+            fix accepts an upstream file, re-verify CARTO's callers, attributes, and
+            data formats still line up - a file that imports cleanly can still be
+            broken at every CARTO call site.
 
             ---
 
@@ -431,6 +443,25 @@ jobs:
             These patterns MUST still exist after your fixes. If a fix would remove a
             pattern, find an alternative approach that preserves the CARTO feature.
 
+            **Restore CARTO code VERBATIM, do not paraphrase.** When a fix needs a
+            CARTO block back, copy it byte-identical from carto/main
+            (`git show origin/carto/main:<file>`) - including comments and debug
+            logging - and confirm with `diff`. Adapt only where an upstream API
+            change makes verbatim impossible, keep it minimal, and mark it
+            `# CARTO PATCH`.
+
+            **The manifest grep proves a string EXISTS, not that it is WIRED.**
+            After your fix, run an orphan sweep - a CARTO helper defined with no
+            caller is a half-restored feature (the v1.92.0 sync left
+            `_patch_get_session_from_redis` defined but uncalled):
+            ```bash
+            for fn in $(git grep -hoE "def (_patch_[a-z_0-9]+|_carto_[a-z_0-9]+)" -- litellm/ | sed -E 's/def //' | sort -u); do
+              refs=$(git grep -c "$fn" -- litellm/ | awk -F: '{s+=$NF} END {print s}')
+              defs=$(git grep -c "def $fn" -- litellm/ | awk -F: '{s+=$NF} END {print s}')
+              [ "$refs" -le "$defs" ] && echo "ORPHAN: $fn (defined, never called)"
+            done
+            ```
+
             ---
 
             ## STEP 0: FIX LOOP DETECTION (DO THIS FIRST!)
@@ -441,11 +472,24 @@ jobs:
             cat /tmp/pr_comments.md | grep -iE "Added.*function|sync.*file|ImportError|fix:" | head -15
             ```
 
-            **If same file appears 3+ times → SYNC ENTIRE FILE from upstream TAG:**
+            **If same file appears 3+ times → break the loop, BUT check the
+            manifest first.**
+
+            If the file is NOT in any feature's `files:` in
+            `.github/carto-features.yml`, sync the entire file from upstream TAG:
             ```bash
             # ORIG_HEAD = upstream TAG version (pre-merge state)
             git show ORIG_HEAD:path/to/problematic_file.py > path/to/problematic_file.py
             git add path/to/problematic_file.py
+            ```
+
+            If the file IS a manifest file, do NOT blindly sync it from upstream -
+            that is exactly how CARTO wirings get erased. Instead, take upstream's
+            version as the base and re-apply the CARTO block VERBATIM from
+            carto/main, then run the orphan/wiring checks:
+            ```bash
+            git show ORIG_HEAD:<file> > <file>                 # upstream base
+            git show origin/carto/main:<file> | less           # copy CARTO blocks back byte-identical
             ```
 
             ---
@@ -466,7 +510,7 @@ jobs:
             # Read test errors (if tests failed)
             if [ -s /tmp/tests_full_log.txt ]; then
               echo ""
-              echo "=== MOCK TEST ERRORS (filtered) ==="
+              echo "=== CARTO FEATURE TEST ERRORS (filtered) ==="
               grep -iE "FAILED|ERROR|AssertionError|ImportError|Exception" /tmp/tests_full_log.txt | tail -30
               echo ""
               echo "=== TEST LOG (last 100 lines for context) ==="
@@ -490,10 +534,34 @@ jobs:
             cd ui/litellm-dashboard && npm install --legacy-peer-deps && npm run build 2>&1 | tail -50
             ```
 
-            ### If Mock Tests Failed:
+            ### If CARTO Feature Tests Failed:
+            Reproduce the exact gate locally. The scope is the set of test
+            directories that mirror the files in `.github/carto-features.yml`
+            (the same derivation carto-feature-tests.yml uses), so a fix that
+            passes here passes the gate.
             ```bash
-            pip install -e ".[dev]" -q
-            pytest tests/test_litellm/ -v --tb=short 2>&1 | tail -100
+            make install-test-deps
+            # Derive the same scope the gate runs, then execute it:
+            SCOPE=$(uv run --no-sync python - <<'PY'
+            import pathlib, yaml
+            data = yaml.safe_load(open(".github/carto-features.yml"))
+            dirs = set()
+            for feat in data.get("features", []):
+                for fp in feat.get("files", []):
+                    p = pathlib.PurePosixPath(fp)
+                    if p.parts[0] != "litellm":
+                        continue
+                    rel = pathlib.PurePosixPath(*p.parts[1:]).parent
+                    while True:
+                        cand = pathlib.Path("tests/test_litellm") / rel
+                        if cand.is_dir():
+                            dirs.add(str(cand)); break
+                        if rel == pathlib.PurePosixPath("."): break
+                        rel = rel.parent
+            print(" ".join(sorted(dirs)))
+            PY
+            )
+            uv run --no-sync pytest $SCOPE -v --tb=short 2>&1 | tail -100
             ```
 
             **Iterate:** Fix error → Run verification → Repeat until success.

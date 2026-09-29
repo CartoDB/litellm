@@ -1677,3 +1677,189 @@ async def test_async_log_success_event_uses_team_priority_from_auth_metadata():
     assert (
         "default_pool" not in priority_keys[0]
     ), f"Priority key should NOT use 'default_pool', should use team's priority. Got: {priority_keys[0]}"
+
+
+@pytest.mark.asyncio
+async def test_priority_429_includes_model_name_and_configured_limits():
+    """
+    The priority-based 429 should tell operators which model was hit and what
+    the model's configured TPM/RPM are, so they can decide whether to tune the
+    priority allocation or the model limits.
+
+    Regression test for the previous message that read:
+        "Priority-based rate limit exceeded. Priority: prod,
+         Rate limit type: tokens, Remaining: -664145,
+         Model saturation: 86.3%"
+    -- with no indication of which model was hit.
+    """
+    from fastapi import HTTPException
+
+    os.environ["LITELLM_LICENSE"] = "test-license-key"
+    litellm.priority_reservation = {"prod": 0.5}
+
+    dual_cache = DualCache()
+    handler = DynamicRateLimitHandler(internal_usage_cache=dual_cache)
+
+    model = "gpt-4o-test"
+    total_tpm = 1_000_000
+    total_rpm = 10_000
+
+    llm_router = Router(
+        model_list=[
+            {
+                "model_name": model,
+                "litellm_params": {
+                    "model": "gpt-3.5-turbo",
+                    "api_key": "test-key",
+                    "api_base": "test-base",
+                    "tpm": total_tpm,
+                    "rpm": total_rpm,
+                },
+            }
+        ]
+    )
+    handler.update_variables(llm_router=llm_router)
+
+    user = UserAPIKeyAuth()
+    user.metadata = {"priority": "prod"}
+    user.user_id = "prod_user"
+
+    model_group_info = handler.llm_router.get_model_group_info(model_group=model)
+
+    # Force the atomic check+increment to return OVER_LIMIT for the
+    # priority_model descriptor. saturation=0.95 keeps us above the
+    # default saturation threshold so priority limits are enforced.
+    over_limit_response = {
+        "overall_code": "OVER_LIMIT",
+        "statuses": [
+            {
+                "code": "OVER_LIMIT",
+                "descriptor_key": "priority_model",
+                "rate_limit_type": "tokens",
+                "limit_remaining": -664145,
+                "current_limit": int(total_tpm * 0.5),
+            }
+        ],
+    }
+
+    with patch.object(
+        handler.v3_limiter,
+        "atomic_check_and_increment_by_n",
+        new=AsyncMock(return_value=over_limit_response),
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await handler._check_rate_limits(
+                model=model,
+                model_group_info=model_group_info,
+                user_api_key_dict=user,
+                priority="prod",
+                saturation=0.95,
+            )
+
+    assert exc_info.value.status_code == 429
+    detail = exc_info.value.detail
+    assert isinstance(detail, dict)
+    error_msg = detail["error"]
+
+    # New fields added by this change -- the whole point of the fix.
+    assert f"Model: {model}" in error_msg, error_msg
+    assert f"Model TPM: {total_tpm}" in error_msg, error_msg
+    assert f"Model RPM: {total_rpm}" in error_msg, error_msg
+
+    # Existing fields must still be present (no regression).
+    assert "Priority-based rate limit exceeded" in error_msg, error_msg
+    assert "Priority: prod" in error_msg, error_msg
+    assert "Rate limit type: tokens" in error_msg, error_msg
+    assert "Model saturation:" in error_msg, error_msg
+
+
+@pytest.mark.asyncio
+async def test_tpm_only_model_enforces_priority_and_model_capacity():
+    """Regression: a model configured with ONLY tpm (no rpm) must still be
+    rate limited.
+
+    The atomic check-and-increment path used to drop any counter whose
+    pre-call increment was zero. Token increments are always zero pre-call
+    (usage lands on the counters post-call), so on a TPM-only model the
+    limiter evaluated no counters at all: no model-wide cap, no priority
+    reservation, in either mode. This test drives the real pre-call ->
+    log-success -> pre-call flow with no limiter internals mocked.
+    """
+    from fastapi import HTTPException
+
+    from litellm.types.utils import ModelResponse, Usage
+
+    os.environ["LITELLM_LICENSE"] = "test-license-key"
+    litellm.priority_reservation = {"dev": 0.25, "prod": 0.5}
+
+    dual_cache = DualCache()
+    handler = DynamicRateLimitHandler(internal_usage_cache=dual_cache)
+
+    model = "tpm-only-model"
+    llm_router = Router(
+        model_list=[
+            {
+                "model_name": model,
+                "litellm_params": {
+                    "model": "gpt-3.5-turbo",
+                    "api_key": "test-key",
+                    "api_base": "test-base",
+                    "tpm": 400,
+                },
+            }
+        ]
+    )
+    handler.update_variables(llm_router=llm_router)
+
+    dev_user = UserAPIKeyAuth()
+    dev_user.metadata = {"priority": "dev"}
+    prod_user = UserAPIKeyAuth()
+    prod_user.metadata = {"priority": "prod"}
+
+    async def record_usage(priority: str, total_tokens: int) -> None:
+        await handler.async_log_success_event(
+            kwargs={
+                "standard_logging_object": {
+                    "metadata": {"user_api_key_auth_metadata": {"priority": priority}},
+                },
+                "litellm_params": {"metadata": {"model_group": model}},
+            },
+            response_obj=ModelResponse(
+                model=model,
+                usage=Usage(prompt_tokens=0, completion_tokens=total_tokens, total_tokens=total_tokens),
+            ),
+            start_time=None,
+            end_time=None,
+        )
+
+    assert (
+        await handler.async_pre_call_hook(
+            user_api_key_dict=dev_user, cache=dual_cache, data={"model": model}, call_type="completion"
+        )
+        is None
+    )
+
+    await record_usage("dev", 250)
+
+    with pytest.raises(HTTPException) as dev_blocked:
+        await handler.async_pre_call_hook(
+            user_api_key_dict=dev_user, cache=dual_cache, data={"model": model}, call_type="completion"
+        )
+    assert dev_blocked.value.status_code == 429
+    assert "Priority-based rate limit exceeded" in dev_blocked.value.detail["error"]
+
+    assert (
+        await handler.async_pre_call_hook(
+            user_api_key_dict=prod_user, cache=dual_cache, data={"model": model}, call_type="completion"
+        )
+        is None
+    )
+
+    await record_usage("prod", 200)
+
+    with pytest.raises(HTTPException) as capacity_blocked:
+        await handler.async_pre_call_hook(
+            user_api_key_dict=prod_user, cache=dual_cache, data={"model": model}, call_type="completion"
+        )
+    assert capacity_blocked.value.status_code == 429
+    assert "Model capacity reached" in capacity_blocked.value.detail["error"]
