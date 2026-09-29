@@ -21,6 +21,7 @@ class DatabricksException(BaseLLMException):
     pass
 
 
+# CARTO: model gate for the Databricks GPT Responses bridge in litellm/main.py [sc-571154]
 _DATABRICKS_GPT_VERSION_PATTERN: Final = re.compile(r"^(?:databricks-)?gpt-(\d+)(?:[.-](\d+))?(?:-|$)")
 
 

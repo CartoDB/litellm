@@ -1099,6 +1099,8 @@ def responses_api_bridge_check(
         model_info["mode"] = "responses"
         model = model.replace("responses/", "")
 
+    # CARTO: bridge Databricks GPT-5.6+/GPT-6 tools+reasoning to Responses, not in upstream [sc-571154]
+    # TODO: drop once upstream routes Databricks gpt-<n> to Responses (https://github.com/BerriAI/litellm/pull/31213)
     # Databricks proxies GPT-5.6+/GPT-6 to OpenAI and inherits the same chat-completions
     # rejection of function tools with reasoning on; its /responses route serves them.
     if (
