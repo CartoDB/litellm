@@ -146,3 +146,15 @@ features:
         file: litellm/llms/databricks/chat/transformation.py
       - pattern: "_capture_gemini_thought_signature(_tc) for _tc in tool_calls"
         file: litellm/llms/databricks/chat/transformation.py
+
+  - name: "Databricks GPT-5.6+/GPT-6 Tools+Reasoning Responses Bridge"
+    source_prs: [135]
+    description: "Databricks proxies GPT-5.6+/GPT-6 to OpenAI and inherits its chat-completions rejection of function tools with reasoning on ('Function tools with reasoning_effort are not supported ... in /v1/chat/completions'). Upstream's responses_api_bridge_check only bridges openai/azure and expects gpt-5.x/gpt-6 names, so it never fires for Databricks spellings like databricks-gpt-5-6-terra. This adds a Databricks branch that routes those requests (function tools + reasoning not 'none') to DatabricksResponsesAPIConfig. Earlier Databricks GPT-5 endpoints and tool-less or reasoning-off requests stay on chat. REMOVE when upstream routes Databricks gpt-<n> to Responses itself (tracked upstream in BerriAI/litellm#31213); both patterns below must go together."
+    files:
+      - litellm/main.py
+      - litellm/llms/databricks/common_utils.py
+    verification:
+      - pattern: "def is_databricks_gpt_tools_require_responses_model"
+        file: litellm/llms/databricks/common_utils.py
+      - pattern: "and is_databricks_gpt_tools_require_responses_model(model)"
+        file: litellm/main.py
