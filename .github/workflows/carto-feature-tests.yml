@@ -27,6 +27,7 @@ on:
       - "pyproject.toml"
       - "uv.lock"
       - ".github/carto-features.yml"
+      - ".github/carto-feature-tests-deselect.txt"
       - ".github/workflows/carto-feature-tests.yml"
 
 permissions:
@@ -114,11 +115,15 @@ jobs:
           echo "$PATHS" | tr ' ' '\n'
           echo "paths=$PATHS" >> $GITHUB_OUTPUT
 
+      # Deselections live in a CARTO-owned file because tests/ is replaced by upstream on every sync
       - name: Run CARTO feature tests
         run: |
+          mapfile -t DESELECT < <(grep -vE '^[[:space:]]*(#|$)' .github/carto-feature-tests-deselect.txt | sed 's/^/--deselect=/')
           uv run --no-sync pytest ${{ steps.scope.outputs.paths }} \
+            "${DESELECT[@]}" \
             --tb=short -q \
             -n 2 \
+            --dist=loadscope \
             --reruns 2 \
             --reruns-delay 1 \
             --durations=15
