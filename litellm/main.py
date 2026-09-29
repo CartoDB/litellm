@@ -103,6 +103,7 @@ from litellm.llms.base_llm.base_model_iterator import (
 from litellm.llms.bedrock.common_utils import BedrockModelInfo
 from litellm.llms.cohere.common_utils import CohereModelInfo
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
+from litellm.llms.databricks.common_utils import is_databricks_gpt_tools_require_responses_model
 from litellm.llms.openai.chat.gpt_5_transformation import OpenAIGPT5Config
 from litellm.llms.openai_like.json_loader import JSONProviderRegistry
 from litellm.llms.vertex_ai.common_utils import (
@@ -1094,6 +1095,20 @@ def responses_api_bridge_check(
                 and (reasoning_effort is not None or on_constraint_enforcing_endpoint)
             )
         )
+    ):
+        model_info["mode"] = "responses"
+        model = model.replace("responses/", "")
+
+    # CARTO: bridge Databricks GPT-5.6+/GPT-6 tools+reasoning to Responses, not in upstream [sc-571154]
+    # TODO: drop once upstream routes Databricks gpt-<n> to Responses (https://github.com/BerriAI/litellm/pull/31213)
+    # Databricks proxies GPT-5.6+/GPT-6 to OpenAI and inherits the same chat-completions
+    # rejection of function tools with reasoning on; its /responses route serves them.
+    if (
+        custom_llm_provider == "databricks"
+        and model_info.get("mode") != "responses"
+        and is_databricks_gpt_tools_require_responses_model(model)
+        and has_function_tool
+        and reasoning_active
     ):
         model_info["mode"] = "responses"
         model = model.replace("responses/", "")
