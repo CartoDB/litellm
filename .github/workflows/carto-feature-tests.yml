@@ -115,15 +115,18 @@ jobs:
           echo "$PATHS" | tr ' ' '\n'
           echo "paths=$PATHS" >> $GITHUB_OUTPUT
 
-      # Deselections live in a CARTO-owned file because tests/ is replaced by upstream on every sync
+      # Deselections live in a CARTO-owned file because tests/ is replaced by upstream on every sync.
+      # The local cost map pins tests to this branch's pricing data; the default remote map tracks upstream main,
+      # which drops models the synced tests still reference
       - name: Run CARTO feature tests
+        env:
+          LITELLM_LOCAL_MODEL_COST_MAP: "True"
         run: |
           mapfile -t DESELECT < <(grep -vE '^[[:space:]]*(#|$)' .github/carto-feature-tests-deselect.txt | sed 's/^/--deselect=/')
           uv run --no-sync pytest ${{ steps.scope.outputs.paths }} \
             "${DESELECT[@]}" \
             --tb=short -q \
             -n 2 \
-            --dist=loadscope \
             --reruns 2 \
             --reruns-delay 1 \
             --durations=15
