@@ -404,7 +404,7 @@ async def test_responses_streaming_failure_triggers_failure_handlers():
         call_type=CallTypes.responses.value,
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="boom"):
         iterator._process_chunk('{"delta": "chunk"}')
 
     # allow failure callbacks to run
@@ -950,7 +950,7 @@ def test_build_synthetic_response_events_covers_annotations_function_calls_and_r
     )
 
     try:
-        events = streaming_module._build_synthetic_response_events(
+        events = streaming_module.build_synthetic_response_events(
             transformed=transformed,
             logging_obj=logging_obj,
             chunk_size=5,

@@ -42,7 +42,7 @@ test.describe("MCP Tools", () => {
 
     // Non-empty would still pass if the proxy returned some other server's tools.
     await expect(toolCard(toolList, TOOL_NAME)).toBeVisible();
-    await expect(toolCard(toolList, "ask_question")).toBeVisible();
+    await expect(toolCard(toolList, "ask_wiki_question")).toBeVisible();
     await expect(toolCard(toolList, "read_wiki_contents")).toBeVisible();
 
     // No other tool's name or description contains this string, so exactly one card survives.
@@ -63,7 +63,7 @@ test.describe("MCP Tools", () => {
 
     // The form is generated from the tool's inputSchema, so `repoName` proves the schema
     // round-tripped through the proxy instead of the panel falling back to a generic field.
-    const repoInput = page.locator('input[id="repoName"]');
+    const repoInput = page.getByLabel(/repoName/);
     await expect(repoInput).toBeVisible();
     await repoInput.fill(TOOL_ARG_REPO);
 
