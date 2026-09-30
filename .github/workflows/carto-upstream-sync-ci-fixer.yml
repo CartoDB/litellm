@@ -12,6 +12,7 @@ on:
     # both were removed. "CARTO Feature Tests" is CARTO's own unit-test gate
     # (carto-feature-tests.yml); listing it here is what lets the fixer react
     # to a failing test suite the way it used to react to Mock Tests.
+    # Subset of .github/carto-sync-required-workflows.yml (enforced by check_sync_workflow_triggers.py).
     workflows:
       - "CARTO - Deploy Docker Image (CI)"
       - "CARTO Feature Tests"
@@ -407,7 +408,7 @@ jobs:
           use_vertex: "true"
           github_token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
           show_full_output: true
-          claude_args: "--model claude-opus-4-5@20251101 --max-turns 200 --allowedTools Read,Write,Edit,Bash,Grep,Glob"
+          claude_args: "--model claude-opus-5-5 --max-turns 200 --allowedTools Read,Write,Edit,Bash,Grep,Glob"
           prompt: |
             # CI Failure Auto-Fix
 
@@ -577,7 +578,7 @@ jobs:
             | `Type error: Expected X arguments` | Signature changed | Update call site |
             | `'Prisma' object has no attribute` | schema.prisma outdated | `git show ORIG_HEAD:schema.prisma > schema.prisma` |
             | `SyntaxError` | Conflict markers | Search for `<<<<<<<` |
-            | `FAILED tests/...` | Test assertion | Update test expectation |
+            | `FAILED tests/...` | Upstream code for that behavior is missing | Restore upstream TAG's code; never edit, skip or deselect the test |
 
             ---
 

@@ -436,7 +436,7 @@ jobs:
           use_vertex: "true"
           github_token: ${{ secrets.GITHUB_TOKEN }}
           show_full_output: false
-          claude_args: "--model claude-sonnet-4-5@20250929 --max-turns 5 --allowedTools Read,Bash"
+          claude_args: "--model claude-sonnet-5 --max-turns 5 --allowedTools Read,Bash"
           prompt: |
             You are analyzing a change to CARTO's LiteLLM fork.
 

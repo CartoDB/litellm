@@ -49,10 +49,10 @@ on:
 
   # Automatic trigger - runs when CI checks pass on upstream-sync branches
   workflow_run:
+    # Subset of .github/carto-sync-required-workflows.yml (enforced by check_sync_workflow_triggers.py)
     workflows:
-      - "LiteLLM Mock Tests (folder - tests/test_litellm)"
       - "CARTO - Deploy Docker Image (CI)"
-      - "LiteLLM Linting"
+      - "CARTO Feature Tests"
     types:
       - completed
     branches:
@@ -493,7 +493,7 @@ jobs:
           use_vertex: "true"
           github_token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
           show_full_output: true
-          claude_args: "--model claude-opus-4-5@20251101 --max-turns 150 --allowedTools Read,Bash,Grep,Glob ${{ github.event.inputs.debug == 'true' && '--debug' || '' }}"
+          claude_args: "--model claude-opus-5-5 --max-turns 150 --allowedTools Read,Bash,Grep,Glob ${{ github.event.inputs.debug == 'true' && '--debug' || '' }}"
           prompt: |
             # CARTO Feature Preservation Analysis
 
@@ -1081,7 +1081,7 @@ jobs:
           use_vertex: "true"
           github_token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
           show_full_output: true
-          claude_args: "--model claude-opus-4-5@20251101 --max-turns 200 --allowedTools Read,Write,Edit,Bash,Grep,Glob"
+          claude_args: "--model claude-opus-5-5 --max-turns 200 --allowedTools Read,Write,Edit,Bash,Grep,Glob"
           prompt: |
             # Fix INCORRECTLY_DROPPED CARTO Features
 
