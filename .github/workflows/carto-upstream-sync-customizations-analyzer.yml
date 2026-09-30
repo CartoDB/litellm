@@ -49,10 +49,10 @@ on:
 
   # Automatic trigger - runs when CI checks pass on upstream-sync branches
   workflow_run:
+    # Subset of .github/carto-sync-required-workflows.yml (enforced by check_sync_workflow_triggers.py)
     workflows:
-      - "LiteLLM Mock Tests (folder - tests/test_litellm)"
       - "CARTO - Deploy Docker Image (CI)"
-      - "LiteLLM Linting"
+      - "CARTO Feature Tests"
     types:
       - completed
     branches:

@@ -12,6 +12,7 @@ on:
     # both were removed. "CARTO Feature Tests" is CARTO's own unit-test gate
     # (carto-feature-tests.yml); listing it here is what lets the fixer react
     # to a failing test suite the way it used to react to Mock Tests.
+    # Subset of .github/carto-sync-required-workflows.yml (enforced by check_sync_workflow_triggers.py).
     workflows:
       - "CARTO - Deploy Docker Image (CI)"
       - "CARTO Feature Tests"
