@@ -578,7 +578,7 @@ jobs:
             | `Type error: Expected X arguments` | Signature changed | Update call site |
             | `'Prisma' object has no attribute` | schema.prisma outdated | `git show ORIG_HEAD:schema.prisma > schema.prisma` |
             | `SyntaxError` | Conflict markers | Search for `<<<<<<<` |
-            | `FAILED tests/...` | Test assertion | Update test expectation |
+            | `FAILED tests/...` | Upstream code for that behavior is missing | Restore upstream TAG's code; never edit, skip or deselect the test |
 
             ---
 

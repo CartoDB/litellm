@@ -773,7 +773,11 @@ jobs:
 
             **VERBATIM-FIRST RULE (do not paraphrase CARTO code).** For any file
             listed in a feature's `files:` in `.github/carto-features.yml`,
-            restore the CARTO block BYTE-IDENTICAL from carto/main:
+            restore each CARTO block BYTE-IDENTICAL from carto/main. The rule
+            covers the CARTO blocks only: the rest of the file must be upstream
+            TAG's version. Never resolve a file by taking carto/main's whole copy
+            when upstream TAG also changed it; that discards the upstream release
+            for the file, and the "CARTO Upstream Preserved Check" fails the PR:
             ```bash
             git show origin/carto/main:<file>   # source of truth for CARTO blocks
             ```
@@ -937,7 +941,7 @@ jobs:
             |---------|----------|
             | File implements a CARTO feature (check /tmp/carto_file_mapping.md) | Merge carefully - preserve feature code |
             | File is pure upstream (core lib, tests, no CARTO PRs) | Accept upstream: `git checkout --ours <file>` |
-            | File has both CARTO and upstream changes | Merge BOTH - keep CARTO + add upstream |
+            | File has both CARTO and upstream changes | Start from upstream TAG's file, then re-apply each CARTO block verbatim. Never `git checkout --theirs` it |
             | ImportError for missing function | Check if in fix loop → sync entire file from HEAD |
             | TypeScript module not found | Check if file path changed in upstream TAG |
             | File in `_experimental/out/` or `node_modules/` | Accept upstream (build artifacts) |
@@ -966,7 +970,7 @@ jobs:
             | `ImportError: cannot import name 'X'` | File outdated, missing upstream changes | `git show HEAD:<file> > <file>` |
             | `'Prisma' object has no attribute` | schema.prisma out of sync | `git checkout --ours schema.prisma` |
             | `SyntaxError` | Conflict markers left in file | Search for `<<<<<<<` |
-            | `AssertionError` in tests | Test expects old behavior | Update test expectation |
+            | `AssertionError` in an upstream test | Upstream code for that behavior is missing from the resolution | Restore upstream TAG's code; never edit or skip the test |
 
             ---
 
@@ -977,7 +981,8 @@ jobs:
             git checkout --ours path/to/file.py
             git add path/to/file.py
 
-            # Accept CARTO version (--theirs):
+            # Accept CARTO version (--theirs), ONLY for CARTO-owned files upstream did not change
+            # (CARTO workflows and docs). Never for a file both sides changed:
             git checkout --theirs path/to/file.py
             git add path/to/file.py
 
