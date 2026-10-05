@@ -705,14 +705,10 @@ class AnthropicCacheControlHook(CustomPromptManagement):
         envelope. Configured injection points are an explicit instruction and are
         applied alongside the client's marks, bounded by the provider cap.
         """
-        external_breakpoints: Final = (
-            AnthropicCacheControlHook.count_external_cache_breakpoints_on_messages_route(
-                tools, cache_control, request_kwargs
-            )
-            if on_messages_route
-            else AnthropicCacheControlHook.count_external_cache_breakpoints(tools, cache_control, request_kwargs)
-        )
-        return AnthropicCacheControlHook.count_request_cache_breakpoints(messages, system) + external_breakpoints > 0
+        return (
+            AnthropicCacheControlHook.count_request_cache_breakpoints(messages, system)
+            + AnthropicCacheControlHook.count_external_cache_breakpoints(tools, cache_control, request_kwargs)
+        ) > 0
 
     @staticmethod
     def get_default_injection_points(
