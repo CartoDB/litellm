@@ -88,6 +88,8 @@ jobs:
           with open(".github/carto-features.yml") as f:
               data = yaml.safe_load(f)
 
+          # Never select tests/test_litellm itself: that is the whole upstream suite.
+          # Top-level modules (litellm/main.py) map to their mirrored test file instead
           dirs = set()
           for feat in data.get("features", []):
               for fp in feat.get("files", []):
@@ -95,12 +97,15 @@ jobs:
                   if p.parts[0] != "litellm":
                       continue
                   rel = pathlib.PurePosixPath(*p.parts[1:]).parent
-                  while True:
+                  if rel == pathlib.PurePosixPath("."):
+                      cand = pathlib.Path("tests/test_litellm") / f"test_{p.stem}.py"
+                      if cand.is_file():
+                          dirs.add(str(cand))
+                      continue
+                  while rel != pathlib.PurePosixPath("."):
                       cand = pathlib.Path("tests/test_litellm") / rel
                       if cand.is_dir():
                           dirs.add(str(cand))
-                          break
-                      if rel == pathlib.PurePosixPath("."):
                           break
                       rel = rel.parent
 
