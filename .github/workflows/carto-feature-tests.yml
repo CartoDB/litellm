@@ -98,8 +98,8 @@ jobs:
         run: |
           # shellcheck disable=SC2086
           uv run --no-sync pytest $PYTEST_ARGS \
-            --timeout=300 \
-            --tb=short -q \
+            --timeout=300 --timeout-method=thread \
+            --tb=short -v \
             -n 2 \
             --reruns 2 \
             --reruns-delay 1 \
