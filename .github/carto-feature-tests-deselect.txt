@@ -44,3 +44,8 @@ tests/test_litellm/responses/litellm_completion_transformation/test_litellm_comp
 # CARTO's JSON repair for streamed tool arguments (carto-features.yml "JSON Repair for Streaming Tool Calls") keeps
 # the first valid JSON value, so non-object fragments joined across parallel tool calls are truncated on purpose
 tests/test_litellm/litellm_core_utils/test_streaming_chunk_builder_utils.py::test_get_combined_tool_content_joins_fragments_across_many_parallel_tool_calls
+
+# Upstream v1.105.1's realtime streaming tests hang on GitHub runners with no CARTO change involved: upstream's own
+# core-utils shard times out on them against the pure v1.105.1 tree (fork main run 38677492527). No CARTO feature
+# touches litellm_core_utils/realtime_streaming.py; it is only in scope because the whole directory is mirrored
+tests/unit/litellm_core_utils/test_realtime_streaming.py
