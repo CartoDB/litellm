@@ -95,9 +95,11 @@ jobs:
         env:
           LITELLM_LOCAL_MODEL_COST_MAP: "True"
           PYTEST_ARGS: ${{ steps.scope.outputs.args }}
+        # The hard limit sits below the job's timeout-minutes so a hang ends as a failure, the only conclusion
+        # the CI fixer reacts to, instead of a cancellation
         run: |
           # shellcheck disable=SC2086
-          uv run --no-sync pytest $PYTEST_ARGS \
+          timeout --kill-after=60s 30m uv run --no-sync pytest $PYTEST_ARGS \
             --timeout=300 --timeout-method=thread \
             --tb=short -v \
             -n 2 \
