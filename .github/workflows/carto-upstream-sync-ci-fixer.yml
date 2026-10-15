@@ -536,33 +536,13 @@ jobs:
             ```
 
             ### If CARTO Feature Tests Failed:
-            Reproduce the exact gate locally. The scope is the set of test
-            directories that mirror the files in `.github/carto-features.yml`
-            (the same derivation carto-feature-tests.yml uses), so a fix that
+            Reproduce the exact gate locally. The gate's pytest arguments come
+            from the same script carto-feature-tests.yml runs, so a fix that
             passes here passes the gate.
             ```bash
             make install-test-deps
-            # Derive the same scope the gate runs, then execute it:
-            SCOPE=$(uv run --no-sync python - <<'PY'
-            import pathlib, yaml
-            data = yaml.safe_load(open(".github/carto-features.yml"))
-            dirs = set()
-            for feat in data.get("features", []):
-                for fp in feat.get("files", []):
-                    p = pathlib.PurePosixPath(fp)
-                    if p.parts[0] != "litellm":
-                        continue
-                    rel = pathlib.PurePosixPath(*p.parts[1:]).parent
-                    while True:
-                        cand = pathlib.Path("tests/test_litellm") / rel
-                        if cand.is_dir():
-                            dirs.add(str(cand)); break
-                        if rel == pathlib.PurePosixPath("."): break
-                        rel = rel.parent
-            print(" ".join(sorted(dirs)))
-            PY
-            )
-            uv run --no-sync pytest $SCOPE -v --tb=short 2>&1 | tail -100
+            uv run --no-sync pytest $(uv run --no-sync python .github/scripts/carto_feature_test_scope.py) \
+              -v --tb=short 2>&1 | tail -100
             ```
 
             **Iterate:** Fix error → Run verification → Repeat until success.

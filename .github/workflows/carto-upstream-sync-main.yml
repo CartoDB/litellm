@@ -280,6 +280,15 @@ jobs:
             echo "[Sync] ✅ Tree-level conflicts resolved, merge completed with preserved history"
           fi
 
+          # Upstream cuts each stable tag from its own cherry-picked release branch, so -X theirs leaves
+          # non-conflicting leftovers from earlier tags behind. main must mirror the tag exactly, because the
+          # sync branch merges carto/main onto it and the CARTO delta is measured against the previous main
+          git read-tree -u --reset "${NEW_VERSION}"
+          if ! git diff --cached --quiet; then
+            echo "[Sync] Removing drift from earlier tags: $(git diff --cached --shortstat)"
+            git commit --no-edit -m "sync: align main tree with ${NEW_VERSION}"
+          fi
+
           # Push to origin/main (should always be fast-forward with proper merge)
           echo "[Sync] Pushing updated main branch to origin..."
           git push origin main
