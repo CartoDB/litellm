@@ -62,7 +62,3 @@ def test_ignores_build_artifacts(repo: Path) -> None:
     run(repo, "checkout", "-q", "main")
     upstream: Final = commit(repo, {artifact: "v2\n"}, "up")
     assert dropped_upstream_files(upstream, carto, carto) == ()
-
-
-if __name__ == "__main__":
-    sys.exit(pytest.main([__file__, "-q"]))
