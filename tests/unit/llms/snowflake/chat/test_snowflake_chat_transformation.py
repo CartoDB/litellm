@@ -308,6 +308,37 @@ class TestSnowflakeToolTransformation:
         assert "temperature" in supported_params
         assert "max_tokens" in supported_params
 
+    def test_transform_request_strips_openai_annotations_from_replayed_turn(self):
+        config = SnowflakeConfig()
+        messages = [
+            {"role": "user", "content": "What is this map about?"},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "This map shows NYC taxi demand.",
+                        "annotations": [],
+                    }
+                ],
+            },
+            {"role": "user", "content": "Can you show me the busiest area?"},
+        ]
+
+        body = config.transform_request(
+            model="snowflake/claude-opus-4-8",
+            messages=messages,
+            optional_params={},
+            litellm_params={},
+            headers={},
+        )
+
+        assistant_message = body["messages"][1]
+        assert assistant_message["role"] == "assistant"
+        assert assistant_message["content"] == [
+            {"type": "text", "text": "This map shows NYC taxi demand."}
+        ]
+
 
 class TestSnowflakeCortexClaudeFixes:
     def setup_method(self):
@@ -686,6 +717,42 @@ class TestSnowflakeCortexClaudeFixes:
         assert thinking.choices[0].delta.reasoning_content == "391"
         assert signature.choices[0].delta.thinking_blocks[0]["signature"] == "Eto"
         assert final.usage.prompt_tokens_details.cached_tokens == 1323
+
+
+class TestSnowflakeStreamingHandlerAnthropic:
+    """Regression tests for streamed tool_use parsing on the native /messages endpoint."""
+
+    def test_input_json_delta_does_not_repeat_tool_name(self):
+        handler = SnowflakeStreamingHandler(streaming_response=iter([]), sync_stream=True)
+
+        start_chunk = handler.chunk_parser(
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {
+                    "type": "tool_use",
+                    "id": "toolu_1",
+                    "name": "set_layer_style",
+                },
+            }
+        )
+        delta_chunks = [
+            handler.chunk_parser(
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "input_json_delta", "partial_json": partial},
+                }
+            )
+            for partial in ['{"col', 'or": "red"}']
+        ]
+
+        tool_calls = [chunk.choices[0].delta.tool_calls[0] for chunk in [start_chunk, *delta_chunks]]
+        accumulated_name = "".join(tc.function.name or "" for tc in tool_calls)
+        accumulated_arguments = "".join(tc.function.arguments or "" for tc in tool_calls)
+
+        assert accumulated_name == "set_layer_style"
+        assert accumulated_arguments == '{"color": "red"}'
 
 
 class TestSnowFlakeCompletion:

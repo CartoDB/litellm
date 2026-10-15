@@ -1407,6 +1407,19 @@ def test_get_combined_tool_content_joins_fragments_across_many_parallel_tool_cal
         assert tool_call.function.arguments == "".join(f"{index}.{position};" for position in range(5))
 
 
+def test_get_combined_tool_content_drops_a_duplicated_trailing_json_object():
+    processor = ChunkProcessor.__new__(ChunkProcessor)
+    chunks = [
+        _tool_call_delta_chunk({"index": 0, "id": "call_0", "type": "function", "function": {"name": "geocode"}}),
+        _tool_call_delta_chunk({"index": 0, "function": {"arguments": '{"address":"School"}'}}),
+        _tool_call_delta_chunk({"index": 0, "function": {"arguments": '{"address":"School"}'}}),
+    ]
+
+    combined = processor.get_combined_tool_content(chunks)
+
+    assert combined[0].function.arguments == '{"address":"School"}'
+
+
 def test_get_combined_tool_content_joins_many_object_shaped_argument_fragments_in_order():
     processor = ChunkProcessor.__new__(ChunkProcessor)
     first_fragments = [f"x{i}|" for i in range(300)]

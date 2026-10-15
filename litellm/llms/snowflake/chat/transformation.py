@@ -195,6 +195,65 @@ def _clean_input_schema(schema: object) -> object:
     return {key: value for key, value in schema.items() if key != "$schema"} if isinstance(schema, Mapping) else schema
 
 
+def _strip_openai_annotations(content: Any) -> Any:
+    """Remove the OpenAI-only `annotations` field from each content block."""
+    if not isinstance(content, list):
+        return content
+    return [
+        ({k: v for k, v in block.items() if k != "annotations"} if isinstance(block, dict) else block)
+        for block in content
+    ]
+
+
+def _content_to_text_blocks(content: Any) -> list[dict[str, Any]]:
+    """
+    Convert an OpenAI-style assistant `content` value into a list of Snowflake
+    `{"type": "text", "text": ...}` blocks suitable for inclusion in
+    `content_list`. Empty/whitespace-only text is dropped.
+    """
+    if not content:
+        return []
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}] if content.strip() else []
+    if isinstance(content, list):
+        blocks: list[dict[str, Any]] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") != "text":
+                continue
+            text = block.get("text") or ""
+            if isinstance(text, str) and text.strip():
+                blocks.append({"type": "text", "text": text})
+        return blocks
+    return []
+
+
+def _content_to_text_string(content: Any) -> str:
+    """
+    Flatten an OpenAI-style `content` value into a plain string.
+
+    Snowflake Cortex `inference:complete` rejects a message whose `content`
+    is an array of content blocks (e.g. `[{"type": "text", "text": "..."}]`)
+    with `390142 Incoming request does not contain a valid payload`; it
+    requires `content` to be a plain string. The OpenAI Agents SDK replays a
+    prior assistant turn with exactly that list-of-blocks shape on every
+    follow-up turn, so a plain multi-turn text conversation (no tools
+    involved) hits 390142 on the second turn. Concatenating the text blocks
+    back into a string is the form Cortex accepts. Non-text blocks are
+    ignored here — tool_use / tool_results are carried in `content_list`.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            block.get("text", "") for block in content if isinstance(block, dict) and block.get("type") == "text"
+        )
+    return ""
+
+
 class SnowflakeConfig(SnowflakeBaseConfig, OpenAIGPTConfig):
     """
     Snowflake Cortex REST API — unified provider.
@@ -235,6 +294,11 @@ class SnowflakeConfig(SnowflakeBaseConfig, OpenAIGPTConfig):
         litellm_params: dict,
         stream: bool | None = None,
     ) -> str:
+        # CARTO: skip path construction if api_base already contains the full endpoint
+        # (CARTO platform may pass the full Cortex URL as api_base)
+        if api_base and ("cortex/v1/messages" in api_base or "cortex/v1/chat/completions" in api_base):
+            return api_base
+
         api_base = self._get_api_base(api_base, optional_params)
         if _is_claude_model(model):
             return f"{api_base}/cortex/v1/messages"
@@ -367,7 +431,12 @@ class SnowflakeConfig(SnowflakeBaseConfig, OpenAIGPTConfig):
                     )
                     conversation.append({"role": "assistant", "content": thinking_content})
                 else:
-                    conversation.append({"role": "assistant", "content": content})
+                    conversation.append(
+                        {
+                            "role": "assistant",
+                            "content": _strip_openai_annotations(content),
+                        }
+                    )
             elif role == "tool":
                 tool_call_id_value = (
                     msg.get("tool_call_id", "") if isinstance(msg, dict) else getattr(msg, "tool_call_id", "")
@@ -388,7 +457,8 @@ class SnowflakeConfig(SnowflakeBaseConfig, OpenAIGPTConfig):
                 conversation.append(
                     {
                         "role": role,
-                        "content": _convert_image_url_blocks_to_anthropic(content),
+                        # CARTO PATCH: upstream now converts image_url blocks here; strip annotations first
+                        "content": _convert_image_url_blocks_to_anthropic(_strip_openai_annotations(content)),
                     }
                 )
 
@@ -425,6 +495,24 @@ class SnowflakeConfig(SnowflakeBaseConfig, OpenAIGPTConfig):
         inlined_messages: Final = await async_inline_remote_media(messages) if _is_claude_model(model) else messages
         return self.transform_request(model, inlined_messages, optional_params, litellm_params, headers)
 
+    def _flatten_messages_content(self, messages: list[AllMessageValues]) -> list[dict[str, Any]]:
+        """
+        Flatten array-form content in messages to plain strings.
+
+        Snowflake Cortex /chat/completions rejects messages whose `content` is
+        an array of content blocks with error 390142. The OpenAI Agents SDK
+        replays prior assistant turns as array-form content, so plain multi-turn
+        conversations fail on the second turn. Flatten to strings here.
+        """
+        transformed: list[dict[str, Any]] = []
+        for msg in messages:
+            msg_dict = dict(msg) if not isinstance(msg, dict) else msg.copy()
+            content = msg_dict.get("content")
+            if isinstance(content, list):
+                msg_dict["content"] = _content_to_text_string(content)
+            transformed.append(msg_dict)
+        return transformed
+
     def _transform_request_openai(
         self,
         model: str,
@@ -438,9 +526,11 @@ class SnowflakeConfig(SnowflakeBaseConfig, OpenAIGPTConfig):
         max_completion_tokens: Final = optional_params.pop("max_completion_tokens", None)
         resolved_max: Final = max_completion_tokens or max_tokens
 
+        transformed_messages = self._flatten_messages_content(messages)
+
         body: Final[dict] = {
             "model": model.removeprefix("snowflake/"),
-            "messages": messages,
+            "messages": transformed_messages,
             "stream": stream,
             **optional_params,
             **extra_body,

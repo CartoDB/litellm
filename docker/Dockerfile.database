@@ -11,6 +11,9 @@ ARG UI_BUILD_IMAGE=node:24.19-alpine3.24@sha256:d32cdf619f63fe0471182d08996dd516
 # Checksum from https://www.pgbouncer.org/downloads/ (the Wolfi repo only carries 1.24.x)
 ARG PGBOUNCER_VERSION=1.26.0
 ARG PGBOUNCER_SHA256=afd25dd61ee6775d37b40629b87ce08736b3e6955f3057bb212e410fbf21c71d
+# Rust builder image for maturin. Pinned to the build platform so the native
+# Rust compilation happens once, not once per target arch under QEMU.
+ARG RUST_BUILD_IMAGE=rust:bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
 
 FROM $UV_IMAGE AS uvbin
 
@@ -26,6 +29,23 @@ RUN curl -fsSL -o pgbouncer.tar.gz "https://www.pgbouncer.org/downloads/files/${
     ./configure --prefix=/usr/local --with-openssl=/usr && \
     make -j"$(nproc)" pgbouncer && \
     install -m 0755 pgbouncer /usr/local/bin/pgbouncer
+
+# Rust wheel builder. Compiles the litellm Rust extension in a glibc-compatible
+# environment (wolfi-base's rust package requires GLIBC_2.44, which the pinned
+# base image doesn't provide). Pinned to the target platform so the wheel
+# matches the final runtime architecture.
+FROM $RUST_BUILD_IMAGE AS rust-builder
+ARG UV_IMAGE
+COPY --from=uvbin /uv /usr/local/bin/uv
+WORKDIR /build
+COPY pyproject.toml uv.lock README.md ./
+COPY litellm-rust/ litellm-rust/
+COPY litellm/ litellm/
+COPY enterprise/pyproject.toml enterprise/
+COPY litellm-proxy-extras/pyproject.toml litellm-proxy-extras/
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv build --wheel --out-dir /wheels --python 3.13 && \
+    ls -la /wheels/
 
 # Admin UI builder. Pinned to the build platform so the architecture-independent
 # Next.js static export compiles once natively even in a multi-arch build,
@@ -63,6 +83,9 @@ RUN apk add --no-cache \
     npm \
     libsndfile
 
+# Copy pre-built litellm wheel from the Rust builder stage
+COPY --from=rust-builder /wheels/*.whl /tmp/wheels/
+
 ENV UV_PROJECT_ENVIRONMENT=/app/.venv \
     UV_LINK_MODE=copy \
     UV_PYTHON_DOWNLOADS=0 \
@@ -95,7 +118,8 @@ COPY --from=ui-builder /ui/out/. litellm/proxy/_experimental/out/
 # Build Admin UI before final sync (applies the enterprise color override when present)
 RUN sed -i 's/\r$//' docker/build_admin_ui.sh && chmod +x docker/build_admin_ui.sh && ./docker/build_admin_ui.sh
 
-# Install project and workspace packages (fast - deps already cached)
+# Install workspace packages (enterprise, proxy-extras). Skip litellm to avoid
+# rebuilding the Rust extension - we'll install the pre-built wheel after.
 RUN uv sync --frozen --no-default-groups --no-editable \
     --extra proxy \
     --extra proxy-runtime \
@@ -103,7 +127,12 @@ RUN uv sync --frozen --no-default-groups --no-editable \
     --extra semantic-router \
     --extra saml \
     --extra bedrock-realtime \
-    --python python3.13
+    --python python3.13 \
+    --no-install-package litellm
+
+# Install the pre-built litellm wheel (built with Rust in rust-builder stage).
+# Must be AFTER uv sync because --no-install-package removes existing packages.
+RUN uv pip install --no-deps /tmp/wheels/*.whl
 
 RUN HOME=/opt/prisma XDG_CACHE_HOME=/opt/prisma/.cache PRISMA_BINARY_CACHE_DIR=/opt/prisma/binaries \
     npm_config_cache=/root/.npm \

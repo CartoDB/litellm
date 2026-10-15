@@ -4,6 +4,10 @@ from litellm.litellm_core_utils.prompt_templates.common_utils import (
     get_last_user_message,
 )
 
+from litellm.litellm_core_utils.prompt_templates.common_utils import (
+    get_last_user_message,
+)
+
 if TYPE_CHECKING:
     from litellm.types.llms.openai import AllMessageValues
 
