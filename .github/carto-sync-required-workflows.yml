@@ -1,0 +1,12 @@
+# Workflows an upstream-sync PR must pass before the ready checker adds sync-ready.
+# Failures in any other workflow (usually ones upstream adds with a sync, which need upstream's
+# own infrastructure) raise a Slack alert instead of silently blocking the release chain.
+#
+# GitHub cannot read workflow_run triggers from a file, so the ready checker, CI fixer and
+# customizations analyzer repeat these names in their triggers; check_sync_workflow_triggers.py
+# fails CI when those lists drift from this one
+required:
+  - "CARTO - Deploy Docker Image (CI)"
+  - "CARTO Feature Tests"
+  - "CARTO Features Manifest Check"
+  - "CARTO Upstream Preserved Check"

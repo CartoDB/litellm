@@ -14,9 +14,12 @@ on:
     # the tests, not just the Docker build. workflow_run only re-invokes this
     # workflow when a LISTED workflow completes, so an unlisted test gate that
     # finishes after the Docker build would never get sync-ready applied.
+    # Must equal .github/carto-sync-required-workflows.yml (enforced by check_sync_workflow_triggers.py).
     workflows:
       - "CARTO - Deploy Docker Image (CI)"
       - "CARTO Feature Tests"
+      - "CARTO Features Manifest Check"
+      - "CARTO Upstream Preserved Check"
     types:
       - completed
     branches:
@@ -38,6 +41,13 @@ jobs:
     if: github.event.workflow_run.conclusion == 'success'
 
     steps:
+      # workflow_run executes from the default branch, so the required list cannot be altered by the sync PR
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/carto-sync-required-workflows.yml
+          sparse-checkout-cone-mode: false
+
       - name: Check PR readiness and add label
         id: check-and-label
         env:
@@ -97,29 +107,49 @@ jobs:
             exit 0
           fi
 
-          # Check 4: All required checks must pass (no FAILURE or PENDING)
-          echo "[Ready Checker] Checking all CI status..."
+          # Check 4: every required workflow ran and passed. Failures elsewhere cannot be fixed
+          # by the CI fixer (it only reacts to required workflows), so they alert instead of blocking
+          echo "[Ready Checker] Checking CI status against .github/carto-sync-required-workflows.yml..."
 
+          REQUIRED_JSON=$(yq -o=json '.required' .github/carto-sync-required-workflows.yml)
           CHECKS_JSON=$(gh pr checks ${PR_NUMBER} \
             --repo ${{ github.repository }} \
-            --json name,state)
+            --json name,workflow,bucket)
 
-          FAILED_COUNT=$(echo "${CHECKS_JSON}" | jq '[.[] | select(.state == "FAILURE")] | length')
-          PENDING_COUNT=$(echo "${CHECKS_JSON}" | jq '[.[] | select(.state == "PENDING")] | length')
-          SUCCESS_COUNT=$(echo "${CHECKS_JSON}" | jq '[.[] | select(.state == "SUCCESS")] | length')
+          UNGATED_FAILED=$(jq -r --argjson req "${REQUIRED_JSON}" \
+            '[.[] | select(.bucket == "fail" or .bucket == "cancel") | select(.workflow as $w | $req | index($w) | not) | .workflow] | unique | join(", ")' \
+            <<< "${CHECKS_JSON}")
+          echo "ungated-failed=${UNGATED_FAILED}" >> $GITHUB_OUTPUT
+          echo "pr-number=${PR_NUMBER}" >> $GITHUB_OUTPUT
+          echo "pr-url=${PR_URL}" >> $GITHUB_OUTPUT
+          echo "silent-mode=${HAS_SILENT_SYNC}" >> $GITHUB_OUTPUT
+          if [[ -n "${UNGATED_FAILED}" ]]; then
+            echo "::warning title=Ungated failures::${UNGATED_FAILED} failed but is not required for sync-ready"
+          fi
 
-          echo "[Ready Checker] Checks: ${SUCCESS_COUNT} success, ${PENDING_COUNT} pending, ${FAILED_COUNT} failed"
+          MISSING=$(jq -r -n --argjson req "${REQUIRED_JSON}" --argjson checks "${CHECKS_JSON}" \
+            '$req - [$checks[].workflow] | join(", ")')
+          FAILED=$(jq -r --argjson req "${REQUIRED_JSON}" \
+            '[.[] | select(.workflow as $w | $req | index($w)) | select(.bucket == "fail" or .bucket == "cancel") | "\(.workflow) / \(.name)"] | join(", ")' \
+            <<< "${CHECKS_JSON}")
+          PENDING=$(jq -r --argjson req "${REQUIRED_JSON}" \
+            '[.[] | select(.workflow as $w | $req | index($w)) | select(.bucket == "pending") | "\(.workflow) / \(.name)"] | join(", ")' \
+            <<< "${CHECKS_JSON}")
 
-          if [[ "${FAILED_COUNT}" -gt 0 ]]; then
-            echo "[Ready Checker] ❌ ${FAILED_COUNT} checks failed - waiting for CI fixer"
-            echo "${CHECKS_JSON}" | jq -r '.[] | select(.state == "FAILURE") | "  - \(.name): FAILED"'
+          if [[ -n "${FAILED}" ]]; then
+            echo "[Ready Checker] ❌ Required checks failed - waiting for CI fixer: ${FAILED}"
             echo "::endgroup::"
             exit 0
           fi
 
-          if [[ "${PENDING_COUNT}" -gt 0 ]]; then
-            echo "[Ready Checker] ⏳ ${PENDING_COUNT} checks still pending - waiting..."
-            echo "${CHECKS_JSON}" | jq -r '.[] | select(.state == "PENDING") | "  - \(.name): PENDING"'
+          if [[ -n "${PENDING}" ]]; then
+            echo "[Ready Checker] ⏳ Required checks still pending: ${PENDING}"
+            echo "::endgroup::"
+            exit 0
+          fi
+
+          if [[ -n "${MISSING}" ]]; then
+            echo "[Ready Checker] ⏳ Required workflows have not run yet: ${MISSING}"
             echo "::endgroup::"
             exit 0
           fi
@@ -136,10 +166,7 @@ jobs:
 
           # Export for Slack notification
           echo "pr-ready=true" >> $GITHUB_OUTPUT
-          echo "pr-number=${PR_NUMBER}" >> $GITHUB_OUTPUT
-          echo "pr-url=${PR_URL}" >> $GITHUB_OUTPUT
           echo "pr-title=${PR_TITLE}" >> $GITHUB_OUTPUT
-          echo "silent-mode=${HAS_SILENT_SYNC}" >> $GITHUB_OUTPUT
 
           if [[ "${HAS_SILENT_SYNC}" == "true" ]]; then
             echo "[Ready Checker] 🔇 Silent mode enabled - will skip Slack notification"
@@ -150,6 +177,40 @@ jobs:
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
 
           echo "::endgroup::"
+
+      - name: Alert Slack - ungated failures need a human
+        if: steps.check-and-label.outputs.ungated-failed != '' && steps.check-and-label.outputs.silent-mode != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          SLACK_KEY: ${{ secrets.SLACK_KEY }}
+          PR_NUMBER: ${{ steps.check-and-label.outputs.pr-number }}
+          PR_URL: ${{ steps.check-and-label.outputs.pr-url }}
+          UNGATED_FAILED: ${{ steps.check-and-label.outputs.ungated-failed }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -eu
+          MARKER="CARTO_UNGATED_ALERT:${HEAD_SHA}"
+          if gh pr view "${PR_NUMBER}" --repo ${{ github.repository }} --json comments --jq '.comments[].body' | grep -qF "${MARKER}"; then
+            echo "[Ready Checker] Already alerted for ${HEAD_SHA}"
+            exit 0
+          fi
+
+          if [[ -z "${SLACK_KEY}" ]]; then
+            echo "::warning::SLACK_KEY not configured - skipping ungated failure alert"
+            exit 0
+          fi
+
+          jq -n --arg channel "${SLACK_CHANNEL_LITELLM}" --arg url "${PR_URL}" --arg failed "${UNGATED_FAILED}" \
+            '{channel: $channel, unfurl_links: false,
+              text: ":warning: LiteLLM upstream sync <\($url)|PR> has failing workflows outside the required list: \($failed). The CI fixer does not handle them, so a human needs to disable, fix or accept them"}' \
+            > /tmp/ungated_payload.json
+          curl -sf -X POST https://slack.com/api/chat.postMessage \
+            -H "Authorization: Bearer ${SLACK_KEY}" \
+            -H "Content-Type: application/json" \
+            -d @/tmp/ungated_payload.json > /dev/null
+
+          gh pr comment "${PR_NUMBER}" --repo ${{ github.repository }} \
+            --body "Failing workflows outside \`.github/carto-sync-required-workflows.yml\`: ${UNGATED_FAILED}. They do not block sync-ready and the CI fixer ignores them. <!-- ${MARKER} -->"
 
       - name: Notify Slack - Tests Passed
         if: steps.check-and-label.outputs.pr-ready == 'true' && steps.check-and-label.outputs.silent-mode != 'true'
