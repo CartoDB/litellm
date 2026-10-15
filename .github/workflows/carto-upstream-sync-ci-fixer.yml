@@ -273,7 +273,7 @@ jobs:
 
           **Status:** ⏳ In progress...
 
-          Claude Code (Opus 4.5) is analyzing and fixing CI failures.
+          Claude Code (Opus 5.5) is analyzing and fixing CI failures.
 
           **Failed Checks:**
           ${FAILED_CHECKS}

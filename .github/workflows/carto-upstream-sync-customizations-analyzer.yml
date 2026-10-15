@@ -801,7 +801,7 @@ jobs:
           **Analyzed:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")
           **Workflow Run:** [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
           **Analysis Artifacts:** [Download JSON/MD](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}#artifacts)
-          **Method:** Claude Code (Opus 4.5) post-resolution semantic analysis
+          **Method:** Claude Code (Opus 5.5) post-resolution semantic analysis
 
           <!-- CARTO_FEATURES_END -->
           METADATA_EOF
