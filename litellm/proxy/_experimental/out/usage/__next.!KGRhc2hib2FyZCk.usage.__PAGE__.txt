@@ -33,9 +33,9 @@ a:X
 1b:true
 a:300
 a:C
-18:0
+1a:0
 e:"$undefined"
 11:"$undefined"
-17:"$undefined"
+19:"$undefined"
 9:"$undefined"
-15:"$undefined"
+17:"$undefined"

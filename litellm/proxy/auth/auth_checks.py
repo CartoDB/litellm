@@ -1171,15 +1171,10 @@ async def common_checks(
                 raise litellm.BudgetExceededError(
                     current_cost=user_spend,
                     max_budget=user_budget,
+                    message=f"ExceededBudget: User={user_object.user_id} over budget. Spend={user_spend}, Budget={user_budget}",
+                    entity_type=Litellm_EntityType.USER.value,
+                    entity_id=user_object.user_id,
                 )
-                if math.isfinite(user_budget) and user_spend >= user_budget:
-                    raise litellm.BudgetExceededError(
-                        current_cost=user_spend,
-                        max_budget=user_budget,
-                        message=f"ExceededBudget: User={user_object.user_id} over budget. Spend={user_spend}, Budget={user_budget}",
-                        entity_type=Litellm_EntityType.USER.value,
-                        entity_id=user_object.user_id,
-                    )
 
         # Each scope reads a distinct counter key with no cross-scope ordering
         # dependency, so the per-scope Redis-first reads run concurrently instead

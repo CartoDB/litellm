@@ -3042,12 +3042,6 @@ async def _read_spend_counter_estimate(counter_key: str, fallback_spend: float) 
     return fallback_spend, False
 
 
-@dataclass(frozen=True, slots=True)
-class _PendingSpendIncrement:
-    counter_key: str
-    increment: float
-
-
 async def increment_spend_counters(
     token: str | None,
     team_id: str | None,

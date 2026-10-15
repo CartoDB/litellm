@@ -2646,7 +2646,7 @@ async def _prepare_vertex_auth_headers(
             # use their project/location values if available
             if vertex_credentials.vertex_project is not None:
                 vertex_project = vertex_credentials.vertex_project
-            if vertex_location is None:
+            if vertex_credentials.vertex_location is not None:
                 vertex_location = vertex_credentials.vertex_location
             vertex_credentials_str = vertex_credentials.vertex_credentials
         else:

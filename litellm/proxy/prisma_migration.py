@@ -14,7 +14,6 @@ sys.path.insert(0, os.path.abspath("./"))
 
 from typing import Final
 
-import click
 from litellm_proxy_extras.prisma_toolchain import resolve_prisma_argv
 
 from litellm._logging import verbose_proxy_logger

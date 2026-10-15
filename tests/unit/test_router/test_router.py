@@ -21,8 +21,6 @@ import respx
 from fastapi import HTTPException
 
 import litellm
-from litellm.caching.caching import DualCache
-from litellm.caching.redis_cache import _redis_circuit_breaker_guard
 from litellm import Router
 from litellm.caching.caching import DualCache
 from litellm.caching.redis_cache import _redis_circuit_breaker_guard

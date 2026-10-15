@@ -1014,6 +1014,7 @@ async def google_login(
         general_settings,
         premium_user,
         prisma_client,
+        user_api_key_cache,
         user_custom_ui_sso_sign_in_handler,
     )
 

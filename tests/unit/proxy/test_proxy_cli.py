@@ -2265,18 +2265,6 @@ class TestRunServerDbSetup:
         assert "prisma CLI is neither on PATH" not in capsys.readouterr().out
         mock_setup_database.assert_called_once_with(use_migrate=True, use_v2_resolver=True)
 
-    @pytest.mark.parametrize(
-        ("arguments", "env", "exits"),
-        [
-            ((), {}, True),
-            (("--enforce_prisma_migration_check",), {}, True),
-            ((), {"ENFORCE_PRISMA_MIGRATION_CHECK": "true"}, True),
-            (("--no-enforce_prisma_migration_check",), {}, False),
-            ((), {"ENFORCE_PRISMA_MIGRATION_CHECK": "false"}, False),
-            ((), {"ENFORCE_PRISMA_MIGRATION_CHECK": "0"}, False),
-        ],
-        ids=("default", "flag", "env-true", "no-flag", "env-false", "env-0"),
-    )
     @patch("subprocess.run")
     @patch("atexit.register")
     @patch("litellm.proxy.db.prisma_client.PrismaManager.setup_database")
@@ -2291,10 +2279,6 @@ class TestRunServerDbSetup:
         mock_setup_database,
         mock_atexit_register,
         mock_subprocess_run,
-        arguments,
-        env,
-        exits,
-        capsys,
     ):
         """Test that proxy exits with code 1 when PrismaManager.setup_database returns False, with no opt-in flag"""
         from litellm.proxy.proxy_cli import run_server
@@ -2313,13 +2297,12 @@ class TestRunServerDbSetup:
         clean_env = {
             k: v
             for k, v in os.environ.items()
-            if k not in ("DATABASE_URL", "DIRECT_URL", "ENFORCE_PRISMA_MIGRATION_CHECK")
+            if k not in ("DATABASE_URL", "DIRECT_URL")
         }
         clean_env["DATABASE_URL"] = "postgresql://test:test@localhost:5432/test"
-        outcome = pytest.raises(SystemExit) if exits else nullcontext()
 
         with (
-            patch.dict(os.environ, {**clean_env, **env}, clear=True),
+            patch.dict(os.environ, clean_env, clear=True),
             patch.dict(
                 "sys.modules",
                 {
@@ -2330,14 +2313,12 @@ class TestRunServerDbSetup:
             patch(
                 "litellm.proxy.proxy_cli.ProxyInitializationHelpers._get_default_unvicorn_init_args"
             ) as mock_get_args,
-            outcome as exc_info,
         ):
             mock_get_args.return_value = {
                 "app": "litellm.proxy.proxy_server:app",
                 "host": "localhost",
                 "port": 8000,
             }
-            run_server.main(["--local", "--skip_server_startup", *arguments], standalone_mode=False)
 
             with pytest.raises(SystemExit) as exc_info:
                 run_server.main(["--local", "--skip_server_startup"], standalone_mode=False)

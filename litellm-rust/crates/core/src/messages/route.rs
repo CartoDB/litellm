@@ -16,11 +16,6 @@ pub struct MessagesStreamHead {
     pub headers: Vec<(String, String)>,
 }
 
-/// The upstream response as the caller sees it at stream hand-off, before any chunk.
-pub struct MessagesStreamHead {
-    pub headers: Vec<(String, String)>,
-}
-
 pub struct Messages;
 
 impl Protocol for Messages {

@@ -21,12 +21,6 @@ pub(super) struct ResolvedProvider {
     pub(super) config: &'static dyn BaseConfig,
 }
 
-pub(super) struct ResolvedProvider {
-    pub(super) model: String,
-    pub(super) custom_llm_provider: String,
-    pub(super) config: &'static dyn BaseConfig,
-}
-
 pub(super) fn resolve_provider_config<'a>(
     model: &'a str,
     custom_llm_provider: Option<&'a str>,
@@ -154,20 +148,6 @@ mod tests {
             resolve_request(request)?,
             std::sync::Arc::new(|_: &str| None),
         )
-    }
-
-    /// The headers as they go on the wire, credential applied.
-    fn wire_headers(prepared: &ProviderChatCompletionsRequest) -> Vec<(String, String)> {
-        tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap()
-            .block_on(resolve_auth(
-                &litellm_auth::AuthServices::default(),
-                prepared.environment.clone(),
-                &|_| None,
-            ))
-            .unwrap()
-            .headers
     }
 
     /// The headers as they go on the wire, credential applied.

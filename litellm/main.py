@@ -729,15 +729,6 @@ async def acompletion(
                 loop=loop
             )  # sets the logging event loop if the user does sync streaming (e.g. on proxy for sagemaker calls)
         return response
-    except asyncio.TimeoutError:
-        custom_llm_provider = custom_llm_provider or "openai"
-        from litellm.exceptions import Timeout
-
-        raise Timeout(
-            message=f"Request timed out after {timeout} seconds",
-            model=model,
-            llm_provider=custom_llm_provider,
-        )
     except Exception as e:
         custom_llm_provider = custom_llm_provider or "openai"
         raise exception_type(
