@@ -7,11 +7,12 @@ name: CARTO Feature Tests
 # PR #121 sync ship a broken handler->iterator wiring that only surfaced in
 # cloud-native integration tests, 3 repos downstream.
 #
-# The test scope is derived from .github/carto-features.yml: each feature
-# file's mirrored directory under tests/test_litellm/ (walking up to the
-# nearest existing dir). Directory-level mirroring is deliberate - it pulls in
-# tests for auto-merged sibling files (e.g. handler.py) whose wiring can break
-# when a conflicted neighbor is resolved against them.
+# The test scope comes from .github/scripts/carto_feature_test_scope.py: each
+# feature file's mirrored directory under the upstream unit-test root (walking
+# up to the nearest existing dir). Directory-level mirroring is deliberate - it
+# pulls in tests for auto-merged sibling files (e.g. handler.py) whose wiring
+# can break when a conflicted neighbor is resolved against them. The CI fixer
+# and resolver run the same script, so their local reproduction matches this gate.
 #
 # The ready-checker requires every check on an upstream-sync PR to pass before
 # adding sync-ready, so a failure here also blocks the automated release chain.
@@ -28,6 +29,7 @@ on:
       - "uv.lock"
       - ".github/carto-features.yml"
       - ".github/carto-feature-tests-deselect.txt"
+      - ".github/scripts/carto_feature_test_scope.py"
       - ".github/workflows/carto-feature-tests.yml"
 
 permissions:
@@ -76,49 +78,15 @@ jobs:
           uv run --no-sync python -c "import litellm" \
             || (echo "::error::'import litellm' failed - broken imports on this branch" && exit 1)
 
+      # uv venv python: PyYAML is a litellm dependency; the runner's bare python3 lacks it
       - name: Derive test scope from CARTO features manifest
         id: scope
         run: |
           set -eu
-          # uv venv python: PyYAML is a litellm dependency; the runner's bare python3 lacks it
-          PATHS=$(uv run --no-sync python - <<'EOF'
-          import pathlib
-          import yaml
-
-          with open(".github/carto-features.yml") as f:
-              data = yaml.safe_load(f)
-
-          # Never select tests/test_litellm itself: that is the whole upstream suite.
-          # Top-level modules (litellm/main.py) map to their mirrored test file instead
-          dirs = set()
-          for feat in data.get("features", []):
-              for fp in feat.get("files", []):
-                  p = pathlib.PurePosixPath(fp)
-                  if p.parts[0] != "litellm":
-                      continue
-                  rel = pathlib.PurePosixPath(*p.parts[1:]).parent
-                  if rel == pathlib.PurePosixPath("."):
-                      cand = pathlib.Path("tests/test_litellm") / f"test_{p.stem}.py"
-                      if cand.is_file():
-                          dirs.add(str(cand))
-                      continue
-                  while rel != pathlib.PurePosixPath("."):
-                      cand = pathlib.Path("tests/test_litellm") / rel
-                      if cand.is_dir():
-                          dirs.add(str(cand))
-                          break
-                      rel = rel.parent
-
-          print(" ".join(sorted(dirs)))
-          EOF
-          )
-          if [ -z "$PATHS" ]; then
-            echo "::error::No test directories derived from .github/carto-features.yml"
-            exit 1
-          fi
-          echo "Derived test scope:"
-          echo "$PATHS" | tr ' ' '\n'
-          echo "paths=$PATHS" >> $GITHUB_OUTPUT
+          ARGS=$(uv run --no-sync python .github/scripts/carto_feature_test_scope.py)
+          echo "Derived pytest arguments:"
+          echo "$ARGS" | tr ' ' '\n'
+          echo "args=$ARGS" >> "$GITHUB_OUTPUT"
 
       # Deselections live in a CARTO-owned file because tests/ is replaced by upstream on every sync.
       # The local cost map pins tests to this branch's pricing data; the default remote map tracks upstream main,
@@ -126,10 +94,10 @@ jobs:
       - name: Run CARTO feature tests
         env:
           LITELLM_LOCAL_MODEL_COST_MAP: "True"
+          PYTEST_ARGS: ${{ steps.scope.outputs.args }}
         run: |
-          mapfile -t DESELECT < <(grep -vE '^[[:space:]]*(#|$)' .github/carto-feature-tests-deselect.txt | sed 's/^/--deselect=/')
-          uv run --no-sync pytest ${{ steps.scope.outputs.paths }} \
-            "${DESELECT[@]}" \
+          # shellcheck disable=SC2086
+          uv run --no-sync pytest $PYTEST_ARGS \
             --tb=short -q \
             -n 2 \
             --reruns 2 \

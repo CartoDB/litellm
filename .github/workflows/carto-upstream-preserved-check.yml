@@ -56,5 +56,8 @@ jobs:
       - name: Upstream preserved check tests
         run: python -m pytest .github/scripts/test_check_upstream_preserved.py -q -p no:cacheprovider --noconftest
 
+      - name: CARTO feature test scope tests
+        run: python -m pytest .github/scripts/test_carto_feature_test_scope.py -q -p no:cacheprovider --noconftest
+
       - name: Sync workflow triggers match the required list
         run: python .github/scripts/check_sync_workflow_triggers.py

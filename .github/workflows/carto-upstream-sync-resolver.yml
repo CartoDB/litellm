@@ -896,10 +896,15 @@ jobs:
             resolution must keep them green. If a test environment is available,
             run them before completing the merge:
             ```bash
+            ROOT=tests/test_litellm; [ -d tests/unit ] && ROOT=tests/unit
             uv run --no-sync pytest \
-              tests/test_litellm/responses/litellm_completion_transformation/test_session_handler.py \
-              tests/test_litellm/responses/litellm_completion_transformation/test_tool_call_streaming_transformation.py \
+              "$ROOT/responses/litellm_completion_transformation/test_session_handler.py" \
+              "$ROOT/responses/litellm_completion_transformation/test_tool_call_streaming_transformation.py" \
               -q 2>&1 | tail -20
+            ```
+            Then run the full gate exactly as CI does:
+            ```bash
+            uv run --no-sync pytest $(uv run --no-sync python .github/scripts/carto_feature_test_scope.py) -q 2>&1 | tail -30
             ```
             They pin: the streaming iterator's `litellm_completion_request`
             wiring, the Redis-first session read, and the store-key ==
