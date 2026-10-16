@@ -34,7 +34,10 @@ def test_leaves_github_managed_dynamic_workflows_alone() -> None:
 
 
 def test_carto_prefix_must_be_the_file_name_not_a_substring() -> None:
-    assert disabled(Workflow(1, ".github/workflows/not-carto-ci.yml", "active")) == [".github/workflows/not-carto-ci.yml"]
+    assert disabled(
+        Workflow(1, ".github/workflows/not-carto-ci.yml", "active"),
+        Workflow(2, ".github/workflows/cartography.yml", "active"),
+    ) == [".github/workflows/cartography.yml", ".github/workflows/not-carto-ci.yml"]
 
 
 def test_every_allowlisted_workflow_exists() -> None:
