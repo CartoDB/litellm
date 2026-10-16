@@ -15,6 +15,7 @@ Redis.
 """
 
 import asyncio
+import itertools
 from datetime import datetime, timedelta
 from typing import Any, Dict
 
@@ -700,12 +701,7 @@ async def test_contentless_request_reserves_minimum(rate_limiter):
 
 
 @pytest.mark.asyncio
-async def test_atomic_keys_share_hash_tag_per_descriptor(rate_limiter):
-    """
-    Cluster safety: every key in a single descriptor's Lua payload must
-    share a `{key:value}` hash tag so the call lands on a single Redis
-    Cluster slot. Otherwise the Lua script raises CROSSSLOT in cluster mode.
-    """
+async def test_atomic_keys_share_one_hash_tag_across_descriptors(rate_limiter):
     handler, _cache = rate_limiter
 
     descriptors = [
@@ -726,21 +722,13 @@ async def test_atomic_keys_share_hash_tag_per_descriptor(rate_limiter):
     ]
     increments = [{"requests": 1, "tokens": 10}, {"tokens": 10}]
 
-    for descriptor, inc in zip(descriptors, increments):
-        keys, _args, _meta = handler._build_descriptor_atomic_payload(
-            descriptor=descriptor,
-            increment_amounts=inc,
-        )
-        # All keys in a descriptor's payload must share the same {tag}
-        # — that's the prefix between the first '{' and '}'.
-        tags = {k[: k.index("}") + 1] for k in keys}
-        assert len(tags) == 1, (
-            f"Descriptor {descriptor['key']}:{descriptor['value']} produced "
-            f"keys spanning multiple hash tags: {tags}. Redis Cluster would "
-            f"reject this Lua call with CROSSSLOT."
-        )
-        expected_tag = f"{{{descriptor['key']}:{descriptor['value']}}}"
-        assert tags == {expected_tag}, f"Expected hash tag {expected_tag}, got {tags}"
+    keys = itertools.chain.from_iterable(
+        handler._build_descriptor_atomic_payload(descriptor=descriptor, increment_amounts=inc)[0]
+        for descriptor, inc in zip(descriptors, increments)
+    )
+
+    tags = {key[: key.index("}") + 1] for key in keys}
+    assert len(tags) == 1, f"keys span hash tags {tags}; a plain client on a cluster-mode server raises CROSSSLOT"
 
 
 @pytest.mark.asyncio

@@ -189,7 +189,7 @@ def test_tag_object_tpm_limit_rejects_the_next_request_once_tokens_are_charged(g
 
         with Redis(host=os.environ["REDIS_HOST"], port=int(os.environ["REDIS_PORT"])) as cache:
             charged: Final = eventually(
-                lambda: int(cache.get(f"{{tag:{tag}}}:tokens") or 0),
+                lambda: int(cache.get(f"{{litellm-rl}}tag:{tag}:tokens") or 0),
                 lambda tokens: tokens >= 40,
                 seconds=70,
             )

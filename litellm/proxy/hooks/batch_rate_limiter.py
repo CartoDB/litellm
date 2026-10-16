@@ -794,7 +794,9 @@ class _PROXY_BatchRateLimiter(CustomLogger):
         try:
             window_start: Final = _WINDOW_START_ADAPTER.validate_python(
                 await self.parallel_request_limiter.internal_usage_cache.async_get_cache(
-                    key=f"{{{descriptor_key}:{status.get('descriptor_value') or ''}}}:window",
+                    key=self.parallel_request_limiter.create_window_key(
+                        descriptor_key, status.get("descriptor_value") or ""
+                    ),
                     litellm_parent_otel_span=parent_otel_span,
                 ),
                 strict=True,
@@ -832,7 +834,7 @@ class _PROXY_BatchRateLimiter(CustomLogger):
                 key=counter_key,
                 increment_value=-tokens,
                 ttl=BATCH_TPD_WINDOW_SECONDS,
-                window_key=f"{{{descriptor['key']}:{descriptor['value']}}}:window",
+                window_key=self.parallel_request_limiter.create_window_key(descriptor["key"], descriptor["value"]),
                 expected_window_start=window_start,
                 reservation_backend=backend,
             )

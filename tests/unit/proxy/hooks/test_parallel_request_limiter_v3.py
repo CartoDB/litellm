@@ -262,8 +262,8 @@ async def test_rate_limiter_script_return_values_v3(monkeypatch, time_controller
     )
 
     # Verify both counter and window values are stored in cache
-    window_key = f"{{api_key:{_api_key}}}:window"
-    counter_key = f"{{api_key:{_api_key}}}:requests"
+    window_key = f"{{litellm-rl}}api_key:{_api_key}:window"
+    counter_key = f"{{litellm-rl}}api_key:{_api_key}:requests"
 
     window_value = await local_cache.async_get_cache(key=window_key)
     counter_value = await local_cache.async_get_cache(key=counter_key)
@@ -689,7 +689,7 @@ async def test_async_log_failure_event_v3():
     parallel_request_handler = _PROXY_MaxParallelRequestsHandler(
         internal_usage_cache=InternalUsageCache(local_cache)
     )
-    counter_key = f"{{api_key:{_api_key}}}:max_parallel_requests"
+    counter_key = f"{{litellm-rl}}api_key:{_api_key}:max_parallel_requests"
 
     await _seed_max_parallel_requests_slots(local_cache, counter_key, ["slot-a", "slot-b"])
 
@@ -741,7 +741,7 @@ async def test_failure_event_without_acquired_slot_does_not_release_v3():
     handler = _PROXY_MaxParallelRequestsHandler(
         internal_usage_cache=InternalUsageCache(local_cache)
     )
-    counter_key = f"{{api_key:{_api_key}}}:max_parallel_requests"
+    counter_key = f"{{litellm-rl}}api_key:{_api_key}:max_parallel_requests"
 
     await _seed_max_parallel_requests_slots(
         local_cache, counter_key, ["slot-a", "slot-b", "slot-c"]
@@ -828,7 +828,7 @@ async def test_rejected_request_does_not_consume_parallel_slot_v3():
     acquisition = get_request_stash().parallel_slot
     assert acquisition is not None
     assert isinstance(acquisition["slot_id"], str) and acquisition["slot_id"]
-    assert acquisition["counter_keys"] == [f"{{api_key:{_api_key}}}:max_parallel_requests"]
+    assert acquisition["counter_keys"] == [f"{{litellm-rl}}api_key:{_api_key}:max_parallel_requests"]
 
     for _ in range(3):
         with pytest.raises(HTTPException):
@@ -871,7 +871,7 @@ async def test_parallel_gauge_uses_atomic_redis_script_v3():
     )
     _api_key = hash_token("sk-12345")
     user_api_key_dict = UserAPIKeyAuth(api_key=_api_key, max_parallel_requests=5)
-    counter_key = f"{{api_key:{_api_key}}}:max_parallel_requests"
+    counter_key = f"{{litellm-rl}}api_key:{_api_key}:max_parallel_requests"
 
     captured_calls = []
 
@@ -1709,6 +1709,24 @@ def test_keyslot_for_redis_cluster():
     slot4 = handler.keyslot_for_redis_cluster("{api_key:sk-123}:requests")
     slot5 = handler.keyslot_for_redis_cluster("{api_key:sk-123}:window")
     assert slot4 == slot5, "Keys with same hash tag should have same slot"
+
+
+def test_rate_limit_keys_across_descriptors_share_one_cluster_slot():
+    handler = _PROXY_MaxParallelRequestsHandler(
+        internal_usage_cache=InternalUsageCache(DualCache())
+    )
+    keys = (
+        handler.create_window_key("api_key", "sk-123"),
+        handler.create_rate_limit_keys("api_key", "sk-123", "requests"),
+        handler.create_rate_limit_keys("api_key", "sk-123", "tokens"),
+        handler.create_window_key("team", "team-789"),
+        handler.create_rate_limit_keys("team", "team-789", "requests"),
+        handler.create_rate_limit_keys("user", "user-456", "max_parallel_requests"),
+    )
+
+    assert len(set(keys)) == len(keys), keys
+    slots = {handler.keyslot_for_redis_cluster(key) for key in keys}
+    assert len(slots) == 1, f"keys span slots {slots}, a single EVAL over them raises CROSSSLOT"
 
 
 @pytest.mark.asyncio
@@ -2635,9 +2653,9 @@ async def test_agent_rate_limit_tpm_increment_on_success(monkeypatch):
     agent_tpm_op = None
     session_tpm_op = None
     for op in captured_operations:
-        if op["key"] == f"{{agent:{_agent_id}}}:tokens":
+        if op["key"] == f"{{litellm-rl}}agent:{_agent_id}:tokens":
             agent_tpm_op = op
-        elif op["key"] == f"{{agent_session:{_agent_id}:{_session_id}}}:tokens":
+        elif op["key"] == f"{{litellm-rl}}agent_session:{_agent_id}:{_session_id}:tokens":
             session_tpm_op = op
 
     assert agent_tpm_op is not None, "Agent TPM increment should be present"
@@ -3249,7 +3267,7 @@ async def test_chat_tpm_refund_and_slot_release_via_context_stash(monkeypatch):
     tokens_key = handler.create_rate_limit_keys(
         key="api_key", value=_api_key, rate_limit_type="tokens"
     )
-    parallel_key = f"{{api_key:{_api_key}}}:max_parallel_requests"
+    parallel_key = f"{{litellm-rl}}api_key:{_api_key}:max_parallel_requests"
 
     await handler.async_pre_call_hook(
         user_api_key_dict=user_api_key_dict,
@@ -3369,7 +3387,7 @@ async def test_log_events_from_nested_calls_leave_owner_stash_alone(monkeypatch)
     tokens_key = handler.create_rate_limit_keys(
         key="api_key", value=_api_key, rate_limit_type="tokens"
     )
-    parallel_key = f"{{api_key:{_api_key}}}:max_parallel_requests"
+    parallel_key = f"{{litellm-rl}}api_key:{_api_key}:max_parallel_requests"
 
     await handler.async_pre_call_hook(
         user_api_key_dict=user_api_key_dict,
@@ -3880,7 +3898,7 @@ async def test_completed_responses_post_call_releases_parallel_slot() -> None:
         "input": "hello",
         "litellm_call_id": "responses-owner",
     }
-    parallel_key = f"{{api_key:{api_key}}}:max_parallel_requests"
+    parallel_key = f"{{litellm-rl}}api_key:{api_key}:max_parallel_requests"
 
     await handler.async_pre_call_hook(
         user_api_key_dict=user_api_key_dict,
@@ -3930,7 +3948,7 @@ async def test_concurrent_success_callbacks_release_parallel_slot_once_when_redi
     )
     user_api_key_dict = UserAPIKeyAuth(api_key=api_key, max_parallel_requests=2)
     call_id = "concurrent-release-owner"
-    parallel_key = f"{{api_key:{api_key}}}:max_parallel_requests"
+    parallel_key = f"{{litellm-rl}}api_key:{api_key}:max_parallel_requests"
     release_started = asyncio.Event()
     allow_redis_failure = asyncio.Event()
 
@@ -3993,7 +4011,7 @@ async def _build_seeded_limiter():
     limiter = _PROXY_MaxParallelRequestsHandler(
         internal_usage_cache=InternalUsageCache(cache)
     )
-    counter_key = f"{{api_key:{api_key}}}:max_parallel_requests"
+    counter_key = f"{{litellm-rl}}api_key:{api_key}:max_parallel_requests"
     await _seed_max_parallel_requests_slots(cache, counter_key, [_TEST_SLOT_ID])
     user_api_key_dict = UserAPIKeyAuth(api_key=api_key, max_parallel_requests=2)
     return limiter, cache, counter_key, user_api_key_dict
@@ -4031,7 +4049,7 @@ async def test_release_max_parallel_requests_on_disconnect_v3():
         internal_usage_cache=InternalUsageCache(local_cache)
     )
     user_api_key_dict = UserAPIKeyAuth(api_key=_api_key, max_parallel_requests=2)
-    counter_key = f"{{api_key:{_api_key}}}:max_parallel_requests"
+    counter_key = f"{{litellm-rl}}api_key:{_api_key}:max_parallel_requests"
 
     await _seed_max_parallel_requests_slots(local_cache, counter_key, [_TEST_SLOT_ID])
     assert handler._gauge_in_flight_from_cache_value(
@@ -4063,7 +4081,7 @@ async def test_release_on_disconnect_works_when_key_config_changed_v3():
     handler = _PROXY_MaxParallelRequestsHandler(
         internal_usage_cache=InternalUsageCache(local_cache)
     )
-    counter_key = f"{{api_key:{_api_key}}}:max_parallel_requests"
+    counter_key = f"{{litellm-rl}}api_key:{_api_key}:max_parallel_requests"
     await _seed_max_parallel_requests_slots(local_cache, counter_key, [_TEST_SLOT_ID])
 
     get_or_create_request_stash().parallel_slot = ParallelSlotAcquisition(
@@ -4095,7 +4113,7 @@ async def test_post_call_failure_hook_releases_parallel_slot_v3():
         internal_usage_cache=InternalUsageCache(local_cache)
     )
     user_api_key_dict = UserAPIKeyAuth(api_key=_api_key, max_parallel_requests=1)
-    counter_key = f"{{api_key:{_api_key}}}:max_parallel_requests"
+    counter_key = f"{{litellm-rl}}api_key:{_api_key}:max_parallel_requests"
 
     admitted_data: Dict[str, Any] = {"model": "gpt-3.5-turbo"}
     await handler.async_pre_call_hook(
@@ -4151,7 +4169,7 @@ async def test_success_event_releases_parallel_slot_v3(monkeypatch):
     )
     monkeypatch.setattr(handler, "get_rate_limit_type", lambda: "total")
     user_api_key_dict = UserAPIKeyAuth(api_key=_api_key, max_parallel_requests=1)
-    counter_key = f"{{api_key:{_api_key}}}:max_parallel_requests"
+    counter_key = f"{{litellm-rl}}api_key:{_api_key}:max_parallel_requests"
 
     admitted_data: Dict[str, Any] = {"model": "gpt-3.5-turbo"}
     await handler.async_pre_call_hook(
@@ -4199,7 +4217,7 @@ async def test_read_only_gauge_check_counts_without_acquiring_v3():
     handler = _PROXY_MaxParallelRequestsHandler(
         internal_usage_cache=InternalUsageCache(local_cache)
     )
-    counter_key = f"{{api_key:{_api_key}}}:max_parallel_requests"
+    counter_key = f"{{litellm-rl}}api_key:{_api_key}:max_parallel_requests"
     descriptors = [
         {
             "key": "api_key",
@@ -4256,7 +4274,7 @@ async def test_redis_release_script_updates_local_mirror_v3():
     handler = _PROXY_MaxParallelRequestsHandler(
         internal_usage_cache=InternalUsageCache(local_cache)
     )
-    counter_key = f"{{api_key:{_api_key}}}:max_parallel_requests"
+    counter_key = f"{{litellm-rl}}api_key:{_api_key}:max_parallel_requests"
 
     captured_calls = []
 
@@ -4299,7 +4317,7 @@ async def test_tpm_over_limit_rejection_releases_parallel_slot_v3(monkeypatch):
     user_api_key_dict = UserAPIKeyAuth(
         api_key=_api_key, max_parallel_requests=5, tpm_limit=100
     )
-    counter_key = f"{{api_key:{_api_key}}}:max_parallel_requests"
+    counter_key = f"{{litellm-rl}}api_key:{_api_key}:max_parallel_requests"
 
     async def over_limit_reservation(descriptors, estimated_tokens, parent_otel_span=None):
         return {
@@ -4346,7 +4364,7 @@ async def test_in_memory_fallback_respects_mirrored_redis_count_v3():
         internal_usage_cache=InternalUsageCache(local_cache)
     )
     user_api_key_dict = UserAPIKeyAuth(api_key=_api_key, max_parallel_requests=5)
-    counter_key = f"{{api_key:{_api_key}}}:max_parallel_requests"
+    counter_key = f"{{litellm-rl}}api_key:{_api_key}:max_parallel_requests"
 
     async def failing_script(keys, args):
         raise ConnectionError("redis unavailable")
@@ -4397,7 +4415,7 @@ async def test_release_max_parallel_requests_on_disconnect_noop_v3():
     handler = _PROXY_MaxParallelRequestsHandler(
         internal_usage_cache=InternalUsageCache(local_cache)
     )
-    counter_key = f"{{api_key:{_api_key}}}:max_parallel_requests"
+    counter_key = f"{{litellm-rl}}api_key:{_api_key}:max_parallel_requests"
 
     await handler.async_release_max_parallel_requests_on_disconnect(
         UserAPIKeyAuth(api_key=_api_key, max_parallel_requests=None)
@@ -4909,7 +4927,7 @@ async def test_tag_object_tpm_limit_enforced_v3(monkeypatch):
         )
 
     await call(["cell-1"])
-    tokens_before_success = await local_cache.async_get_cache("{tag:cell-1}:tokens") or 0
+    tokens_before_success = await local_cache.async_get_cache("{litellm-rl}tag:cell-1:tokens") or 0
     await handler.async_log_success_event(
         kwargs={
             "standard_logging_object": {"metadata": {"user_api_key_hash": user_api_key_dict.api_key}},
@@ -4919,7 +4937,7 @@ async def test_tag_object_tpm_limit_enforced_v3(monkeypatch):
         start_time=datetime.now(),
         end_time=datetime.now(),
     )
-    assert await local_cache.async_get_cache("{tag:cell-1}:tokens") == tokens_before_success + 120
+    assert await local_cache.async_get_cache("{litellm-rl}tag:cell-1:tokens") == tokens_before_success + 120
 
     with pytest.raises(HTTPException) as exc_info:
         await call(["cell-1"])
@@ -5640,7 +5658,7 @@ async def test_atomic_tpm_reservation_rollover_resets_sibling_requests_counter()
     handler = _PROXY_MaxParallelRequestsHandler(internal_usage_cache=InternalUsageCache(local_cache))
     window_size = 60
     now_int = int(time.time())
-    window_key = "{api_key:atomic-rollover}:window"
+    window_key = handler.create_window_key("api_key", "atomic-rollover")
     requests_key = handler.create_rate_limit_keys("api_key", "atomic-rollover", "requests")
     tokens_key = handler.create_rate_limit_keys("api_key", "atomic-rollover", "tokens")
     for key, value in ((window_key, str(now_int - window_size - 1)), (requests_key, 3), (tokens_key, 900)):
@@ -5687,7 +5705,7 @@ async def test_window_rollover_reset_does_not_erase_concurrent_sibling_increment
     handler = _PROXY_MaxParallelRequestsHandler(internal_usage_cache=InternalUsageCache(local_cache))
     window_size = 60
     now_int = int(time.time())
-    window_key = "{api_key:concurrent-rollover}:window"
+    window_key = handler.create_window_key("api_key", "concurrent-rollover")
     requests_key = handler.create_rate_limit_keys("api_key", "concurrent-rollover", "requests")
     tokens_key = handler.create_rate_limit_keys("api_key", "concurrent-rollover", "tokens")
     for key, value in ((window_key, str(now_int - window_size - 1)), (requests_key, 3), (tokens_key, 900)):
@@ -6759,7 +6777,10 @@ async def test_batch_increment_refunds_counters_already_applied_when_a_later_clu
         api_key=hash_token("sk-cluster-partial"), rpm_limit=5, user_id="cluster-user", user_rpm_limit=5
     )
 
-    with patch.object(handler, "_is_redis_cluster", return_value=True):
+    with (
+        patch.object(handler, "_is_redis_cluster", return_value=True),
+        patch.object(handler, "keyslot_for_redis_cluster", side_effect=lambda key: int("cluster-user" in key)),
+    ):
         if fail_closed:
             with pytest.raises(HTTPException) as exc:
                 await _admit(handler, auth)
@@ -6936,7 +6957,7 @@ async def test_request_capacity_skips_tokens_and_preserves_parent_stash():
     for scope, value in token_scopes:
         token_key = handler.create_rate_limit_keys(scope, value, "tokens")
         await cache.async_set_cache(token_key, 100, ttl=60)
-        await cache.async_set_cache(f"{{{scope}:{value}}}:window", int(time.time()), ttl=60)
+        await cache.async_set_cache(f"{{litellm-rl}}{scope}:{value}:window", int(time.time()), ttl=60)
     parent = get_or_create_request_stash()
     parent.reserved_tokens = 123
     parent.parallel_slot = ParallelSlotAcquisition(slot_id="parent", counter_keys=["parent-gauge"])

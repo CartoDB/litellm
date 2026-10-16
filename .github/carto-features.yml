@@ -162,3 +162,24 @@ features:
         file: litellm/llms/databricks/common_utils.py
       - pattern: "and is_databricks_gpt_tools_require_responses_model(model)"
         file: litellm/main.py
+
+  - name: "Rate Limiter v3 Constant Redis Hash Tag"
+    source_prs: [119]
+    description: "Every v3 rate-limit key (counters and windows) uses the constant {litellm-rl} hash tag so multi-descriptor Lua EVALs stay single-slot. CARTO runs a plain Redis client against cluster-mode Valkey, where upstream's per-descriptor tags raise CROSSSLOT because slot grouping only runs for RedisClusterCache. Lost in the v1.98.0 sync."
+    files:
+      - litellm/proxy/hooks/parallel_request_limiter_v3.py
+      - litellm/proxy/hooks/batch_rate_limiter.py
+    verification:
+      - pattern: 'RATE_LIMIT_HASH_TAG: Final = "{litellm-rl}"'
+        file: litellm/proxy/hooks/parallel_request_limiter_v3.py
+      - pattern: "parallel_request_limiter.create_window_key("
+        file: litellm/proxy/hooks/batch_rate_limiter.py
+
+  - name: "Azure Responses API Deployment Path Sanitizer"
+    source_prs: [61]
+    description: "Strips /openai/deployments/<name>/... from a Chat Completions style api_base before building the Azure Responses URL; otherwise the result is .../chat/completions/openai/responses (404). Lost around the v1.81.0 sync."
+    files:
+      - litellm/llms/azure/responses/transformation.py
+    verification:
+      - pattern: '_DEPLOYMENT_PATH.sub("", api_base)'
+        file: litellm/llms/azure/responses/transformation.py

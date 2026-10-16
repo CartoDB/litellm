@@ -96,13 +96,13 @@ async def test_descriptor_lua_calls_share_one_pipeline_and_each_keeps_its_result
     evalshas = [c for c in client.pipelines[0].commands if c[0] == "EVALSHA"]
     assert len(evalshas) == 3
     assert {c[1] for c in evalshas} == {sha_of(CHECK_AND_INCREMENT_BY_N_SCRIPT)}
-    assert [c[3] for c in evalshas] == ["{api_key:k1}:window", "{model_per_key:k1:gpt}:window", "{team:t1}:window"]
+    assert [c[3] for c in evalshas] == ["{litellm-rl}api_key:k1:window", "{litellm-rl}model_per_key:k1:gpt:window", "{litellm-rl}team:t1:window"]
 
 
 @pytest.mark.asyncio
 async def test_an_over_limit_descriptor_in_the_pipeline_refunds_the_groups_that_were_applied():
     def replies(command: tuple[Any, ...]) -> Any:
-        if command[0] == "EVALSHA" and command[3] == "{team:t1}:window":
+        if command[0] == "EVALSHA" and command[3] == "{litellm-rl}team:t1:window":
             return [1, 1, 21, 20]  # OVER_LIMIT on its first counter
         return _lua_ok_replies(command)
 
@@ -118,14 +118,14 @@ async def test_an_over_limit_descriptor_in_the_pipeline_refunds_the_groups_that_
 
     assert response["overall_code"] == "OVER_LIMIT"
     assert response["statuses"][0]["descriptor_key"] == "team"
-    assert _refunds(limiter) == [("{api_key:k1}:requests", -1.0)]
+    assert _refunds(limiter) == [("{litellm-rl}api_key:k1:requests", -1.0)]
     assert len(client.pipelines) == 1
 
 
 @pytest.mark.asyncio
 async def test_an_over_limit_descriptor_also_refunds_the_groups_the_pipeline_incremented_after_it():
     def replies(command: tuple[Any, ...]) -> Any:
-        if command[0] == "EVALSHA" and command[3] == "{api_key:k1}:window":
+        if command[0] == "EVALSHA" and command[3] == "{litellm-rl}api_key:k1:window":
             return [1, 1, 11, 10]  # OVER_LIMIT on the first group; the later groups already incremented
         return _lua_ok_replies(command)
 
@@ -145,16 +145,16 @@ async def test_an_over_limit_descriptor_also_refunds_the_groups_the_pipeline_inc
 
     assert response["overall_code"] == "OVER_LIMIT"
     assert response["statuses"][0]["descriptor_key"] == "api_key"
-    assert _refunds(limiter) == [("{team:t1}:requests", -1.0), ("{model_per_key:k1:gpt}:requests", -1.0)]
+    assert _refunds(limiter) == [("{litellm-rl}team:t1:requests", -1.0), ("{litellm-rl}model_per_key:k1:gpt:requests", -1.0)]
     assert len(client.pipelines) == 1
 
 
 @pytest.mark.asyncio
 async def test_a_redis_denial_stands_when_another_pipelined_group_fails():
     def replies(command: tuple[Any, ...]) -> Any:
-        if command[0] == "EVALSHA" and command[3] == "{api_key:k1}:window":
+        if command[0] == "EVALSHA" and command[3] == "{litellm-rl}api_key:k1:window":
             return [1, 1, 11, 10]  # OVER_LIMIT
-        if command[0] == "EVALSHA" and command[3] == "{team:t1}:window":
+        if command[0] == "EVALSHA" and command[3] == "{litellm-rl}team:t1:window":
             return ValueError("script blew up")
         return _lua_ok_replies(command)
 
@@ -174,14 +174,14 @@ async def test_a_redis_denial_stands_when_another_pipelined_group_fails():
 
     assert response["overall_code"] == "OVER_LIMIT"  # not the in-memory fallback's verdict
     assert response["statuses"][0]["descriptor_key"] == "api_key"
-    assert _refunds(limiter) == [("{model_per_key:k1:gpt}:requests", -1.0)]
+    assert _refunds(limiter) == [("{litellm-rl}model_per_key:k1:gpt:requests", -1.0)]
     assert len(client.pipelines) == 1
 
 
 @pytest.mark.asyncio
 async def test_one_failed_lua_group_refunds_the_other_pipelined_groups_and_falls_back_to_in_memory():
     def replies(command: tuple[Any, ...]) -> Any:
-        if command[0] == "EVALSHA" and command[3] == "{api_key:k1}:window":
+        if command[0] == "EVALSHA" and command[3] == "{litellm-rl}api_key:k1:window":
             return ValueError("script blew up")
         return _lua_ok_replies(command)
 
@@ -197,7 +197,7 @@ async def test_one_failed_lua_group_refunds_the_other_pipelined_groups_and_falls
 
     assert response["overall_code"] == "OK"
     assert len(response["statuses"]) == 2  # in-memory enforcement covered both descriptors
-    assert _refunds(limiter) == [("{team:t1}:requests", -1.0)]
+    assert _refunds(limiter) == [("{litellm-rl}team:t1:requests", -1.0)]
     assert len(client.pipelines) == 1
 
 
@@ -208,11 +208,11 @@ async def test_one_failed_lua_group_refunds_the_other_pipelined_groups_and_falls
             FakeClient(
                 lambda command: (
                     ValueError("script blew up")
-                    if command[0] == "EVALSHA" and command[3] == "{api_key:k1}:window"
+                    if command[0] == "EVALSHA" and command[3] == "{litellm-rl}api_key:k1:window"
                     else _lua_ok_replies(command)
                 )
             ),
-            [("{team:t1}:requests", -1.0)],
+            [("{litellm-rl}team:t1:requests", -1.0)],
         ),
         (FakeClient(_lua_ok_replies, fail=ConnectionError("redis down")), []),
     ],
