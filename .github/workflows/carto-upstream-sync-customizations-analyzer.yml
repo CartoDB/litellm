@@ -294,39 +294,9 @@ jobs:
           OUTPUT_PATH="/tmp/carto-analysis"
           mkdir -p "${OUTPUT_PATH}"
 
-          # Fetch CartoDB org members
-          echo "[Analyzer] Fetching CartoDB org members..."
-          ORG_MEMBERS=$(gh api "orgs/CartoDB/members" --paginate --jq '.[].login' 2>/dev/null | tr '\n' '|' | sed 's/|$//')
-          if [ -z "$ORG_MEMBERS" ]; then
-            echo "[Analyzer] Warning: Could not fetch org members, using fallback"
-            ORG_MEMBERS="Cartofante|mateo-di"
-          fi
-
-          # Fetch ALL merged PRs (any branch) to capture all CARTO customizations
-          echo "[Analyzer] Fetching all merged PRs..."
-          gh pr list \
-            --repo ${{ github.repository }} \
-            --state merged \
-            --limit 1000 \
-            --json number,title,author,mergedAt,files,body,labels \
-            > "${OUTPUT_PATH}/all_prs.json" 2>/dev/null || echo "[]" > "${OUTPUT_PATH}/all_prs.json"
-
-          echo "[Analyzer] Total merged PRs: $(jq 'length' "${OUTPUT_PATH}/all_prs.json")"
-
-          # Filter to CARTO org members, excluding upstream-sync PRs
-          jq --arg pattern "$ORG_MEMBERS" '
-            [.[] |
-              select(.author.login | test("^(" + $pattern + ")$"; "i")) |
-              select(([(.labels // [])[].name] | any(. == "upstream-sync")) | not) |
-              select(.title | test("^(sync:|upstream sync:|fix: resolve.*upstream|fix: resolve conflicts|fix\\(ci\\):|merge:)"; "i") | not) |
-              select(.title | test("Upstream Sync:"; "i") | not)
-            ]
-          ' "${OUTPUT_PATH}/all_prs.json" > "${OUTPUT_PATH}/carto_prs.json"
-
-          CARTO_PRS=$(jq 'length' "${OUTPUT_PATH}/carto_prs.json")
-          echo "[Analyzer] Found ${CARTO_PRS} CARTO feature PRs"
-
-          rm -f "${OUTPUT_PATH}/all_prs.json"
+          git show origin/carto/main:.github/scripts/fetch_carto_prs.sh > /tmp/fetch_carto_prs.sh
+          bash /tmp/fetch_carto_prs.sh "${OUTPUT_PATH}/carto_prs.json"
+          echo "[Analyzer] Found $(jq 'length' "${OUTPUT_PATH}/carto_prs.json") CARTO feature PRs"
           echo "::endgroup::"
 
       - name: Build CARTO features inventory with code snapshots
@@ -370,8 +340,8 @@ jobs:
           UPSTREAM_TAG="${{ steps.pr-info.outputs.upstream-tag }}"
 
           if [ -n "$UPSTREAM_TAG" ]; then
-            # Fetch the tag
-            git fetch origin "refs/tags/${UPSTREAM_TAG}:refs/tags/${UPSTREAM_TAG}" 2>/dev/null || true
+            # Upstream release tags only exist in BerriAI/litellm, not in the fork
+            git fetch --no-tags https://github.com/BerriAI/litellm.git "refs/tags/${UPSTREAM_TAG}:refs/tags/${UPSTREAM_TAG}" || true
 
             if git rev-parse "refs/tags/${UPSTREAM_TAG}" &>/dev/null; then
               UPSTREAM_REF="refs/tags/${UPSTREAM_TAG}"
@@ -387,8 +357,15 @@ jobs:
 
           echo "upstream-ref=${UPSTREAM_REF}" >> $GITHUB_OUTPUT
 
-          # Get list of files touched by CARTO PRs
-          CARTO_FILES=$(jq -r '[.[].files[]] | unique | .[]' /tmp/carto_inventory.json | head -50)
+          # Only shipped code: CARTO PRs also touch CI, docs, demo scripts and built wheels, which sort first
+          # and previously crowded every litellm/ file out of a 50-file cap
+          CARTO_FILES=$(jq -r '[.[].files[]] | unique | .[]
+            | select(test("^(litellm/|enterprise/litellm_enterprise/|litellm-proxy-extras/litellm_proxy_extras/|docker/|Dockerfile$)"))
+            | select(test("/_experimental/out/|model_prices_and_context_window") | not)' /tmp/carto_inventory.json)
+          if [ -z "$CARTO_FILES" ]; then
+            echo "::error::CARTO PRs touched no shipped code files, the inventory filter is wrong"
+            exit 1
+          fi
 
           for FILE in $CARTO_FILES; do
             mkdir -p "/tmp/code_comparison/$(dirname "$FILE")"
