@@ -65,5 +65,8 @@ jobs:
       - name: Ready checker label tests
         run: python -m pytest .github/scripts/test_ready_checker.py -q -p no:cacheprovider --noconftest
 
+      - name: CI fixer classification tests
+        run: python -m pytest .github/scripts/test_ci_fixer.py -q -p no:cacheprovider --noconftest
+
       - name: Sync workflow triggers match the required list
         run: python .github/scripts/check_sync_workflow_triggers.py
