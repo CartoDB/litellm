@@ -801,7 +801,7 @@ jobs:
             missing = 0
             for feat in data.get('features', []):
                 for v in feat.get('verification', []):
-                    r = subprocess.run(['grep', '-q', v['pattern'], v['file']], capture_output=True)
+                    r = subprocess.run(['grep', '-q', '-e', v['pattern'], v['file']], capture_output=True)
                     status = 'OK' if r.returncode == 0 else 'MISSING'
                     print(f'{status}: {feat[\"name\"]} - {v[\"pattern\"]} in {v[\"file\"]}')
                     if r.returncode != 0:
@@ -1265,7 +1265,7 @@ jobs:
           missing = []
           for feat in data.get('features', []):
               for v in feat.get('verification', []):
-                  r = subprocess.run(['grep', '-q', v['pattern'], v['file']], capture_output=True)
+                  r = subprocess.run(['grep', '-q', '-e', v['pattern'], v['file']], capture_output=True)
                   if r.returncode == 0:
                       print(f'OK: {feat[\"name\"]} - {v[\"pattern\"]} in {v[\"file\"]}')
                   else:
