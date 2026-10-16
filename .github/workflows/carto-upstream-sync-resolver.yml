@@ -478,41 +478,11 @@ jobs:
           OUTPUT_PATH="/tmp/carto-analysis"
           mkdir -p "${OUTPUT_PATH}"
 
-          # Step 1: Fetch CartoDB org members
-          echo "[Resolver] Fetching CartoDB org members..."
-          ORG_MEMBERS=$(gh api "orgs/CartoDB/members" --paginate --jq '.[].login' 2>/dev/null | tr '\n' '|' | sed 's/|$//')
-
-          if [ -z "$ORG_MEMBERS" ]; then
-            echo "[Resolver] Warning: Could not fetch org members, using fallback"
-            ORG_MEMBERS="Cartofante|mateo-di"
-          fi
-
-          # Step 2: Fetch ALL merged PRs (any branch) to capture all CARTO customizations
-          echo "[Resolver] Fetching all merged PRs..."
-          gh pr list \
-            --repo ${{ github.repository }} \
-            --state merged \
-            --limit 1000 \
-            --json number,title,author,mergedAt,additions,deletions,files,labels \
-            > "${OUTPUT_PATH}/all_prs.json" 2>/dev/null || echo "[]" > "${OUTPUT_PATH}/all_prs.json"
-
-          TOTAL_PRS=$(jq 'length' "${OUTPUT_PATH}/all_prs.json")
-          echo "[Resolver] Total merged PRs: ${TOTAL_PRS}"
-
-          # Step 3: Filter to CARTO org member authors only (exclude upstream-sync PRs)
-          jq --arg pattern "$ORG_MEMBERS" '
-            [.[] |
-              select(.author.login | test("^(" + $pattern + ")$"; "i")) |
-              select(([(.labels // [])[].name] | any(. == "upstream-sync")) | not) |
-              select(.title | test("^(sync:|upstream sync:|fix: resolve.*upstream|fix: resolve conflicts|fix\\(ci\\):|merge:)"; "i") | not) |
-              select(.title | test("Upstream Sync:"; "i") | not)
-            ]
-          ' "${OUTPUT_PATH}/all_prs.json" > "${OUTPUT_PATH}/carto_prs.json"
+          git show origin/carto/main:.github/scripts/fetch_carto_prs.sh > /tmp/fetch_carto_prs.sh
+          bash /tmp/fetch_carto_prs.sh "${OUTPUT_PATH}/carto_prs.json"
 
           CARTO_PRS=$(jq 'length' "${OUTPUT_PATH}/carto_prs.json")
           echo "[Resolver] Found ${CARTO_PRS} CARTO feature PRs"
-
-          rm -f "${OUTPUT_PATH}/all_prs.json"
           echo "carto-pr-count=${CARTO_PRS}" >> $GITHUB_OUTPUT
 
           echo "::endgroup::"
@@ -1616,38 +1586,14 @@ jobs:
           OUTPUT_PATH="/tmp/carto-analysis"
           mkdir -p "${OUTPUT_PATH}"
 
-          # Fetch CartoDB org members
-          ORG_MEMBERS=$(gh api "orgs/CartoDB/members" --paginate --jq '.[].login' 2>/dev/null | tr '\n' '|' | sed 's/|$//')
-          if [ -z "$ORG_MEMBERS" ]; then
-            ORG_MEMBERS="Cartofante|mateo-di"
-          fi
+          git show origin/carto/main:.github/scripts/fetch_carto_prs.sh > /tmp/fetch_carto_prs.sh
+          bash /tmp/fetch_carto_prs.sh "${OUTPUT_PATH}/all_carto_prs.json"
 
-          # Fetch ALL merged PRs (any branch) to capture all CARTO customizations
-          gh pr list \
-            --repo ${{ github.repository }} \
-            --state merged \
-            --limit 1000 \
-            --json number,title,author,mergedAt,files,labels \
-            > "${OUTPUT_PATH}/all_prs.json" 2>/dev/null || echo "[]" > "${OUTPUT_PATH}/all_prs.json"
-
-          echo "[Verify] Total merged PRs: $(jq 'length' "${OUTPUT_PATH}/all_prs.json")"
-
-          # Filter to CARTO org members, excluding upstream-sync PRs
-          # Also filter to only include PRs that touch litellm/ or tests/ directories (LiteLLM code)
-          jq --arg pattern "$ORG_MEMBERS" '
-            [.[] |
-              select(.author.login | test("^(" + $pattern + ")$"; "i")) |
-              select(([(.labels // [])[].name] | any(. == "upstream-sync")) | not) |
-              select(.title | test("^(sync:|upstream sync:|fix: resolve.*upstream|fix: resolve conflicts|fix\\(ci\\):|merge:)"; "i") | not) |
-              select(.title | test("Upstream Sync:"; "i") | not) |
-              # Filter files to only litellm/ and tests/ directories
-              . + {files: [.files[] | select(.path | test("^(litellm/|tests/)"))]} |
-              # Only keep PRs that have litellm/tests files
-              select(.files | length > 0)
-            ]
-          ' "${OUTPUT_PATH}/all_prs.json" > "${OUTPUT_PATH}/carto_prs.json"
-
-          rm -f "${OUTPUT_PATH}/all_prs.json"
+          # Only PRs that touch LiteLLM code (litellm/ or tests/), keeping just those files
+          jq '[.[]
+            | . + {files: [.files[] | select(.path | test("^(litellm/|tests/)"))]}
+            | select(.files | length > 0)
+          ]' "${OUTPUT_PATH}/all_carto_prs.json" > "${OUTPUT_PATH}/carto_prs.json"
 
           CARTO_PRS=$(jq 'length' "${OUTPUT_PATH}/carto_prs.json")
           echo "[Verify] Found ${CARTO_PRS} CARTO feature PRs with litellm/tests changes"
