@@ -9,7 +9,9 @@ import pytest
 import yaml
 
 WORKFLOW: Final = Path(__file__).parents[1] / "workflows" / "carto-upstream-sync-ready-checker.yml"
-REQUIRED: Final = ("CARTO - Deploy Docker Image (CI)", "CARTO Feature Tests", "CARTO Features Manifest Check")
+REQUIRED: Final = tuple(
+    yaml.safe_load((Path(__file__).parents[1] / "carto-sync-required-workflows.yml").read_text())["required"]
+)
 
 FAKE_GH: Final = """#!/usr/bin/env bash
 case "$1 $2" in
