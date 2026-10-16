@@ -223,3 +223,109 @@ async def test_bridged_follow_up_turn_keeps_the_addressed_response_id_off_the_pr
     )
     assert isinstance(response, ResponsesAPIResponse)
     assert [item.type for item in response.output] == ["message"]
+
+
+class _InMemoryRedis:
+    def __init__(self) -> None:
+        self.store: dict[str, str] = {}
+
+    async def set(self, name: str, value: str, ex: int) -> None:
+        self.store[name] = value
+
+    async def get(self, name: str) -> str | None:
+        return self.store.get(name)
+
+
+class _RedisBackedCache:
+    def __init__(self, client: _InMemoryRedis) -> None:
+        self.client: Final = client
+
+    def init_async_client(self) -> _InMemoryRedis:
+        return self.client
+
+
+class _LiteLLMCache:
+    supported_call_types: Final = ()
+
+    def __init__(self, client: _InMemoryRedis) -> None:
+        self.cache: Final = _RedisBackedCache(client)
+
+
+def _recording_mock_acompletion(sent_messages: list[list[dict]], reply: str):
+    real_acompletion: Final = litellm.acompletion
+
+    async def fake_acompletion(**kwargs):
+        sent_messages.append([{"role": m["role"], "content": m["content"]} for m in kwargs["messages"]])
+        return await real_acompletion(**{**kwargs, "mock_response": reply})
+
+    return fake_acompletion
+
+
+async def _run_turn(user_text: str, previous_response_id: str | None, stream: bool) -> str:
+    response = await litellm.aresponses(
+        model="openai/gpt-4o",
+        api_key="fake-api-key",
+        input=user_text,
+        previous_response_id=previous_response_id,
+        use_chat_completions_api=True,
+        stream=stream,
+    )
+    if not stream:
+        return response.id
+    completed_ids = [event.response.id async for event in response if event.type == "response.completed"]
+    return completed_ids[-1]
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.asyncio
+async def test_follow_up_turn_replays_prior_turn_from_redis_session(stream: bool):
+    sent_messages: list[list[dict]] = []
+    redis: Final = _InMemoryRedis()
+
+    with (
+        patch("litellm.cache", _LiteLLMCache(redis)),  # test-quality-ok: session store reads the litellm.cache global
+        patch(
+            "litellm.acompletion", _recording_mock_acompletion(sent_messages, "Paris")
+        ),  # test-quality-ok: no DI seam
+    ):
+        first_response_id = await _run_turn("Capital of France?", None, stream)
+        await _run_turn("And its population?", first_response_id, stream)
+
+    assert sent_messages[-1] == [
+        {"role": "user", "content": "Capital of France?"},
+        {"role": "assistant", "content": "Paris"},
+        {"role": "user", "content": "And its population?"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_non_streaming_session_keeps_assistant_tool_calls_for_the_follow_up_tool_result():
+    from litellm.types.utils import ChatCompletionMessageToolCall, Choices, Function, Message, ModelResponse
+
+    redis: Final = _InMemoryRedis()
+    tool_call: Final = ChatCompletionMessageToolCall(
+        id="call_weather", type="function", function=Function(name="get_weather", arguments='{"city": "Paris"}')
+    )
+
+    async def fake_acompletion(**kwargs):
+        return ModelResponse(
+            id="chatcmpl-weather",
+            choices=[
+                Choices(
+                    finish_reason="tool_calls",
+                    index=0,
+                    message=Message(content=None, role="assistant", tool_calls=[tool_call]),
+                )
+            ],
+        )
+
+    with (
+        patch("litellm.cache", _LiteLLMCache(redis)),  # test-quality-ok: session store reads the litellm.cache global
+        patch("litellm.acompletion", fake_acompletion),  # test-quality-ok: no DI seam; file stubs this boundary
+    ):
+        await _run_turn("Weather in Paris?", None, stream=False)
+
+    stored_turns = [json.loads(session)["messages"] for session in redis.store.values()]
+    assert [[(m["role"], [c["id"] for c in m.get("tool_calls", [])]) for m in turns] for turns in stored_turns] == [
+        [("user", []), ("assistant", ["call_weather"])]
+    ]

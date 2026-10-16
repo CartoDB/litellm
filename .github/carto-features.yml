@@ -80,11 +80,15 @@ features:
         file: litellm/litellm_core_utils/streaming_chunk_builder_utils.py
 
   - name: "Redis Session Storage"
-    source_prs: [16]
+    source_prs: [5, 16]
+    description: "Stores each bridged Responses API turn in Redis right after the response so a fast previous_response_id follow-up does not race the spend-log batch writer. The helpers alone are not enough: handler.py must pass litellm_completion_request into both streaming iterators (else only the assistant reply is stored) and call _patch_store_session_in_redis after non-streaming responses. Those call sites were silently lost in the v1.98.0 sync while the helper patterns kept passing; the two-turn round-trip tests in test_handler.py guard the streaming wiring that a single-line grep cannot."
     files:
+      - litellm/responses/litellm_completion_transformation/handler.py
       - litellm/responses/litellm_completion_transformation/streaming_iterator.py
       - litellm/responses/litellm_completion_transformation/transformation.py
     verification:
+      - pattern: "await LiteLLMCompletionResponsesConfig._patch_store_session_in_redis("
+        file: litellm/responses/litellm_completion_transformation/handler.py
       - pattern: "_store_session_in_redis"
         file: litellm/responses/litellm_completion_transformation/streaming_iterator.py
       - pattern: "_patch_store_session_in_redis"
