@@ -37,8 +37,7 @@ jobs:
   check-and-label:
     name: Check if PR is ready
     runs-on: ubuntu-latest
-    # Only run on successful CI completions
-    if: github.event.workflow_run.conclusion == 'success'
+    # Runs on every completion, failures included: sync-ready must also come off when a newer head stops passing
 
     steps:
       # workflow_run executes from the default branch, so the required list cannot be altered by the sync PR
@@ -93,21 +92,29 @@ jobs:
             exit 0
           fi
 
-          # Check 2: Must NOT already have sync-ready label (avoid duplicate work)
-          if [[ "${HAS_SYNC_READY}" == "true" ]]; then
-            echo "[Ready Checker] ✅ Already has sync-ready label - nothing to do"
+          # A label set for an earlier head would hand an unverified head to n8n, so every not-ready verdict drops it
+          not_ready() {
+            echo "[Ready Checker] $1"
+            if [[ "${HAS_SYNC_READY}" == "true" ]]; then
+              gh pr edit ${PR_NUMBER} --repo ${{ github.repository }} --remove-label "sync-ready"
+              echo "[Ready Checker] Removed sync-ready: the current head is not verified"
+            fi
+            echo "::endgroup::"
+            exit 0
+          }
+
+          if [[ "${MERGEABLE}" == "UNKNOWN" ]]; then
+            echo "[Ready Checker] ⏳ GitHub is still computing mergeability - leaving labels as they are"
             echo "::endgroup::"
             exit 0
           fi
 
-          # Check 3: Must be mergeable (no conflicts)
+          # Check 2: Must be mergeable (no conflicts)
           if [[ "${MERGEABLE}" != "MERGEABLE" ]]; then
-            echo "[Ready Checker] ❌ PR not mergeable (status: ${MERGEABLE}) - waiting for conflict resolution"
-            echo "::endgroup::"
-            exit 0
+            not_ready "❌ PR not mergeable (status: ${MERGEABLE}) - waiting for conflict resolution"
           fi
 
-          # Check 4: every required workflow ran and passed. Failures elsewhere cannot be fixed
+          # Check 3: every required workflow ran and passed. Failures elsewhere cannot be fixed
           # by the CI fixer (it only reacts to required workflows), so they alert instead of blocking
           echo "[Ready Checker] Checking CI status against .github/carto-sync-required-workflows.yml..."
 
@@ -137,19 +144,19 @@ jobs:
             <<< "${CHECKS_JSON}")
 
           if [[ -n "${FAILED}" ]]; then
-            echo "[Ready Checker] ❌ Required checks failed - waiting for CI fixer: ${FAILED}"
-            echo "::endgroup::"
-            exit 0
+            not_ready "❌ Required checks failed - waiting for CI fixer: ${FAILED}"
           fi
 
           if [[ -n "${PENDING}" ]]; then
-            echo "[Ready Checker] ⏳ Required checks still pending: ${PENDING}"
-            echo "::endgroup::"
-            exit 0
+            not_ready "⏳ Required checks still pending: ${PENDING}"
           fi
 
           if [[ -n "${MISSING}" ]]; then
-            echo "[Ready Checker] ⏳ Required workflows have not run yet: ${MISSING}"
+            not_ready "⏳ Required workflows have not run yet: ${MISSING}"
+          fi
+
+          if [[ "${HAS_SYNC_READY}" == "true" ]]; then
+            echo "[Ready Checker] ✅ Already has sync-ready label and the current head passes - nothing to do"
             echo "::endgroup::"
             exit 0
           fi
