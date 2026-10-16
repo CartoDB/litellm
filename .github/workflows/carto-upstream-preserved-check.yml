@@ -59,6 +59,9 @@ jobs:
       - name: CARTO feature test scope tests
         run: python -m pytest .github/scripts/test_carto_feature_test_scope.py -q -p no:cacheprovider --noconftest
 
+      - name: Workflow allowlist tests
+        run: python -m pytest .github/scripts/test_enforce_workflow_allowlist.py -q -p no:cacheprovider --noconftest
+
       - name: Ready checker label tests
         run: python -m pytest .github/scripts/test_ready_checker.py -q -p no:cacheprovider --noconftest
 
