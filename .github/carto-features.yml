@@ -185,3 +185,12 @@ features:
     verification:
       - pattern: '_DEPLOYMENT_PATH.sub("", api_base)'
         file: litellm/llms/azure/responses/transformation.py
+
+  - name: "Image Scan on carto/main PRs"
+    source_prs: [129]
+    description: "Adds carto/main to image-scan.yml pull_request.branches so the grype scan and offline-migration regression test run on CARTO PRs. Lost in the v1.98.0 sync."
+    files:
+      - .github/workflows/image-scan.yml
+    verification:
+      - pattern: "- carto/main"
+        file: .github/workflows/image-scan.yml
