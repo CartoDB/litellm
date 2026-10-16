@@ -39,8 +39,14 @@ permissions:
 
 # Prevent multiple workflows running on the same PR simultaneously
 # IMPORTANT: Uses shared concurrency group with Resolver to prevent both running simultaneously
+# Only runs that pass check-ci-status's `if` join the PR's group: GitHub keeps one pending run per group,
+# so a run that is about to skip would otherwise replace a pending run that has work to do
 concurrency:
-  group: upstream-sync-${{ github.event.workflow_run.pull_requests[0].number || github.event.inputs.pr-number || github.run_id }}
+  group: >-
+    upstream-sync-${{
+    (github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.event == 'pull_request'
+    && github.event.workflow_run.pull_requests[0].number)
+    || github.event.inputs.pr-number || github.run_id }}
   cancel-in-progress: false  # Wait for running workflow to finish (don't cancel)
 
 jobs:
@@ -81,8 +87,8 @@ jobs:
 
           if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
             # Manual trigger
-            PR_NUMBER="${DISPATCH_PR}"
-            PR_JSON=$(gh pr view "${PR_NUMBER}" --repo "${REPO}" --json headRefName,labels)
+            PR_JSON=$(gh pr view "${DISPATCH_PR}" --repo "${REPO}" --json number,headRefName,labels)
+            PR_NUMBER=$(echo "${PR_JSON}" | jq -r '.number')
             BRANCH_NAME=$(echo "${PR_JSON}" | jq -r '.headRefName')
           else
             # Automatic trigger from workflow_run
@@ -363,8 +369,9 @@ jobs:
 
             Never make a check pass by switching it off or weakening it:
             - no `gh workflow disable` or `gh workflow enable`
-            - no edits to `.github/carto-enabled-workflows.yml` or
-              `.github/carto-sync-required-workflows.yml`
+            - no edits to `.github/carto-enabled-workflows.yml`,
+              `.github/carto-sync-required-workflows.yml`, or the check scripts
+              and their tests in `.github/scripts/`
             - no changes to a workflow's triggers, `if:` conditions or steps to skip a failure
             - no removing or loosening an entry in `.github/carto-features.yml`
 
@@ -482,7 +489,7 @@ jobs:
             ```bash
             python3 - <<'EOF'
             import subprocess, yaml
-            for feat in yaml.safe_load(open('.github/carto-features.yml'))['features']:
+            for feat in yaml.safe_load(open('.github/carto-features.yml')).get('features', []):
                 for v in feat.get('verification', []):
                     if subprocess.run(['grep', '-q', '-e', v['pattern'], v['file']]).returncode:
                         print(f"MISSING {feat['name']}: {v['pattern']} in {v['file']}")
@@ -491,9 +498,9 @@ jobs:
 
             ### If CARTO Upstream Preserved Check Failed:
             "Verify upstream changes preserved" lists files whose resolution kept
-            carto/main's copy and dropped the upstream release's changes. For each
-            file, take the upstream TAG version as the base and lay the CARTO blocks
-            back on top verbatim (STEP 0's procedure for manifest files), then rerun:
+            carto/main's copy and dropped the upstream release's changes. Fetch the
+            release tag, take `git show "${TAG}:<file>"` as the base of each listed
+            file, lay the CARTO blocks from carto/main back on top verbatim, then rerun:
             ```bash
             TAG=$(git rev-parse --abbrev-ref HEAD | sed 's|^upstream-sync/||')
             git fetch --no-tags https://github.com/BerriAI/litellm.git "refs/tags/${TAG}:refs/tags/${TAG}"

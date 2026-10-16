@@ -16,7 +16,7 @@ UPSTREAM: Final = "MCP OAuth happy path"
 
 FAKE_GH: Final = """#!/usr/bin/env bash
 case "$1 $2" in
-  "pr list") printf '%s' "$FAKE_PR_JSON" ;;
+  "pr list" | "pr view") printf '%s' "$FAKE_PR_JSON" ;;
   "pr checks") printf '%s' "$FAKE_CHECKS" ;;
   *) exit 9 ;;
 esac
@@ -33,7 +33,9 @@ def check(workflow: str, bucket: str) -> dict[str, str]:
     return {"name": "job", "workflow": workflow, "bucket": bucket, "link": "https://github.com/o/r/actions/runs/1/job/2"}
 
 
-def classify(tmp_path: Path, check_list: list[dict[str, str]]) -> dict[str, str]:
+def classify(
+    tmp_path: Path, check_list: list[dict[str, str]], event: str = "workflow_run", dispatch_pr: str = ""
+) -> dict[str, str]:
     for tool, body in (("gh", FAKE_GH), ("yq", FAKE_YQ)):
         path = tmp_path / tool
         path.write_text(body)
@@ -42,11 +44,13 @@ def classify(tmp_path: Path, check_list: list[dict[str, str]]) -> dict[str, str]
         **os.environ,
         "PATH": f"{tmp_path}:{os.environ['PATH']}",
         "GITHUB_OUTPUT": str(tmp_path / "out"),
-        "EVENT_NAME": "workflow_run",
-        "DISPATCH_PR": "",
+        "EVENT_NAME": event,
+        "DISPATCH_PR": dispatch_pr,
         "HEAD_BRANCH": "upstream-sync/v9.9.9",
         "REPO": "CartoDB/litellm",
-        "FAKE_PR_JSON": json.dumps({"number": 1, "labels": [{"name": "upstream-sync"}]}),
+        "FAKE_PR_JSON": json.dumps(
+            {"number": 139, "headRefName": "upstream-sync/v9.9.9", "labels": [{"name": "upstream-sync"}]}
+        ),
         "FAKE_CHECKS": json.dumps(check_list),
         "FAKE_REQUIRED": json.dumps(REQUIRED),
     }
@@ -57,11 +61,16 @@ def classify(tmp_path: Path, check_list: list[dict[str, str]]) -> dict[str, str]
 @pytest.mark.parametrize("failing", REQUIRED)
 def test_every_required_failure_is_fixed_and_upstream_noise_is_ignored(tmp_path: Path, failing: str) -> None:
     outputs: Final = classify(
-        tmp_path, [*(check(wf, "fail" if wf == failing else "pass") for wf in REQUIRED), check(UPSTREAM, "fail")]
+        tmp_path,
+        [
+            *(check(wf, "fail" if wf == failing else "pass") for wf in REQUIRED),
+            check(UPSTREAM, "fail"),
+            check("Upstream cancelled", "cancel"),
+        ],
     )
     assert outputs["should-fix"] == "true"
     assert [c["workflow"] for c in json.loads(outputs["blocking-failed"])] == [failing]
-    assert outputs["ignored-failed"] == UPSTREAM
+    assert outputs["ignored-failed"] == f"{UPSTREAM}, Upstream cancelled"
 
 
 @pytest.mark.parametrize(
@@ -77,3 +86,11 @@ def test_fixer_runs_only_when_sync_ready_is_blocked(
     tmp_path: Path, check_list: list[dict[str, str]], should_fix: str
 ) -> None:
     assert classify(tmp_path, check_list)["should-fix"] == should_fix
+
+
+def test_dispatch_takes_the_pr_number_from_github_not_the_raw_input(tmp_path: Path) -> None:
+    outputs: Final = classify(
+        tmp_path, [check(REQUIRED[0], "fail")], event="workflow_dispatch", dispatch_pr="upstream-sync/v9.9.9"
+    )
+    assert outputs["should-fix"] == "true"
+    assert (outputs["pr-number"], outputs["branch-name"]) == ("139", "upstream-sync/v9.9.9")
