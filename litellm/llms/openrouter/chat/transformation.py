@@ -8,11 +8,10 @@ Docs: https://openrouter.ai/docs/parameters
 
 from collections.abc import AsyncIterator, Iterator
 from enum import Enum
-from typing import Any, Final, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 
 import httpx
 
-import litellm
 from litellm.llms.base_llm.base_model_iterator import BaseModelResponseIterator
 from litellm.llms.base_llm.chat.transformation import BaseLLMException
 from litellm.types.llms.openai import AllMessageValues, ChatCompletionToolParam
@@ -21,6 +20,10 @@ from litellm.types.utils import ModelResponse, ModelResponseStream
 
 from ...openai.chat.gpt_transformation import OpenAIGPTConfig
 from ..common_utils import OpenRouterException
+
+if TYPE_CHECKING:
+    from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
+    from litellm.litellm_core_utils.tokenizer import Encoding as Tokenizer
 
 
 class CacheControlSupportedModels(str, Enum):
@@ -36,18 +39,10 @@ class CacheControlSupportedModels(str, Enum):
 class OpenrouterConfig(OpenAIGPTConfig):
     def get_supported_openai_params(self, model: str) -> list:
         """
-        Allow reasoning parameters for models flagged as reasoning-capable.
+        Include reasoning parameters regardless of model-map capabilities.
         """
         supported_params: Final = super().get_supported_openai_params(model=model)
-        try:
-            if litellm.supports_reasoning(model=model, custom_llm_provider="openrouter") or litellm.supports_reasoning(
-                model=model
-            ):
-                supported_params.append("reasoning_effort")
-                supported_params.append("thinking")
-        except Exception:
-            pass
-        return list(dict.fromkeys(supported_params))
+        return list(dict.fromkeys([*supported_params, "reasoning_effort", "thinking"]))
 
     def map_openai_params(
         self,
@@ -172,12 +167,12 @@ class OpenrouterConfig(OpenAIGPTConfig):
         model: str,
         raw_response: httpx.Response,
         model_response: ModelResponse,
-        logging_obj: Any,
+        logging_obj: "LiteLLMLoggingObj",
         request_data: dict,
         messages: list[AllMessageValues],
         optional_params: dict,
         litellm_params: dict,
-        encoding: Any,
+        encoding: "Tokenizer | None",
         api_key: str | None = None,
         json_mode: bool | None = None,
     ) -> ModelResponse:

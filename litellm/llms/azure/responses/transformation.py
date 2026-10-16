@@ -1,3 +1,4 @@
+import re
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any, Final, Literal
 
@@ -6,6 +7,7 @@ from openai.types.responses import ResponseReasoningItem
 
 from litellm._logging import verbose_logger
 from litellm.litellm_core_utils.url_utils import encode_url_path_segment
+from litellm.llms.azure.chat.gpt_5_transformation import AzureOpenAIGPT5Config
 from litellm.llms.azure.common_utils import BaseAzureLLM
 from litellm.llms.openai.responses.transformation import OpenAIResponsesAPIConfig
 from litellm.types.llms.openai import *
@@ -20,6 +22,8 @@ if TYPE_CHECKING:
 else:
     LiteLLMLoggingObj = Any
 
+_DEPLOYMENT_PATH: Final = re.compile(r"/openai/deployments/[^/?]+[^?]*")
+
 
 class AzureOpenAIResponsesAPIConfig(OpenAIResponsesAPIConfig):
     # Parameters not supported by Azure Responses API
@@ -28,6 +32,14 @@ class AzureOpenAIResponsesAPIConfig(OpenAIResponsesAPIConfig):
     @property
     def custom_llm_provider(self) -> LlmProviders:
         return LlmProviders.AZURE
+
+    @staticmethod
+    def _supports_reasoning_effort_none(model: str) -> bool:
+        return AzureOpenAIGPT5Config._supports_reasoning_effort_level(model, "none")
+
+    @staticmethod
+    def _effort_resolves_to_none(model: str, effort: str | None) -> bool:
+        return AzureOpenAIGPT5Config.effort_resolves_to_none(model, effort)
 
     def get_supported_openai_params(self, model: str) -> list:
         """
@@ -40,12 +52,7 @@ class AzureOpenAIResponsesAPIConfig(OpenAIResponsesAPIConfig):
         return BaseAzureLLM._base_validate_azure_environment(headers=headers, litellm_params=litellm_params)
 
     def get_stripped_model_name(self, model: str) -> str:
-        # if "responses/" is in the model name, remove it
-        if "responses/" in model:
-            model = model.replace("responses/", "")
-        if "o_series" in model:
-            model = model.replace("o_series/", "")
-        return model
+        return model.replace("responses/", "").replace("o_series/", "").replace("azure_ai/", "")
 
     def _handle_reasoning_item(self, item: dict[str, Any]) -> dict[str, Any]:
         """
@@ -96,7 +103,7 @@ class AzureOpenAIResponsesAPIConfig(OpenAIResponsesAPIConfig):
 
         # Then filter out status from message items
         if isinstance(validated_input, list):
-            filtered_input: Final[list[Any]] = []
+            filtered_input: Final[list[object]] = []
             for item in validated_input:
                 if isinstance(item, dict) and item.get("type") == "message":
                     # Filter out status field from message items
@@ -123,7 +130,7 @@ class AzureOpenAIResponsesAPIConfig(OpenAIResponsesAPIConfig):
         if "tools" in response_api_optional_request_params and isinstance(
             response_api_optional_request_params["tools"], list
         ):
-            new_tools: Final[list[dict[str, Any]]] = []
+            new_tools: Final[list[dict[str, object]]] = []
             for tool in response_api_optional_request_params["tools"]:
                 if isinstance(tool, dict) and "function" in tool:
                     new_tool: dict[str, Any] = deepcopy(tool)
@@ -155,6 +162,9 @@ class AzureOpenAIResponsesAPIConfig(OpenAIResponsesAPIConfig):
             "https://litellm8397336933.openai.azure.com"
             OR
             "https://litellm8397336933.openai.azure.com/openai/responses?api-version=2024-05-01-preview"
+            OR a Chat Completions style base such as
+            "https://litellm8397336933.openai.azure.com/openai/deployments/gpt-4o/chat/completions",
+            whose deployment path is dropped because the Responses API takes the model in the body
         - model: Model name.
         - optional_params: Additional query parameters, including "api_version".
         - stream: If streaming is required (optional).
@@ -166,7 +176,7 @@ class AzureOpenAIResponsesAPIConfig(OpenAIResponsesAPIConfig):
         from litellm.constants import AZURE_DEFAULT_RESPONSES_API_VERSION
 
         return BaseAzureLLM._get_base_azure_url(
-            api_base=api_base,
+            api_base=_DEPLOYMENT_PATH.sub("", api_base) if api_base else api_base,
             litellm_params=litellm_params,
             route="/openai/responses",
             default_api_version=AZURE_DEFAULT_RESPONSES_API_VERSION,
@@ -291,7 +301,7 @@ class AzureOpenAIResponsesAPIConfig(OpenAIResponsesAPIConfig):
         url: Final = self._construct_url_for_response_id_in_path(
             api_base=api_base, response_id=response_id, path_suffix="/input_items"
         )
-        params: Final[dict[str, Any]] = {}
+        params: Final[dict[str, str | int]] = {}
         if after is not None:
             params["after"] = after
         if before is not None:
