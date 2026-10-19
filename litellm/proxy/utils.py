@@ -7846,20 +7846,6 @@ async def _run_spend_logs_job(
                 model_usage_err,
             )
 
-    async with prisma_client._model_usage_transactions_lock:
-        model_usage_to_process: Final = prisma_client.model_usage_transactions
-        prisma_client.model_usage_transactions = []
-    try:
-        from litellm.proxy.db.model_usage_rollup import flush_model_usage_transactions
-
-        await flush_model_usage_transactions(prisma_client=prisma_client, transactions=model_usage_to_process)
-    except Exception as model_usage_err:
-        verbose_proxy_logger.error(
-            "Spend tracking - model usage flush failed; %s model usage transactions dropped: %s",
-            len(model_usage_to_process),
-            model_usage_err,
-        )
-
     await flush_baseline_accounting(prisma_client)
 
     async with prisma_client._autorouter_turn_transactions_lock:

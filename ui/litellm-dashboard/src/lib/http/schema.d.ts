@@ -1189,6 +1189,60 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Audit Logs
+         * @description Get all audit logs with filtering and pagination.
+         *
+         *     Returns a paginated response of audit logs matching the specified filters.
+         *
+         *     Note: object_team_id and object_key_hash use Prisma JSON path filtering,
+         *     which requires PostgreSQL.
+         */
+        get: operations["get_audit_logs_audit_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/audit/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Audit Log By Id
+         * @description Get detailed information about a specific audit log entry by its ID.
+         *
+         *     Args:
+         *         id (str): The unique identifier of the audit log entry
+         *
+         *     Returns:
+         *         AuditLogResponse: Detailed information about the audit log entry
+         *
+         *     Raises:
+         *         HTTPException: If the audit log is not found or if there's a database connection error
+         */
+        get: operations["get_audit_log_by_id_audit__id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/authorize": {
         parameters: {
             query?: never;
@@ -4600,6 +4654,50 @@ export interface paths {
         put?: never;
         /** Delete Allowed Ip */
         post: operations["delete_allowed_ip_delete_allowed_ip_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/email/event_settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Email Event Settings
+         * @description Get all email event settings
+         */
+        get: operations["get_email_event_settings_email_event_settings_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update Event Settings
+         * @description Update the settings for email events
+         */
+        patch: operations["update_event_settings_email_event_settings_patch"];
+        trace?: never;
+    };
+    "/email/event_settings/reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reset Event Settings
+         * @description Reset all email event settings to default (new user invitations on, virtual key creation off)
+         */
+        post: operations["reset_event_settings_email_event_settings_reset_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -18477,6 +18575,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/user/available_users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Available Enterprise Users
+         * @description For keys with `max_users` set, return the list of users that are allowed to use the key.
+         */
+        get: operations["available_enterprise_users_user_available_users_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/user/bulk_update": {
         parameters: {
             query?: never;
@@ -26518,6 +26636,37 @@ export interface components {
              */
             unnamed_teams_count: number;
         };
+        /**
+         * AuditLogResponse
+         * @description Response model for a single audit log entry
+         */
+        AuditLogResponse: {
+            /** Action */
+            action: string;
+            /** Before Value */
+            before_value?: {
+                [key: string]: unknown;
+            } | null;
+            /** Changed By */
+            changed_by: string;
+            /** Changed By Api Key */
+            changed_by_api_key: string;
+            /** Id */
+            id: string;
+            /** Object Id */
+            object_id: string;
+            /** Table Name */
+            table_name: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Updated Values */
+            updated_values?: {
+                [key: string]: unknown;
+            } | null;
+        };
         /** AutoRouterAllowance */
         AutoRouterAllowance: {
             /**
@@ -31825,54 +31974,6 @@ export interface components {
             [key: string]: unknown;
         };
         /**
-         * DecisionModelCheck
-         * @description One predicate the decision model scores the request or response against.
-         */
-        DecisionModelCheck: {
-            /**
-             * Action
-             * @default block
-             * @enum {string}
-             */
-            action: "block" | "log";
-            /** Instructions */
-            instructions: string;
-            /** Name */
-            name: string;
-            /**
-             * Threshold
-             * @default 0.7
-             */
-            threshold: number;
-        };
-        /** DecisionsResponse */
-        DecisionsResponse: {
-            /** Answers */
-            answers: {
-                [key: string]: components["schemas"]["NoulAnswer"] | components["schemas"]["ChoiceAnswer"] | components["schemas"]["ScoreAnswer"];
-            };
-            /** Model */
-            model?: string | null;
-            usage?: components["schemas"]["DecisionsUsage"] | null;
-        } & {
-            [key: string]: unknown;
-        };
-        /** DecisionsUsage */
-        DecisionsUsage: {
-            /**
-             * Input Tokens
-             * @default 0
-             */
-            input_tokens: number;
-            /**
-             * Output Tokens
-             * @default 0
-             */
-            output_tokens: number;
-        } & {
-            [key: string]: unknown;
-        };
-        /**
          * DefaultInternalUserParams
          * @description Default parameters to apply when a new user signs in via SSO or is created on the /user/new API endpoint
          */
@@ -32018,6 +32119,14 @@ export interface components {
         DeleteOrganizationRequest: {
             /** Organization Ids */
             organization_ids: string[];
+        };
+        /**
+         * DeleteProjectRequest
+         * @description Request model for DELETE /project/delete
+         */
+        DeleteProjectRequest: {
+            /** Project Ids */
+            project_ids: string[];
         };
         /**
          * DeleteResponseResult
@@ -32263,6 +32372,27 @@ export interface components {
              * @constant
              */
             type?: "message";
+        };
+        /**
+         * EmailEvent
+         * @enum {string}
+         */
+        EmailEvent: "Virtual Key Created" | "New User Invitation" | "Virtual Key Rotated" | "Soft Budget Crossed" | "Max Budget Alert";
+        /** EmailEventSettings */
+        EmailEventSettings: {
+            /** Enabled */
+            enabled: boolean;
+            event: components["schemas"]["EmailEvent"];
+        };
+        /** EmailEventSettingsResponse */
+        EmailEventSettingsResponse: {
+            /** Settings */
+            settings: components["schemas"]["EmailEventSettings"][];
+        };
+        /** EmailEventSettingsUpdateRequest */
+        EmailEventSettingsUpdateRequest: {
+            /** Settings */
+            settings: components["schemas"]["EmailEventSettings"][];
         };
         /** EmbeddingRequest */
         EmbeddingRequest: {
@@ -36379,6 +36509,65 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /**
+         * LiteLLM_ProjectTable
+         * @description Database model representation for project
+         */
+        LiteLLM_ProjectTable: {
+            /**
+             * Blocked
+             * @default false
+             */
+            blocked: boolean;
+            /** Budget Id */
+            budget_id?: string | null;
+            /** Created At */
+            created_at?: string | null;
+            /** Created By */
+            created_by?: string | null;
+            /** Description */
+            description?: string | null;
+            litellm_budget_table?: components["schemas"]["LiteLLM_BudgetTable"] | null;
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            } | null;
+            /** Model Rpm Limit */
+            model_rpm_limit?: {
+                [key: string]: unknown;
+            } | null;
+            /** Model Spend */
+            model_spend?: {
+                [key: string]: unknown;
+            } | null;
+            /** Model Tpm Limit */
+            model_tpm_limit?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Models
+             * @default []
+             */
+            models: string[];
+            object_permission?: components["schemas"]["LiteLLM_ObjectPermissionTable"] | null;
+            /** Object Permission Id */
+            object_permission_id?: string | null;
+            /** Project Alias */
+            project_alias?: string | null;
+            /** Project Id */
+            project_id: string;
+            /**
+             * Spend
+             * @default 0
+             */
+            spend: number;
+            /** Team Id */
+            team_id?: string | null;
+            /** Updated At */
+            updated_at?: string | null;
+            /** Updated By */
+            updated_by?: string | null;
+        };
         /** LiteLLM_ProxyModelTable */
         LiteLLM_ProxyModelTable: {
             /**
@@ -39712,6 +39901,148 @@ export interface components {
             /** Users */
             users?: components["schemas"]["LiteLLM_UserTable"][] | null;
         };
+        /**
+         * NewProjectRequest
+         * @description Request model for POST /project/new
+         */
+        NewProjectRequest: {
+            /** Allowed Models */
+            allowed_models?: string[] | null;
+            /**
+             * Blocked
+             * @default false
+             */
+            blocked: boolean;
+            /** Budget Duration */
+            budget_duration?: string | null;
+            /** Budget Id */
+            budget_id?: string | null;
+            /** Description */
+            description?: string | null;
+            /** Guardrails */
+            guardrails?: string[] | null;
+            /** Max Budget */
+            max_budget?: number | null;
+            /** Max Parallel Requests */
+            max_parallel_requests?: number | null;
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            } | null;
+            /** Model Itpm Limit */
+            model_itpm_limit?: {
+                [key: string]: number;
+            } | null;
+            /** Model Max Budget */
+            model_max_budget?: {
+                [key: string]: unknown;
+            } | null;
+            /** Model Otpm Limit */
+            model_otpm_limit?: {
+                [key: string]: number;
+            } | null;
+            /** Model Rpm Limit */
+            model_rpm_limit?: {
+                [key: string]: unknown;
+            } | null;
+            /** Model Tpm Limit */
+            model_tpm_limit?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Models
+             * @default []
+             */
+            models: string[];
+            object_permission?: components["schemas"]["LiteLLM_ObjectPermissionBase"] | null;
+            /** Policies */
+            policies?: string[] | null;
+            /** Project Alias */
+            project_alias?: string | null;
+            /** Project Id */
+            project_id?: string | null;
+            /** Rpm Limit */
+            rpm_limit?: number | null;
+            /** Soft Budget */
+            soft_budget?: number | null;
+            /** Tags */
+            tags?: string[] | null;
+            /** Team Id */
+            team_id: string;
+            /** Temp Budget Expiry */
+            temp_budget_expiry?: string | null;
+            /** Temp Budget Increase */
+            temp_budget_increase?: number | null;
+            /** Tpd Limit */
+            tpd_limit?: number | null;
+            /** Tpm Limit */
+            tpm_limit?: number | null;
+        };
+        /**
+         * NewProjectResponse
+         * @description Response model for POST /project/new
+         */
+        NewProjectResponse: {
+            /**
+             * Blocked
+             * @default false
+             */
+            blocked: boolean;
+            /** Budget Id */
+            budget_id?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Created By */
+            created_by?: string | null;
+            /** Description */
+            description?: string | null;
+            litellm_budget_table?: components["schemas"]["LiteLLM_BudgetTable"] | null;
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            } | null;
+            /** Model Rpm Limit */
+            model_rpm_limit?: {
+                [key: string]: unknown;
+            } | null;
+            /** Model Spend */
+            model_spend?: {
+                [key: string]: unknown;
+            } | null;
+            /** Model Tpm Limit */
+            model_tpm_limit?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Models
+             * @default []
+             */
+            models: string[];
+            object_permission?: components["schemas"]["LiteLLM_ObjectPermissionTable"] | null;
+            /** Object Permission Id */
+            object_permission_id?: string | null;
+            /** Project Alias */
+            project_alias?: string | null;
+            /** Project Id */
+            project_id: string;
+            /**
+             * Spend
+             * @default 0
+             */
+            spend: number;
+            /** Team Id */
+            team_id?: string | null;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Updated By */
+            updated_by?: string | null;
+        };
         /** NewTeamRequest */
         NewTeamRequest: {
             /** Access Group Ids */
@@ -40802,6 +41133,34 @@ export interface components {
             page: number;
             /** Page Size */
             page_size: number;
+        };
+        /**
+         * PaginatedAuditLogResponse
+         * @description Response model for paginated audit logs
+         */
+        PaginatedAuditLogResponse: {
+            /** Audit Logs */
+            audit_logs: components["schemas"]["AuditLogResponse"][];
+            /**
+             * Page
+             * @description Current page number
+             */
+            page: number;
+            /**
+             * Page Size
+             * @description Number of items per page
+             */
+            page_size: number;
+            /**
+             * Total
+             * @description Total number of audit logs matching the filters
+             */
+            total: number;
+            /**
+             * Total Pages
+             * @description Total number of pages
+             */
+            total_pages: number;
         };
         /** PassThroughEndpointResponse */
         PassThroughEndpointResponse: {
@@ -49172,6 +49531,77 @@ export interface components {
             version?: string | null;
         };
         /**
+         * UpdateProjectRequest
+         * @description Request model for POST /project/update
+         */
+        UpdateProjectRequest: {
+            /** Allowed Models */
+            allowed_models?: string[] | null;
+            /** Blocked */
+            blocked?: boolean | null;
+            /** Budget Duration */
+            budget_duration?: string | null;
+            /** Budget Id */
+            budget_id?: string | null;
+            /** Description */
+            description?: string | null;
+            /** Guardrails */
+            guardrails?: string[] | null;
+            /** Max Budget */
+            max_budget?: number | null;
+            /** Max Parallel Requests */
+            max_parallel_requests?: number | null;
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            } | null;
+            /** Model Itpm Limit */
+            model_itpm_limit?: {
+                [key: string]: number;
+            } | null;
+            /** Model Max Budget */
+            model_max_budget?: {
+                [key: string]: unknown;
+            } | null;
+            /** Model Otpm Limit */
+            model_otpm_limit?: {
+                [key: string]: number;
+            } | null;
+            /** Model Rpm Limit */
+            model_rpm_limit?: {
+                [key: string]: unknown;
+            } | null;
+            /** Model Tpm Limit */
+            model_tpm_limit?: {
+                [key: string]: unknown;
+            } | null;
+            /** Models */
+            models?: string[] | null;
+            object_permission?: components["schemas"]["LiteLLM_ObjectPermissionBase"] | null;
+            /** Policies */
+            policies?: string[] | null;
+            /** Project Alias */
+            project_alias?: string | null;
+            /** Project Id */
+            project_id: string;
+            /** Rpm Limit */
+            rpm_limit?: number | null;
+            /** Soft Budget */
+            soft_budget?: number | null;
+            /** Tags */
+            tags?: string[] | null;
+            /** Team Id */
+            team_id?: string | null;
+            /** Temp Budget Expiry */
+            temp_budget_expiry?: string | null;
+            /** Temp Budget Increase */
+            temp_budget_increase?: number | null;
+            /** Tpd Limit */
+            tpd_limit?: number | null;
+            /** Tpm Limit */
+            tpm_limit?: number | null;
+        };
+        /**
          * UpdatePublicModelGroupsRequest
          * @description Request model for updating public model groups
          */
@@ -53128,6 +53558,107 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
+            };
+        };
+    };
+    get_audit_logs_audit_get: {
+        parameters: {
+            query?: {
+                page?: number;
+                page_size?: number;
+                /** @description Filter by user or system that performed the action */
+                changed_by?: string | null;
+                /** @description Filter by API key hash that performed the action */
+                changed_by_api_key?: string | null;
+                /** @description Filter by action type (create, update, delete) */
+                action?: string | null;
+                /** @description Filter by table name that was modified */
+                table_name?: string | null;
+                /** @description Filter by ID of the object that was modified */
+                object_id?: string | null;
+                /** @description Filter logs after this date */
+                start_date?: string | null;
+                /** @description Filter logs before this date */
+                end_date?: string | null;
+                /** @description Filter by team_id present in before_value or updated_values JSON (PostgreSQL only) */
+                object_team_id?: string | null;
+                /** @description Filter by token (key hash) present in before_value or updated_values JSON (PostgreSQL only) */
+                object_key_hash?: string | null;
+                /** @description Match a row whose id, object_id, changed_by, or changed_by_api_key equals this value */
+                search?: string | null;
+                /** @description Column to sort by (e.g. 'updated_at', 'action', 'table_name') */
+                sort_by?: string | null;
+                /** @description Sort order ('asc' or 'desc') */
+                sort_order?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaginatedAuditLogResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_audit_log_by_id_audit__id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditLogResponse"];
+                };
+            };
+            /** @description Audit log not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Database connection error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -58351,6 +58882,79 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_email_event_settings_email_event_settings_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EmailEventSettingsResponse"];
+                };
+            };
+        };
+    };
+    update_event_settings_email_event_settings_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EmailEventSettingsUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reset_event_settings_email_event_settings_reset_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
         };
@@ -70084,6 +70688,156 @@ export interface operations {
             };
         };
     };
+    delete_project_project_delete_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeleteProjectRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LiteLLM_ProjectTable"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    project_info_project_info_get: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LiteLLM_ProjectTable"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_projects_project_list_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LiteLLM_ProjectTable"][];
+                };
+            };
+        };
+    };
+    new_project_project_new_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewProjectRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NewProjectResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_project_project_update_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateProjectRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LiteLLM_ProjectTable"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     create_prompt_prompts_post: {
         parameters: {
             query?: never;
@@ -76375,6 +77129,26 @@ export interface operations {
         };
     };
     ui_get_available_role_user_available_roles_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    available_enterprise_users_user_available_users_get: {
         parameters: {
             query?: never;
             header?: never;
