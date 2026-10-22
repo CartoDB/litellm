@@ -12,10 +12,13 @@ on:
     # both were removed. "CARTO Feature Tests" is CARTO's own unit-test gate
     # (carto-feature-tests.yml); listing it here is what lets the fixer react
     # to a failing test suite the way it used to react to Mock Tests.
-    # Subset of .github/carto-sync-required-workflows.yml (enforced by check_sync_workflow_triggers.py).
+    # Must equal .github/carto-sync-required-workflows.yml (enforced by check_sync_workflow_triggers.py):
+    # a required workflow that fails without waking the fixer stalls the sync.
     workflows:
       - "CARTO - Deploy Docker Image (CI)"
       - "CARTO Feature Tests"
+      - "CARTO Features Manifest Check"
+      - "CARTO Upstream Preserved Check"
     types:
       - completed
     branches:
@@ -36,41 +39,64 @@ permissions:
 
 # Prevent multiple workflows running on the same PR simultaneously
 # IMPORTANT: Uses shared concurrency group with Resolver to prevent both running simultaneously
+# Only runs that pass check-ci-status's `if` join the PR's group: GitHub keeps one pending run per group,
+# so a run that is about to skip would otherwise replace a pending run that has work to do
 concurrency:
-  group: upstream-sync-${{ github.event.workflow_run.pull_requests[0].number || github.event.inputs.pr-number || github.run_id }}
+  group: >-
+    upstream-sync-${{
+    (github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.event == 'pull_request'
+    && github.event.workflow_run.pull_requests[0].number)
+    || github.event.inputs.pr-number || github.run_id }}
   cancel-in-progress: false  # Wait for running workflow to finish (don't cancel)
 
 jobs:
   check-ci-status:
     name: Check CI Status
     runs-on: ubuntu-latest
-    if: github.event.workflow_run.conclusion == 'failure' || github.event_name == 'workflow_dispatch'
+    # The manifest check also runs on push; its pull_request twin reports the same head, so one fixer run is enough
+    if: >-
+      (github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.event == 'pull_request')
+      || github.event_name == 'workflow_dispatch'
 
     outputs:
       should-fix: ${{ steps.check.outputs.should-fix }}
       pr-number: ${{ steps.check.outputs.pr-number }}
       branch-name: ${{ steps.check.outputs.branch-name }}
+      blocking-failed: ${{ steps.check.outputs.blocking-failed }}
+      ignored-failed: ${{ steps.check.outputs.ignored-failed }}
 
     steps:
+      # workflow_run executes from the default branch, so the sync PR cannot alter which checks block sync-ready
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/carto-sync-required-workflows.yml
+          sparse-checkout-cone-mode: false
+
       - name: Get PR information
         id: check
         env:
           GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_PR: ${{ github.event.inputs.pr-number }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          REPO: ${{ github.repository }}
         run: |
+          set -eu
           echo "::group::Determining PR and branch"
 
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
             # Manual trigger
-            PR_NUMBER="${{ github.event.inputs.pr-number }}"
-            PR_JSON=$(gh pr view ${PR_NUMBER} --repo ${{ github.repository }} --json headRefName,labels)
+            PR_JSON=$(gh pr view "${DISPATCH_PR}" --repo "${REPO}" --json number,headRefName,labels)
+            PR_NUMBER=$(echo "${PR_JSON}" | jq -r '.number')
             BRANCH_NAME=$(echo "${PR_JSON}" | jq -r '.headRefName')
           else
             # Automatic trigger from workflow_run
-            BRANCH_NAME="${{ github.event.workflow_run.head_branch }}"
+            BRANCH_NAME="${HEAD_BRANCH}"
 
             # Find PR for this branch
             PR_JSON=$(gh pr list \
-              --repo ${{ github.repository }} \
+              --repo "${REPO}" \
               --head "${BRANCH_NAME}" \
               --json number,labels \
               --jq '.[0]')
@@ -108,9 +134,29 @@ jobs:
             exit 0
           fi
 
+          # Same split as the ready checker: only failures in the required list keep the PR from sync-ready
+          REQUIRED_JSON=$(yq -o=json '.required' .github/carto-sync-required-workflows.yml)
+          CHECKS_JSON=$(gh pr checks "${PR_NUMBER}" --repo "${REPO}" --json name,workflow,bucket,link)
+          BLOCKING=$(jq -c --argjson req "${REQUIRED_JSON}" \
+            '[.[] | select(.bucket == "fail" or .bucket == "cancel") | select(.workflow as $w | $req | index($w))]' \
+            <<< "${CHECKS_JSON}")
+          IGNORED=$(jq -r --argjson req "${REQUIRED_JSON}" \
+            '[.[] | select(.bucket == "fail" or .bucket == "cancel") | select(.workflow as $w | $req | index($w) | not) | .workflow] | unique | join(", ")' \
+            <<< "${CHECKS_JSON}")
+          echo "[Fixer] Failing and blocking sync-ready: $(jq -r 'map("\(.workflow) / \(.name)") | join(", ")' <<< "${BLOCKING}")"
+          echo "[Fixer] Failing but not required for sync-ready (ignored): ${IGNORED:-none}"
+
+          if [[ "${BLOCKING}" == "[]" ]]; then
+            echo "[Fixer] Nothing that blocks sync-ready is failing on the current head - skipping"
+            echo "should-fix=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
           echo "should-fix=true" >> $GITHUB_OUTPUT
           echo "pr-number=${PR_NUMBER}" >> $GITHUB_OUTPUT
           echo "branch-name=${BRANCH_NAME}" >> $GITHUB_OUTPUT
+          echo "blocking-failed=${BLOCKING}" >> $GITHUB_OUTPUT
+          echo "ignored-failed=${IGNORED}" >> $GITHUB_OUTPUT
 
           echo "::endgroup::"
 
@@ -134,137 +180,45 @@ jobs:
           git config --global user.name "Cartofante"
           git config --global user.email "cartofante@carto.com"
 
-      - name: Get failed workflow details
-        id: failures
+      - name: Download logs of the failing required checks
         env:
           GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          REPO: ${{ github.repository }}
+          BLOCKING: ${{ needs.check-ci-status.outputs.blocking-failed }}
+          IGNORED: ${{ needs.check-ci-status.outputs.ignored-failed }}
         run: |
-          echo "::group::Analyzing CI failures"
+          set -eu
+          echo "::group::Downloading logs of the checks that block sync-ready"
+          mkdir -p /tmp/ci_logs
+          BLOCKING_JOBS=$(jq -c 'map(. + {job: (.link | capture("/job/(?<id>[0-9]+)").id)})' <<< "${BLOCKING}")
+          # The jobs API serves a finished job's log while its run is still going; gh run view refuses until the run ends
+          for job_id in $(jq -r '.[].job' <<< "${BLOCKING_JOBS}"); do
+            if ! curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" \
+              "https://api.github.com/repos/${REPO}/actions/jobs/${job_id}/logs" -o "/tmp/ci_logs/${job_id}.log"; then
+              echo "::warning::No log available for job ${job_id}"
+              echo "No log available for this job" > "/tmp/ci_logs/${job_id}.log"
+            fi
+          done
 
-          PR_NUMBER="${{ needs.check-ci-status.outputs.pr-number }}"
-
-          # Get PR head SHA
-          HEAD_SHA=$(gh pr view ${PR_NUMBER} --repo ${{ github.repository }} --json headRefOid --jq '.headRefOid')
-
-          # Get all failed workflow runs for this commit
-          gh run list \
-            --repo ${{ github.repository }} \
-            --commit ${HEAD_SHA} \
-            --status failure \
-            --json databaseId,name,url \
-            --limit 10 > /tmp/failed_runs.json
-
-          FAILED_COUNT=$(cat /tmp/failed_runs.json | jq 'length')
-
-          echo "[Fixer] Found ${FAILED_COUNT} failed workflow runs"
-          cat /tmp/failed_runs.json | jq -r '.[] | "  - \(.name): \(.url)"'
-
-          # Get check runs details (gh pr checks uses 'state' not 'conclusion')
-          gh pr checks ${PR_NUMBER} \
-            --repo ${{ github.repository }} \
-            --json name,state,link \
-            > /tmp/check_runs.json
-
-          FAILED_CHECKS=$(cat /tmp/check_runs.json | jq '[.[] | select(.state == "FAILURE" or .state == "TIMED_OUT")]')
-          echo "${FAILED_CHECKS}" > /tmp/failed_checks.json
-
-          echo "[Fixer] Failed checks:"
-          echo "${FAILED_CHECKS}" | jq -r '.[] | "  - \(.name): \(.state)"'
-
-          echo "failed-count=${FAILED_COUNT}" >> $GITHUB_OUTPUT
-          echo "head-sha=${HEAD_SHA}" >> $GITHUB_OUTPUT
-
-          echo "::endgroup::"
-
-      - name: Extract CI errors from failed runs
-        id: extract-errors
-        if: steps.failures.outputs.failed-count != '0'
-        env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
-        run: |
-          echo "::group::Extracting actual CI errors"
-
-          PR_NUMBER="${{ needs.check-ci-status.outputs.pr-number }}"
-          BRANCH="${{ needs.check-ci-status.outputs.branch-name }}"
-
-          # Initialize error file
-          echo "# CI ERRORS - FIX THESE" > /tmp/all_errors.txt
-          echo "" >> /tmp/all_errors.txt
-
-          # Extract Docker Build errors - get the FULL failed job log
-          echo "## Docker Build Errors" >> /tmp/all_errors.txt
-          DOCKER_RUN=$(gh run list --repo ${{ github.repository }} \
-            --workflow="CARTO - Deploy Docker Image (CI)" \
-            --branch="${BRANCH}" \
-            --status=failure \
-            --json databaseId \
-            --jq '.[0].databaseId' 2>/dev/null || echo "")
-
-          if [ -n "$DOCKER_RUN" ] && [ "$DOCKER_RUN" != "null" ]; then
-            echo "[CI Fixer] Docker run ID: $DOCKER_RUN"
-            # Get FULL failed job log
-            gh run view $DOCKER_RUN --repo ${{ github.repository }} --log-failed 2>&1 > /tmp/docker_full_log.txt
-            DOCKER_LINES=$(wc -l < /tmp/docker_full_log.txt)
-            echo "[CI Fixer] Docker log: ${DOCKER_LINES} lines"
-            echo "Docker Build Run ID: $DOCKER_RUN (${DOCKER_LINES} lines)" >> /tmp/all_errors.txt
-            echo "Full log saved to: /tmp/docker_full_log.txt" >> /tmp/all_errors.txt
-          else
-            echo "No failed Docker build found" >> /tmp/all_errors.txt
-            touch /tmp/docker_full_log.txt
-          fi
-
-          # Extract CARTO Feature Tests errors - get the FULL failed job log.
-          # This is CARTO's own unit-test gate (carto-feature-tests.yml); it
-          # replaced the upstream-deprecated "LiteLLM Mock Tests" workflow as
-          # the source of test-failure signal on carto/main PRs.
-          echo "" >> /tmp/all_errors.txt
-          echo "## CARTO Feature Tests Errors" >> /tmp/all_errors.txt
-          TESTS_RUN=$(gh run list --repo ${{ github.repository }} \
-            --workflow="CARTO Feature Tests" \
-            --branch="${BRANCH}" \
-            --status=failure \
-            --json databaseId \
-            --jq '.[0].databaseId' 2>/dev/null || echo "")
-
-          if [ -n "$TESTS_RUN" ] && [ "$TESTS_RUN" != "null" ]; then
-            echo "[CI Fixer] Tests run ID: $TESTS_RUN"
-            # Get FULL failed job log
-            gh run view $TESTS_RUN --repo ${{ github.repository }} --log-failed 2>&1 > /tmp/tests_full_log.txt
-            TESTS_LINES=$(wc -l < /tmp/tests_full_log.txt)
-            echo "[CI Fixer] Tests log: ${TESTS_LINES} lines"
-            echo "CARTO Feature Tests Run ID: $TESTS_RUN (${TESTS_LINES} lines)" >> /tmp/all_errors.txt
-            echo "Full log saved to: /tmp/tests_full_log.txt" >> /tmp/all_errors.txt
-          else
-            echo "No failed CARTO Feature Tests found" >> /tmp/all_errors.txt
-            touch /tmp/tests_full_log.txt
-          fi
-
-          # Show extracted errors
-          echo "=== All Extracted Errors ==="
-          cat /tmp/all_errors.txt
-
-          # Output which CI workflows failed (for targeted verification)
-          if [ -n "$DOCKER_RUN" ] && [ "$DOCKER_RUN" != "null" ]; then
-            echo "docker-failed=true" >> $GITHUB_OUTPUT
-          else
-            echo "docker-failed=false" >> $GITHUB_OUTPUT
-          fi
-
-          if [ -n "$TESTS_RUN" ] && [ "$TESTS_RUN" != "null" ]; then
-            echo "tests-failed=true" >> $GITHUB_OUTPUT
-          else
-            echo "tests-failed=false" >> $GITHUB_OUTPUT
-          fi
-
+          {
+            echo "## Failing and blocking sync-ready: fix these"
+            jq -r '.[] | "- \(.workflow) / \(.name): /tmp/ci_logs/\(.job).log"' <<< "${BLOCKING_JOBS}"
+            echo
+            echo "## Failing but not required for sync-ready: ignore"
+            echo "${IGNORED:-None}"
+          } > /tmp/ci_failures.md
+          cat /tmp/ci_failures.md
           echo "::endgroup::"
 
       - name: Comment on PR - Starting Fix
         env:
           GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          BLOCKING: ${{ needs.check-ci-status.outputs.blocking-failed }}
+          IGNORED: ${{ needs.check-ci-status.outputs.ignored-failed }}
         run: |
           PR_NUMBER="${{ needs.check-ci-status.outputs.pr-number }}"
 
-          FAILED_CHECKS=$(cat /tmp/failed_checks.json | jq -r '.[] | "- **\(.name)**: \(.state)"' | head -10)
+          FAILED_CHECKS=$(jq -r '.[] | "- **\(.workflow) / \(.name)**: \(.bucket)"' <<< "${BLOCKING}")
 
           gh pr comment ${PR_NUMBER} \
             --repo ${{ github.repository }} \
@@ -275,8 +229,10 @@ jobs:
 
           Claude Code (Opus 5.5) is analyzing and fixing CI failures.
 
-          **Failed Checks:**
+          **Failed Checks blocking sync-ready:**
           ${FAILED_CHECKS}
+
+          **Ignored, not required for sync-ready:** ${IGNORED:-none}
 
           | Step | Status |
           |------|--------|
@@ -383,7 +339,7 @@ jobs:
 
             ## YOUR PRIMARY GOAL
 
-            **Make CI pass.** Fix the errors, verify locally, push, and end session.
+            **Make the checks that block sync-ready pass.** Fix the errors, verify locally, push, and end session.
 
             ---
 
@@ -391,8 +347,9 @@ jobs:
 
             **PR:** #${{ needs.check-ci-status.outputs.pr-number }}
             **Branch:** `${{ needs.check-ci-status.outputs.branch-name }}`
-            **Docker Build Failed:** ${{ steps.extract-errors.outputs.docker-failed }}
-            **CARTO Feature Tests Failed:** ${{ steps.extract-errors.outputs.tests-failed }}
+            **Failing checks:** run `cat /tmp/ci_failures.md`. They are split by
+            `.github/carto-sync-required-workflows.yml` on carto/main, the same list
+            the ready checker uses to decide whether this sync PR is ready to merge.
 
             **Key insight:** Upstream TAG code works for UPSTREAM's call graph, not
             necessarily for CARTO's. It is tested, but CARTO adds call sites,
@@ -400,6 +357,28 @@ jobs:
             fix accepts an upstream file, re-verify CARTO's callers, attributes, and
             data formats still line up - a file that imports cleanly can still be
             broken at every CARTO call site.
+
+            ---
+
+            ## SCOPE: ONLY WHAT BLOCKS SYNC-READY
+
+            Fix only the checks under "fix these". The ones under "ignore" are
+            upstream workflows the fork does not gate on: the workflow allowlist
+            disables them and the ready checker reports any that still fail to a
+            human. Do not investigate them or change code for them.
+
+            Never make a check pass by switching it off or weakening it:
+            - no `gh workflow disable` or `gh workflow enable`
+            - no edits to `.github/carto-enabled-workflows.yml`,
+              `.github/carto-sync-required-workflows.yml`, or the check scripts
+              and their tests in `.github/scripts/`
+            - no changes to a workflow's triggers, `if:` conditions or steps to skip a failure
+            - no removing or loosening an entry in `.github/carto-features.yml`
+
+            Restoring a CARTO file byte-identical from carto/main, workflow files
+            and `.github/scripts/` included, is still a fix. If a required check
+            fails because the check itself is broken, do not work around it: stop
+            and say so in your PR comment.
 
             ---
 
@@ -466,26 +445,15 @@ jobs:
 
             ## STEP 1: READ CI LOGS
 
+            Each check under "fix these" lists the job log it came from:
             ```bash
-            # Read Docker build errors (if Docker failed)
-            if [ -s /tmp/docker_full_log.txt ]; then
-              echo "=== DOCKER BUILD ERRORS (filtered) ==="
-              # Show errors, warnings, and failed lines
-              grep -iE "error|failed|Error:|TypeError|ImportError|ModuleNotFound|Cannot find" /tmp/docker_full_log.txt | tail -50
-              echo ""
-              echo "=== DOCKER BUILD LOG (last 100 lines for context) ==="
-              tail -100 /tmp/docker_full_log.txt
-            fi
-
-            # Read test errors (if tests failed)
-            if [ -s /tmp/tests_full_log.txt ]; then
-              echo ""
-              echo "=== CARTO FEATURE TEST ERRORS (filtered) ==="
-              grep -iE "FAILED|ERROR|AssertionError|ImportError|Exception" /tmp/tests_full_log.txt | tail -30
-              echo ""
-              echo "=== TEST LOG (last 100 lines for context) ==="
-              tail -100 /tmp/tests_full_log.txt
-            fi
+            cat /tmp/ci_failures.md
+            for log in /tmp/ci_logs/*.log; do
+              echo "=== ${log}: error lines ==="
+              grep -iE "error|failed|❌|MISSING|Traceback|ImportError|ModuleNotFound|Cannot find" "${log}" | tail -50
+              echo "=== ${log}: last 100 lines ==="
+              tail -100 "${log}"
+            done
             ```
 
             ---
@@ -513,6 +481,34 @@ jobs:
             uv run --no-sync pytest $(uv run --no-sync python .github/scripts/carto_feature_test_scope.py) \
               -v --tb=short 2>&1 | tail -100
             ```
+
+            ### If CARTO Features Manifest Check Failed:
+            The log lists each `❌ <feature> - <pattern> in <file>`. Restore the
+            CARTO block that carries the pattern verbatim from carto/main (see
+            CARTO FEATURES MANIFEST above), then rerun the same check:
+            ```bash
+            python3 - <<'EOF'
+            import subprocess, yaml
+            for feat in yaml.safe_load(open('.github/carto-features.yml')).get('features', []):
+                for v in feat.get('verification', []):
+                    if subprocess.run(['grep', '-q', '-e', v['pattern'], v['file']]).returncode:
+                        print(f"MISSING {feat['name']}: {v['pattern']} in {v['file']}")
+            EOF
+            ```
+
+            ### If CARTO Upstream Preserved Check Failed:
+            "Verify upstream changes preserved" lists files whose resolution kept
+            carto/main's copy and dropped the upstream release's changes. Fetch the
+            release tag, take `git show "${TAG}:<file>"` as the base of each listed
+            file, lay the CARTO blocks from carto/main back on top verbatim, then rerun:
+            ```bash
+            TAG=$(git rev-parse --abbrev-ref HEAD | sed 's|^upstream-sync/||')
+            git fetch --no-tags https://github.com/BerriAI/litellm.git "refs/tags/${TAG}:refs/tags/${TAG}"
+            python3 .github/scripts/check_upstream_preserved.py --upstream "${TAG}" --carto origin/carto/main --resolved HEAD
+            ```
+            If its "Sync pipeline script checks" job failed instead, rerun the
+            pytest command shown in its log. Those tests guard CARTO's own sync
+            pipeline, so restore the `.github/` file they test from carto/main.
 
             **Iterate:** Fix error → Run verification → Repeat until success.
 
@@ -589,7 +585,7 @@ jobs:
 
             1. Read the failing file
             2. Apply fix
-            3. Run targeted verification (Docker or pytest)
+            3. Rerun the STEP 2 verification of every check you are fixing
             4. Repeat until verification passes
 
             ---
@@ -648,7 +644,7 @@ jobs:
 
             **Error:** [ONE LINE SUMMARY]
             **Fix:** [FILE:LINE] - [WHAT CHANGED]
-            **Verification:** [Docker build / pytest] passed locally"
+            **Verification:** [the STEP 2 checks you reran] passed locally"
             ```
 
             ---

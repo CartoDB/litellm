@@ -59,8 +59,14 @@ jobs:
       - name: CARTO feature test scope tests
         run: python -m pytest .github/scripts/test_carto_feature_test_scope.py -q -p no:cacheprovider --noconftest
 
+      - name: Workflow allowlist tests
+        run: python -m pytest .github/scripts/test_enforce_workflow_allowlist.py -q -p no:cacheprovider --noconftest
+
       - name: Ready checker label tests
         run: python -m pytest .github/scripts/test_ready_checker.py -q -p no:cacheprovider --noconftest
+
+      - name: CI fixer classification tests
+        run: python -m pytest .github/scripts/test_ci_fixer.py -q -p no:cacheprovider --noconftest
 
       - name: Sync workflow triggers match the required list
         run: python .github/scripts/check_sync_workflow_triggers.py

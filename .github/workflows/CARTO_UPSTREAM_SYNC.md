@@ -84,7 +84,7 @@ flowchart TB
 
 **File:** `.github/workflows/carto-upstream-sync-ci-fixer.yml`
 
-**Trigger:** When CI fails on upstream-sync branches
+**Trigger:** When a workflow in `.github/carto-sync-required-workflows.yml` fails on upstream-sync branches. Other failing checks do not block sync-ready, so the fixer ignores them
 
 **Purpose:** Automatically fix linting/test failures
 

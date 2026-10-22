@@ -2,8 +2,9 @@
 """Keep the upstream-sync workflow_run triggers in line with carto-sync-required-workflows.yml.
 
 GitHub cannot load workflow_run triggers from a file, so the names are repeated. The ready checker
-must trigger on every required workflow (it is only re-invoked when a listed one completes), and the
-CI fixer and customizations analyzer must only react to required ones
+and the CI fixer must trigger on every required workflow (each is only invoked when a listed one completes,
+so an unlisted failure would leave the sync stalled), and the customizations analyzer must only react to
+required ones
 """
 
 import sys
@@ -14,8 +15,8 @@ import yaml
 
 WORKFLOWS_DIR: Final = Path(".github/workflows")
 REQUIRED_FILE: Final = Path(".github/carto-sync-required-workflows.yml")
-READY_CHECKER: Final = "carto-upstream-sync-ready-checker.yml"
-SUBSET_TRIGGERED: Final = ("carto-upstream-sync-ci-fixer.yml", "carto-upstream-sync-customizations-analyzer.yml")
+EXACT_TRIGGERED: Final = ("carto-upstream-sync-ready-checker.yml", "carto-upstream-sync-ci-fixer.yml")
+SUBSET_TRIGGERED: Final = ("carto-upstream-sync-customizations-analyzer.yml",)
 
 
 def load(path: Path) -> dict[object, object]:
@@ -31,14 +32,16 @@ def triggers(workflow_file: str) -> frozenset[str]:
 def problems() -> tuple[str, ...]:
     required: Final = frozenset(cast(list[str], load(REQUIRED_FILE)["required"]))
     existing: Final = frozenset(cast(str, load(path).get("name")) for path in WORKFLOWS_DIR.glob("*.y*ml"))
-    ready: Final = triggers(READY_CHECKER)
     return (
         *(f"required workflow '{name}' does not exist in {WORKFLOWS_DIR}" for name in sorted(required - existing)),
-        *(f"{READY_CHECKER} does not trigger on required '{name}'" for name in sorted(required - ready)),
-        *(f"{READY_CHECKER} triggers on non-required '{name}'" for name in sorted(ready - required)),
+        *(
+            f"{workflow} does not trigger on required '{name}'"
+            for workflow in EXACT_TRIGGERED
+            for name in sorted(required - triggers(workflow))
+        ),
         *(
             f"{workflow} triggers on non-required '{name}'"
-            for workflow in SUBSET_TRIGGERED
+            for workflow in (*EXACT_TRIGGERED, *SUBSET_TRIGGERED)
             for name in sorted(triggers(workflow) - required)
         ),
     )
