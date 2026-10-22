@@ -523,6 +523,14 @@ jobs:
         if: always()
         run: rm -f /tmp/gcp-sa.json
 
+      - name: Record release type in release notes
+        # Downstream image-bump automation reads this marker to keep patch/feature releases
+        # of the current line apart from the release that follows an upstream sync.
+        env:
+          RELEASE_TYPE: ${{ steps.calc-version.outputs.release_type }}
+        run: |
+          printf '\n<!-- carto-release-type: %s -->\n' "$RELEASE_TYPE" >> release_notes.md
+
       - name: Create Git tag
         run: |
           git config user.name "github-actions[bot]"
