@@ -29,6 +29,20 @@ features:
       - pattern: "_reorder_tool_results_to_match_tool_calls(new_messages)"
         file: litellm/llms/oci/chat/generic.py
 
+  - name: "OCI Streaming Tool Call Identity"
+    source_prs: [121]
+    description: "Per-stream state assigns each streamed OCI GENERIC tool call a stable index and a single id, so parallel calls sent in separate chunks (e.g. xAI Grok) are not merged and id-less fragments of one call keep one id. Not present upstream; candidate for upstreaming."
+    files:
+      - litellm/llms/oci/chat/generic.py
+      - litellm/llms/oci/chat/transformation.py
+    verification:
+      - pattern: "self._generic_tool_call_state: Final = OCIStreamToolCallState()"
+        file: litellm/llms/oci/chat/transformation.py
+      - pattern: "handle_generic_stream_chunk(dict_chunk, self._generic_tool_call_state)"
+        file: litellm/llms/oci/chat/transformation.py
+      - pattern: "state.resolve(tc.id, tc.name, tc.arguments)"
+        file: litellm/llms/oci/chat/generic.py
+
   - name: "OCI Inline PEM Key Normalization"
     source_prs: [17159]
     description: "Accepts the PEM private key as a string via oci_key, normalizes escaped newlines, and validates input type. Required for UI-based OCI credentials (textarea field)."
