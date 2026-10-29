@@ -1054,3 +1054,87 @@ async def test_follow_up_tool_output_keeps_injected_assistant_turn_when_history_
     merged = await _merged_session_messages(history, ["call_X"], branch)
 
     assert merged == [("user", "weather in Paris?"), ("assistant", "call_X"), ("tool", "call_X")]
+
+
+def _tool_call_spend_log(request_id: str, input_items: list[dict], call_id: str) -> dict:
+    return {
+        "request_id": request_id,
+        "call_type": "aresponses",
+        "session_id": "trace-1",
+        "proxy_server_request": {"input": input_items, "model": "oci-bridge"},
+        "response": {
+            "id": request_id,
+            "object": "chat.completion",
+            "created": 1748575031,
+            "model": "grok-4",
+            "choices": [
+                {
+                    "index": 0,
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": call_id,
+                                "type": "function",
+                                "function": {"name": "get_weather", "arguments": "{}"},
+                            }
+                        ],
+                    },
+                }
+            ],
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_follow_up_after_two_tool_call_turns_has_one_assistant_turn_per_tool_call(cached_tool_calls):
+    from litellm.responses.litellm_completion_transformation.transformation import (
+        LiteLLMCompletionResponsesConfig,
+    )
+
+    spend_logs = [
+        _tool_call_spend_log(
+            "chatcmpl-1111",
+            [{"role": "system", "content": "be brief"}, {"role": "user", "content": "weather in Paris?"}],
+            "call_X",
+        ),
+        _tool_call_spend_log(
+            "chatcmpl-2222", [{"type": "function_call_output", "call_id": "call_X", "output": "sunny"}], "call_Y"
+        ),
+    ]
+    request = LiteLLMCompletionResponsesConfig.transform_responses_api_request_to_chat_completion_request(
+        model="oci/xai.grok-4",
+        input=[{"type": "function_call_output", "call_id": "call_Y", "output": "rainy"}],
+        responses_api_request={"previous_response_id": "chatcmpl-2222"},
+    )
+
+    with (
+        patch.object(
+            LiteLLMCompletionResponsesConfig, "_patch_get_session_from_redis", new=AsyncMock(return_value=None)
+        ),
+        patch.object(
+            ResponsesSessionHandler,
+            "get_all_spend_logs_for_previous_response_id",
+            new=AsyncMock(return_value=spend_logs),
+        ),
+    ):
+        merged = await LiteLLMCompletionResponsesConfig.async_responses_api_session_handler(
+            previous_response_id="chatcmpl-2222", litellm_completion_request=request
+        )
+
+    assert [
+        (
+            m["role"],
+            [c["id"] for c in m["tool_calls"]] if m.get("tool_calls") else m.get("tool_call_id") or m["content"],
+        )
+        for m in merged["messages"]
+    ] == [
+        ("system", "be brief"),
+        ("user", "weather in Paris?"),
+        ("assistant", ["call_X"]),
+        ("tool", "call_X"),
+        ("assistant", ["call_Y"]),
+        ("tool", "call_Y"),
+    ]

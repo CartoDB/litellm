@@ -112,13 +112,13 @@ features:
 
   - name: "Session Merge Tool-Call Dedupe"
     source_prs: []
-    description: "A follow-up function_call_output for a cached tool call injects the assistant turn that issued it, and the session history already ends with that same turn, so providers received two assistant turns in a row. OCI rejects that with \"An assistant message with 'toolCalls' must be followed by tool messages\"; Anthropic and Gemini merge them and tolerate it. The session handler drops a new assistant tool-call message whose ids are all in the history, in both the Redis and the database branch. CARTO's own fix, not an upstream backport."
+    description: "A follow-up function_call_output for a cached tool call injects the assistant turn that issued it, and the replayed session already holds that same turn (the history ends with it, and the history rebuild itself replays each earlier turn's stored function_call_output through the same cache), so providers received consecutive duplicate assistant turns. OCI rejects that with \"An assistant message with 'toolCalls' must be followed by tool messages\"; Anthropic and Gemini merge them and tolerate it. The session handler makes one pass over the merged message list and keeps only the first assistant tool-call message for each set of ids, in both the Redis and the database branch. CARTO's own fix, not an upstream backport."
     files:
       - litellm/responses/litellm_completion_transformation/transformation.py
     verification:
-      - pattern: "session_messages=redis_session_messages, new_messages=redis_new_messages"
+      - pattern: "[*redis_session_messages, *redis_new_messages]"
         file: litellm/responses/litellm_completion_transformation/transformation.py
-      - pattern: "session_messages=session_messages, new_messages=_messages"
+      - pattern: "_drop_replayed_assistant_tool_calls([*session_messages, *_messages])"
         file: litellm/responses/litellm_completion_transformation/transformation.py
 
   - name: "Snowflake Cortex Claude Function-Calling Follow-up Turns"
