@@ -116,9 +116,9 @@ features:
     files:
       - litellm/responses/litellm_completion_transformation/transformation.py
     verification:
-      - pattern: "[*redis_session_messages, *redis_new_messages]"
+      - pattern: '\[\*redis_session_messages, \*redis_new_messages\]'
         file: litellm/responses/litellm_completion_transformation/transformation.py
-      - pattern: "_drop_replayed_assistant_tool_calls([*session_messages, *_messages])"
+      - pattern: '_drop_replayed_assistant_tool_calls(\[\*session_messages, \*_messages\])'
         file: litellm/responses/litellm_completion_transformation/transformation.py
 
   - name: "Snowflake Cortex Claude Function-Calling Follow-up Turns"
