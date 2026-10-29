@@ -15,6 +15,7 @@ from typing import (
     Literal,
     Protocol,
     TypeAlias,
+    TypeVar,
     cast,
     runtime_checkable,
 )
@@ -137,6 +138,8 @@ if TYPE_CHECKING:
     )
 
 ########### Initialize Classes used for Responses API  ###########
+_MessageT = TypeVar("_MessageT")
+
 TOOL_CALLS_CACHE: Final = InMemoryCache()
 
 _ANY_KEY_DICT_ADAPTER: Final = TypeAdapter(dict[object, object])
@@ -569,7 +572,12 @@ class LiteLLMCompletionResponsesConfig:
             verbose_logger.debug(f"Redis: {len(redis_session_messages)} messages after filtering")
             verbose_logger.debug(f"Redis: Adding {len(redis_new_messages)} new messages")
 
-            litellm_completion_request["messages"] = redis_session_messages + redis_new_messages
+            litellm_completion_request["messages"] = [
+                *redis_session_messages,
+                *LiteLLMCompletionResponsesConfig._drop_replayed_assistant_tool_calls(
+                    session_messages=redis_session_messages, new_messages=redis_new_messages
+                ),
+            ]
             verbose_logger.debug(f"Redis: Total messages after merge: {len(litellm_completion_request['messages'])}")
             litellm_completion_request["litellm_trace_id"] = redis_session.get("session_id")
             return litellm_completion_request
@@ -591,7 +599,12 @@ class LiteLLMCompletionResponsesConfig:
         # Store original _messages before combining for safety check
         original_new_messages: Final = _messages.copy() if _messages else []
 
-        combined_messages = session_messages + _messages
+        combined_messages = [
+            *session_messages,
+            *LiteLLMCompletionResponsesConfig._drop_replayed_assistant_tool_calls(
+                session_messages=session_messages, new_messages=_messages
+            ),
+        ]
 
         # Fix: Ensure tool_results have corresponding tool_calls in previous assistant message
         # Pass tools parameter to help reconstruct tool_calls if not in cache
@@ -2999,6 +3012,32 @@ class LiteLLMCompletionResponsesConfig:
                 continue
             filtered_messages.append(msg)
         return filtered_messages
+
+    @staticmethod
+    def _assistant_tool_call_ids(message: object) -> frozenset[str]:
+        def field(value: object, name: str) -> object:
+            return value.get(name) if isinstance(value, Mapping) else getattr(value, name, None)
+
+        tool_calls: Final = field(message, "tool_calls")
+        if field(message, "role") != "assistant" or not isinstance(tool_calls, Sequence):
+            return frozenset()
+        return frozenset(str(call_id) for call in tool_calls if (call_id := field(call, "id")))
+
+    @staticmethod
+    def _drop_replayed_assistant_tool_calls(
+        session_messages: Sequence[object], new_messages: Sequence[_MessageT]
+    ) -> tuple[_MessageT, ...]:
+        replayed_ids: Final = frozenset().union(
+            *(LiteLLMCompletionResponsesConfig._assistant_tool_call_ids(message) for message in session_messages)
+        )
+        return tuple(
+            message
+            for message in new_messages
+            if not (
+                (call_ids := LiteLLMCompletionResponsesConfig._assistant_tool_call_ids(message))
+                and call_ids <= replayed_ids
+            )
+        )
 
     @staticmethod
     async def _patch_store_session_in_redis(response_id: str, session_id: str, messages: list[dict]) -> None:

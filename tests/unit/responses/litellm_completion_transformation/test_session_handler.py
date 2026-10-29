@@ -939,3 +939,118 @@ async def test_streaming_redis_store_key_matches_decoded_lookup_key():
         {"role": "user", "content": "Center the map on Bristol"},
         {"role": "assistant", "content": "Hello Bristol!"},
     ]
+
+
+def _assistant_with_tool_calls(*call_ids: str) -> dict:
+    return {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {"id": call_id, "type": "function", "function": {"name": "get_weather", "arguments": "{}"}}
+            for call_id in call_ids
+        ],
+    }
+
+
+@pytest.fixture
+def cached_tool_calls():
+    from litellm.responses.litellm_completion_transformation.transformation import TOOL_CALLS_CACHE
+    from litellm.types.utils import ChatCompletionMessageToolCall, Function
+
+    call_ids: Final = ("call_X", "call_Y")
+    for call_id in call_ids:
+        TOOL_CALLS_CACHE.set_cache(
+            key=call_id,
+            value=ChatCompletionMessageToolCall(
+                id=call_id, type="function", function=Function(name="get_weather", arguments="{}")
+            ),
+        )
+    yield
+    for call_id in call_ids:
+        TOOL_CALLS_CACHE.delete_cache(key=call_id)
+
+
+async def _merged_session_messages(history: list[dict], call_ids: list[str], branch: str) -> list[tuple[str, str]]:
+    from litellm.responses.litellm_completion_transformation.transformation import (
+        LiteLLMCompletionResponsesConfig,
+    )
+
+    request = LiteLLMCompletionResponsesConfig.transform_responses_api_request_to_chat_completion_request(
+        model="oci/xai.grok-4",
+        input=[{"type": "function_call_output", "call_id": call_id, "output": "sunny"} for call_id in call_ids],
+        responses_api_request={"previous_response_id": "resp_turn_one"},
+    )
+    redis_session = {"messages": history, "session_id": "trace-1"} if branch == "redis" else None
+    with (
+        patch.object(
+            LiteLLMCompletionResponsesConfig,
+            "_patch_get_session_from_redis",
+            new=AsyncMock(return_value=redis_session),
+        ),
+        patch.object(
+            ResponsesSessionHandler,
+            "get_chat_completion_message_history_for_previous_response_id",
+            new=AsyncMock(return_value={"messages": history, "litellm_session_id": "trace-1"}),
+        ),
+    ):
+        merged = await LiteLLMCompletionResponsesConfig.async_responses_api_session_handler(
+            previous_response_id="resp_turn_one", litellm_completion_request=request
+        )
+    return [
+        (
+            message["role"],
+            ",".join(call["id"] for call in message["tool_calls"])
+            if message.get("tool_calls")
+            else message.get("tool_call_id") or message["content"],
+        )
+        for message in merged["messages"]
+    ]
+
+
+@pytest.mark.parametrize("branch", ["redis", "db"])
+@pytest.mark.asyncio
+async def test_follow_up_tool_output_does_not_duplicate_the_history_assistant_turn(cached_tool_calls, branch: str):
+    history = [
+        {"role": "system", "content": "be brief"},
+        {"role": "user", "content": "weather in Paris?"},
+        _assistant_with_tool_calls("call_X"),
+    ]
+
+    merged = await _merged_session_messages(history, ["call_X"], branch)
+
+    assert merged == [
+        ("system", "be brief"),
+        ("user", "weather in Paris?"),
+        ("assistant", "call_X"),
+        ("tool", "call_X"),
+    ]
+
+
+@pytest.mark.parametrize("branch", ["redis", "db"])
+@pytest.mark.asyncio
+async def test_follow_up_parallel_tool_outputs_follow_the_single_history_assistant_turn(cached_tool_calls, branch: str):
+    history = [
+        {"role": "user", "content": "weather in Paris and Rome?"},
+        _assistant_with_tool_calls("call_X", "call_Y"),
+    ]
+
+    merged = await _merged_session_messages(history, ["call_X", "call_Y"], branch)
+
+    assert merged == [
+        ("user", "weather in Paris and Rome?"),
+        ("assistant", "call_X,call_Y"),
+        ("tool", "call_X"),
+        ("tool", "call_Y"),
+    ]
+
+
+@pytest.mark.parametrize("branch", ["redis", "db"])
+@pytest.mark.asyncio
+async def test_follow_up_tool_output_keeps_injected_assistant_turn_when_history_lacks_it(
+    cached_tool_calls, branch: str
+):
+    history = [{"role": "user", "content": "weather in Paris?"}]
+
+    merged = await _merged_session_messages(history, ["call_X"], branch)
+
+    assert merged == [("user", "weather in Paris?"), ("assistant", "call_X"), ("tool", "call_X")]
