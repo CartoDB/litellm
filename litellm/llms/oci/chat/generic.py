@@ -315,7 +315,7 @@ def _synthesize_oci_tool_call_id(position: int, name: str, arguments: str) -> st
 @dataclass(frozen=True, slots=True)
 class _StreamedToolCall:
     emitted_id: str
-    provider_ids: frozenset[str]
+    provider_id: str
 
 
 class OCIStreamToolCallState:
@@ -327,7 +327,10 @@ class OCIStreamToolCallState:
         self._calls: tuple[_StreamedToolCall, ...] = ()
 
     def resolve(self, tool_call_id: str, name: str, arguments: str) -> tuple[int, str]:
-        known_index: Final = next((i for i, call in enumerate(self._calls) if tool_call_id in call.provider_ids), None)
+        known_index: Final = next(
+            (i for i, call in enumerate(self._calls) if tool_call_id and tool_call_id == call.provider_id),
+            None,
+        )
         if known_index is not None:
             return known_index, self._calls[known_index].emitted_id
 
@@ -336,16 +339,16 @@ class OCIStreamToolCallState:
             open_call: Final = self._calls[current]
             if not tool_call_id:
                 return current, open_call.emitted_id
-            if not open_call.provider_ids:
+            if not open_call.provider_id:
                 self._calls = (
                     *self._calls[:current],
-                    _StreamedToolCall(open_call.emitted_id, frozenset({tool_call_id})),
+                    _StreamedToolCall(open_call.emitted_id, tool_call_id),
                 )
                 return current, open_call.emitted_id
 
         index: Final = current + 1
         emitted_id: Final = tool_call_id or _synthesize_oci_tool_call_id(index, name, arguments)
-        self._calls = (*self._calls, _StreamedToolCall(emitted_id, frozenset({tool_call_id} - {""})))
+        self._calls = (*self._calls, _StreamedToolCall(emitted_id, tool_call_id))
         return index, emitted_id
 
 
