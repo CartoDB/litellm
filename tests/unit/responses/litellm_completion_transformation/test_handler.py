@@ -333,6 +333,110 @@ async def test_non_streaming_session_keeps_assistant_tool_calls_for_the_follow_u
     ]
 
 
+_TOOL_CALL_IDS: Final = ("call_a", "call_b")
+
+
+def _streamed_tool_calls_acompletion(sent_messages: list[list[dict]]):
+    from litellm.types.utils import ChatCompletionDeltaToolCall, Delta, Function, ModelResponseStream, StreamingChoices
+
+    real_acompletion: Final = litellm.acompletion
+    chunk: Final = ModelResponseStream(
+        id="chatcmpl-weather",
+        choices=[
+            StreamingChoices(
+                index=0,
+                finish_reason="tool_calls",
+                delta=Delta(
+                    role="assistant",
+                    content=None,
+                    tool_calls=[
+                        ChatCompletionDeltaToolCall(
+                            id=call_id,
+                            index=index,
+                            type="function",
+                            function=Function(name="get_weather", arguments='{"city": "Paris"}'),
+                        )
+                        for index, call_id in enumerate(_TOOL_CALL_IDS)
+                    ],
+                ),
+            )
+        ],
+    )
+
+    async def fake_acompletion(**kwargs):
+        sent_messages.append(list(kwargs["messages"]))
+        return await real_acompletion(**{**kwargs, "stream": True, "mock_response": chunk})
+
+    return fake_acompletion
+
+
+async def _run_streamed_turn(input: str | list[dict], previous_response_id: str | None) -> str:
+    stream = await litellm.aresponses(
+        model="openai/gpt-4o",
+        api_key="fake-api-key",
+        input=input,
+        previous_response_id=previous_response_id,
+        use_chat_completions_api=True,
+        stream=True,
+    )
+    completed_ids = [event.response.id async for event in stream if event.type == "response.completed"]
+    return completed_ids[-1]
+
+
+def _message_shapes(messages: list[dict]) -> list[tuple[str, list[str]]]:
+    return [
+        (m["role"], [c["id"] for c in m.get("tool_calls", [])] or ([m["tool_call_id"]] if "tool_call_id" in m else []))
+        for m in messages
+    ]
+
+
+@pytest.mark.asyncio
+async def test_streaming_session_keeps_assistant_tool_calls_for_the_follow_up_tool_result():
+    redis: Final = _InMemoryRedis()
+
+    with (
+        patch("litellm.cache", _LiteLLMCache(redis)),  # test-quality-ok: session store reads the litellm.cache global
+        patch(
+            "litellm.acompletion", _streamed_tool_calls_acompletion([])
+        ),  # test-quality-ok: no DI seam; file stubs this boundary
+    ):
+        await _run_streamed_turn("Weather in Paris and Rome?", None)
+
+    stored_turns = [json.loads(session)["messages"] for session in redis.store.values()]
+    assert [_message_shapes(turns) for turns in stored_turns] == [[("user", []), ("assistant", list(_TOOL_CALL_IDS))]]
+
+
+@pytest.mark.parametrize("warm_tool_calls_cache", [False, True], ids=["other_worker", "same_worker"])
+@pytest.mark.asyncio
+async def test_follow_up_rebuilds_the_tool_call_turn_from_the_redis_session(warm_tool_calls_cache: bool):
+    from litellm.responses.litellm_completion_transformation.transformation import TOOL_CALLS_CACHE
+
+    sent_messages: list[list[dict]] = []
+    redis: Final = _InMemoryRedis()
+
+    with (
+        patch("litellm.cache", _LiteLLMCache(redis)),  # test-quality-ok: session store reads the litellm.cache global
+        patch(
+            "litellm.acompletion", _streamed_tool_calls_acompletion(sent_messages)
+        ),  # test-quality-ok: no DI seam; file stubs this boundary
+    ):
+        first_response_id = await _run_streamed_turn("Weather in Paris and Rome?", None)
+        if not warm_tool_calls_cache:
+            for call_id in _TOOL_CALL_IDS:
+                TOOL_CALLS_CACHE.delete_cache(call_id)
+        await _run_streamed_turn(
+            [{"type": "function_call_output", "call_id": call_id, "output": "sunny"} for call_id in _TOOL_CALL_IDS],
+            first_response_id,
+        )
+
+    assert _message_shapes(sent_messages[-1]) == [
+        ("user", []),
+        ("assistant", list(_TOOL_CALL_IDS)),
+        ("tool", ["call_a"]),
+        ("tool", ["call_b"]),
+    ]
+
+
 def _assert_iterator_got_forwarded_request(iterator_cls: MagicMock, forwarded: dict) -> None:
     passed = iterator_cls.call_args.kwargs["litellm_completion_request"]
     assert passed["messages"] == forwarded["messages"]

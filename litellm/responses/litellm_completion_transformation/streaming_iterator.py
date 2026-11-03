@@ -1309,12 +1309,10 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
                     or str(uuid.uuid4())
                 )
                 messages = self.litellm_completion_request.get("messages", []).copy()
-                if response.output and len(response.output) > 0:
-                    output_item = response.output[0]
-                    if output_item.content and len(output_item.content) > 0:
-                        content_item = output_item.content[0]
-                        if hasattr(content_item, "text"):
-                            messages.append({"role": "assistant", "content": content_item.text})
+                if isinstance(self.litellm_model_response, ModelResponse):
+                    messages.append(
+                        LiteLLMCompletionResponsesConfig.assistant_turn_from_model_response(self.litellm_model_response)
+                    )
                 # CARTO PATCH: key by the DECODED response id. The completed event
                 # carries litellm's b64-encoded id, but previous_response_id is decoded
                 # (responses/utils.py) before it reaches the session handler, so an

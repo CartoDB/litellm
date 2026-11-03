@@ -95,7 +95,7 @@ features:
 
   - name: "Redis Session Storage"
     source_prs: [5, 16]
-    description: "Stores each bridged Responses API turn in Redis right after the response so a fast previous_response_id follow-up does not race the spend-log batch writer. The helpers alone are not enough: handler.py must pass litellm_completion_request into both streaming iterators (else only the assistant reply is stored) and call _patch_store_session_in_redis after non-streaming responses. Those call sites were silently lost in the v1.98.0 sync while the helper patterns kept passing; the two-turn round-trip tests in test_handler.py guard the streaming wiring that a single-line grep cannot."
+    description: "Stores each bridged Responses API turn in Redis right after the response so a fast previous_response_id follow-up does not race the spend-log batch writer. The helpers alone are not enough: handler.py must pass litellm_completion_request into both streaming iterators (else only the assistant reply is stored) and call _patch_store_session_in_redis after non-streaming responses. Those call sites were silently lost in the v1.98.0 sync while the helper patterns kept passing; the two-turn round-trip tests in test_handler.py guard the streaming wiring that a single-line grep cannot. The streaming store saves the assistant turn with its tool_calls, so a follow-up served by another worker rebuilds the tool-call turn from Redis."
     files:
       - litellm/responses/litellm_completion_transformation/handler.py
       - litellm/responses/litellm_completion_transformation/streaming_iterator.py
@@ -109,6 +109,10 @@ features:
         file: litellm/responses/litellm_completion_transformation/transformation.py
       - pattern: "litellm_completion_request=litellm_completion_request,  # CARTO: PR #16"
         file: litellm/responses/litellm_completion_transformation/handler.py
+      - pattern: "LiteLLMCompletionResponsesConfig.assistant_turn_from_model_response("
+        file: litellm/responses/litellm_completion_transformation/streaming_iterator.py
+      - pattern: "def assistant_turn_from_model_response"
+        file: litellm/responses/litellm_completion_transformation/transformation.py
 
   - name: "Session Merge Tool-Call Dedupe"
     source_prs: []

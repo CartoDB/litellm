@@ -3029,6 +3029,17 @@ class LiteLLMCompletionResponsesConfig:
         )
 
     @staticmethod
+    def assistant_turn_from_model_response(response: ModelResponse) -> dict[str, object]:
+        choice: Final = response.choices[0]
+        message: Final = choice.message if isinstance(choice, Choices) else None
+        tool_calls: Final = [tool_call.model_dump() for tool_call in (message.tool_calls if message else None) or []]
+        return {
+            "role": "assistant",
+            "content": message.content if message else None,
+            **({"tool_calls": tool_calls} if tool_calls else {}),
+        }
+
+    @staticmethod
     async def _patch_store_session_in_redis(response_id: str, session_id: str, messages: list[dict]) -> None:
         """Store session immediately in Redis to avoid batch processing delay."""
         try:

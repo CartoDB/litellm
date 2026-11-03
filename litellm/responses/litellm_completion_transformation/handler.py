@@ -21,18 +21,7 @@ from litellm.types.llms.openai import (
     ResponsesAPIOptionalRequestParams,
     ResponsesAPIResponse,
 )
-from litellm.types.utils import Choices, ModelResponse
-
-
-def _assistant_turn(response: ModelResponse) -> dict:
-    choice: Final = response.choices[0]
-    message: Final = choice.message if isinstance(choice, Choices) else None
-    tool_calls: Final = [tool_call.model_dump() for tool_call in (message.tool_calls if message else None) or []]
-    return {
-        "role": "assistant",
-        "content": message.content if message else None,
-        **({"tool_calls": tool_calls} if tool_calls else {}),
-    }
+from litellm.types.utils import ModelResponse
 
 
 class LiteLLMCompletionTransformationHandler:
@@ -149,7 +138,9 @@ class LiteLLMCompletionTransformationHandler:
                     or str(uuid.uuid4()),
                     messages=[
                         *litellm_completion_request.get("messages", []),
-                        _assistant_turn(litellm_completion_response),
+                        LiteLLMCompletionResponsesConfig.assistant_turn_from_model_response(
+                            litellm_completion_response
+                        ),
                     ],
                 )
 
