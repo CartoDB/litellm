@@ -2,10 +2,12 @@
 Handler for transforming responses api requests to litellm.completion requests
 """
 
-from collections.abc import Coroutine
-from typing import Any, Final
+import uuid
+from collections.abc import Coroutine, Mapping
+from typing import Final
 
 import litellm
+from litellm.responses.additional_tools import hoist_additional_tools
 from litellm.responses.litellm_completion_transformation.streaming_iterator import (
     LiteLLMCompletionStreamingIterator,
 )
@@ -13,6 +15,7 @@ from litellm.responses.litellm_completion_transformation.transformation import (
     LiteLLMCompletionResponsesConfig,
 )
 from litellm.responses.streaming_iterator import BaseResponsesAPIStreamingIterator
+from litellm.responses.utils import ResponsesAPIRequestUtils
 from litellm.types.llms.openai import (
     ResponseInputParam,
     ResponsesAPIOptionalRequestParams,
@@ -30,18 +33,23 @@ class LiteLLMCompletionTransformationHandler:
         custom_llm_provider: str | None = None,
         _is_async: bool = False,
         stream: bool | None = None,
-        extra_headers: dict[str, Any] | None = None,
+        extra_headers: Mapping[str, object] | None = None,
         **kwargs,
     ) -> (
         ResponsesAPIResponse
         | BaseResponsesAPIStreamingIterator
-        | Coroutine[Any, Any, ResponsesAPIResponse | BaseResponsesAPIStreamingIterator]
+        | Coroutine[object, object, ResponsesAPIResponse | BaseResponsesAPIStreamingIterator]
     ):
+        hoisted: Final = hoist_additional_tools(input, responses_api_request.get("tools"))
+        bridged_input: Final = hoisted.input
+        bridged_request: Final[ResponsesAPIOptionalRequestParams] = (
+            {**responses_api_request, "tools": list(hoisted.tools)} if hoisted.hoisted else responses_api_request
+        )
         litellm_completion_request: Final[dict] = (
             LiteLLMCompletionResponsesConfig.transform_responses_api_request_to_chat_completion_request(
                 model=model,
-                input=input,
-                responses_api_request=responses_api_request,
+                input=bridged_input,
+                responses_api_request=bridged_request,
                 custom_llm_provider=custom_llm_provider,
                 stream=stream,
                 extra_headers=extra_headers,
@@ -52,8 +60,8 @@ class LiteLLMCompletionTransformationHandler:
         if _is_async:
             return self.async_response_api_handler(
                 litellm_completion_request=litellm_completion_request,
-                request_input=input,
-                responses_api_request=responses_api_request,
+                request_input=bridged_input,
+                responses_api_request=bridged_request,
                 **kwargs,
             )
 
@@ -70,8 +78,8 @@ class LiteLLMCompletionTransformationHandler:
             responses_api_response: Final[ResponsesAPIResponse] = (
                 LiteLLMCompletionResponsesConfig.transform_chat_completion_response_to_responses_api_response(
                     chat_completion_response=litellm_completion_response,
-                    request_input=input,
-                    responses_api_request=responses_api_request,
+                    request_input=bridged_input,
+                    responses_api_request=bridged_request,
                 )
             )
 
@@ -81,8 +89,8 @@ class LiteLLMCompletionTransformationHandler:
             return LiteLLMCompletionStreamingIterator(
                 model=model,
                 litellm_custom_stream_wrapper=litellm_completion_response,
-                request_input=input,
-                responses_api_request=responses_api_request,
+                request_input=bridged_input,
+                responses_api_request=bridged_request,
                 custom_llm_provider=custom_llm_provider,
                 litellm_metadata=kwargs.get("litellm_metadata", {}),
                 litellm_completion_request=litellm_completion_request,  # CARTO: PR #16 Redis session storage
@@ -120,6 +128,21 @@ class LiteLLMCompletionTransformationHandler:
                     responses_api_request=responses_api_request,
                 )
             )
+            if responses_api_response.id:
+                await LiteLLMCompletionResponsesConfig._patch_store_session_in_redis(
+                    response_id=ResponsesAPIRequestUtils.decode_previous_response_id_to_original_previous_response_id(
+                        responses_api_response.id
+                    ),
+                    session_id=litellm_completion_request.get("litellm_trace_id")
+                    or kwargs.get("litellm_trace_id")
+                    or str(uuid.uuid4()),
+                    messages=[
+                        *litellm_completion_request.get("messages", []),
+                        LiteLLMCompletionResponsesConfig.assistant_turn_from_model_response(
+                            litellm_completion_response
+                        ),
+                    ],
+                )
 
             return responses_api_response
 
