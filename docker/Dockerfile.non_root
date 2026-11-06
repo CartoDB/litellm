@@ -108,9 +108,9 @@ RUN --mount=type=cache,target=/app/.cache/uv,id=litellm-uv-cache \
     --extra extra_proxy \
     --extra saml \
     --extra bedrock-realtime \
+    --python python3.13 \
     --no-install-package pypdf \
-    --no-install-package ddtrace \
-    --python python3.13
+    --no-install-package ddtrace
 
 # Copy full source tree
 COPY . .
