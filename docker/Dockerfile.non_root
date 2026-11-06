@@ -99,14 +99,18 @@ COPY enterprise/pyproject.toml enterprise/
 COPY litellm-proxy-extras/pyproject.toml litellm-proxy-extras/
 
 # Install third-party dependencies (cached unless pyproject.toml/uv.lock change)
+# CARTO: the semantic-router extra, pypdf, ddtrace and restrictedpython back features the
+# CARTO proxy never enables; both uv sync calls must leave them out.
 RUN --mount=type=cache,target=/app/.cache/uv,id=litellm-uv-cache \
     uv sync --frozen --no-install-project --no-install-workspace --no-default-groups --no-editable \
     --extra proxy \
     --extra proxy-runtime \
     --extra extra_proxy \
-    --extra semantic-router \
     --extra saml \
     --extra bedrock-realtime \
+    --no-install-package pypdf \
+    --no-install-package ddtrace \
+    --no-install-package restrictedpython \
     --python python3.13
 
 # Copy full source tree
@@ -133,10 +137,12 @@ RUN --mount=type=cache,target=/app/.cache/uv,id=litellm-uv-cache \
       --extra proxy \
       --extra proxy-runtime \
       --extra extra_proxy \
-      --extra semantic-router \
       --extra saml \
       --extra bedrock-realtime \
       --python python3.13 \
+      --no-install-package pypdf \
+      --no-install-package ddtrace \
+      --no-install-package restrictedpython \
       --no-install-package litellm
 
 # Install the pre-built litellm wheel (built with Rust in rust-builder stage).
