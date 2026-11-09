@@ -679,8 +679,6 @@ describe("SystemOneUI integration", () => {
 
     await waitFor(() => expect(screen.getByRole("combobox", { name: "Decision model" })).toHaveValue("jev-latest"));
 
-    await waitFor(() => expect(screen.getByRole("combobox", { name: "Decision model" })).toHaveValue("jev-latest"));
-
     await user.click(screen.getByRole("button", { name: "Send" }));
 
     expect(await screen.findByText("jev-latest")).toBeInTheDocument();

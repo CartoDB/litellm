@@ -148,52 +148,6 @@ def test_github_copilot_messages_claude_rows_keep_their_anthropic_thinking_capab
     }
 
 
-TOKEN_COUNT_ENTRY: Final = MappingProxyType(
-    {
-        "litellm_provider": "bedrock_converse",
-        "mode": "chat",
-        "token_count_framing": 78,
-        "token_count_model": {"model": "us.anthropic.claude-opus-5-5", "region": "us-east-1"},
-    }
-)
-
-
-@pytest.mark.parametrize(
-    "setting",
-    [
-        {"token_count_framing": 0},
-        {"token_count_framing": 78},
-        {"token_count_model": {"model": "us.anthropic.claude-opus-5-5"}},
-    ],
-)
-def test_generator_classifies_token_count_settings(setting: dict):
-    generator = load_generator()
-    schema = json.loads(generator.render(generator.build_schema({"some-model": dict(TOKEN_COUNT_ENTRY)})))
-    assert build_validator(schema).is_valid({"some-model": {**TOKEN_COUNT_ENTRY, **setting}})
-
-
-@pytest.mark.parametrize(
-    "setting",
-    [
-        {"token_count_framing": -1},
-        {"token_count_framing": "78"},
-        {"token_count_framing": 1.5},
-        {"token_count_model": {"model": ""}},
-        {"token_count_model": {"model": "   "}},
-        {"token_count_model": {"model": "us.anthropic.claude-opus-5-5", "region": ""}},
-        {"token_count_model": {"model": "us.anthropic.claude-opus-5-5", "region": "   "}},
-        {"token_count_model": {"model": "us.anthropic.claude-opus-5-5", "region": 5}},
-        {"token_count_model": {"region": "us-east-1"}},
-        {"token_count_model": "us.anthropic.claude-opus-5-5"},
-        {"token_count_model": {"model": "us.anthropic.claude-opus-5-5", "zone": "us-east-1"}},
-    ],
-)
-def test_generated_token_count_schema_rejects_malformed_settings(setting: dict):
-    generator = load_generator()
-    schema = json.loads(generator.render(generator.build_schema({"some-model": dict(TOKEN_COUNT_ENTRY)})))
-    assert not build_validator(schema).is_valid({"some-model": {**TOKEN_COUNT_ENTRY, **setting}})
-
-
 def find_duplicate_keys(path: Path) -> list[str]:
     duplicates: list[str] = []
 
@@ -775,30 +729,3 @@ def test_unregistered_provider_guard_flags_only_labels_nobody_registered():
         "unknown_root-new_family_models",
         "vertex_ai-new_family_models",
     ]
-
-
-def _search_free_requests_rows(path: Path) -> Mapping[str, dict[str, JsonValue]]:
-    prices: Final[dict[str, JsonValue]] = TypeAdapter(dict[str, JsonValue]).validate_json(path.read_bytes())
-    return MappingProxyType(
-        {key: row for key, row in prices.items() if isinstance(row, dict) and "search_free_requests" in row}
-    )
-
-
-@pytest.mark.parametrize("path", (PRICES_PATH, BACKUP_PRICES_PATH), ids=("main", "backup"))
-def test_search_free_requests_rows_are_grounding_rows_with_one_allowance_per_group(path: Path) -> None:
-    rows = _search_free_requests_rows(path)
-    assert rows
-    allowances = {
-        key: TypeAdapter(SearchFreeRequests).validate_python(row["search_free_requests"]) for key, row in rows.items()
-    }
-    for key, row in rows.items():
-        assert row.get("supports_web_search") is True, key
-        assert row.get("search_context_cost_per_query"), key
-        assert allowances[key]["count"] > 0, key
-    for group in {allowance["shared_group"] for allowance in allowances.values()}:
-        same_group = {(a["count"], a["period"]) for a in allowances.values() if a["shared_group"] == group}
-        assert len(same_group) == 1, (group, same_group)
-
-
-def test_search_free_requests_backup_rows_match_the_main_catalog() -> None:
-    assert _search_free_requests_rows(BACKUP_PRICES_PATH) == _search_free_requests_rows(PRICES_PATH)

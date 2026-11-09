@@ -1,4 +1,3 @@
-from collections.abc import Mapping
 import importlib.util
 import json
 import subprocess

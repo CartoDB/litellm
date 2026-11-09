@@ -6,10 +6,7 @@ from collections.abc import Iterator, Mapping
 from types import MappingProxyType, SimpleNamespace
 from typing import Final, Literal, cast
 
-import json
-
 import httpx
-import respx
 import pytest
 import respx
 from openai.types.completion_usage import CompletionUsage

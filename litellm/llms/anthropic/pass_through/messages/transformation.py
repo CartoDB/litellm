@@ -81,10 +81,6 @@ class AnthropicMessagesConfig(BaseAnthropicMessagesConfig):
     def _resolved_provider(self) -> str:
         return self.custom_llm_provider or "anthropic"
 
-    @property
-    def _carries_thinking_block_binding(self) -> bool:
-        return type(self) is AnthropicMessagesConfig
-
     def get_supported_anthropic_messages_params(self, model: str) -> list:
         return [
             "messages",

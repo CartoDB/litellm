@@ -392,8 +392,6 @@ class RawRequestCaptured(Exception):
     pass
 
 
-_LITELLM_PARAMS: Final = TypeAdapter(dict[str, object])
-
 _DEPLOYMENT_PRICING_KEYS: Final = (
     "input_cost_per_token",
     "output_cost_per_token",

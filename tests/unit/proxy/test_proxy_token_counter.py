@@ -359,37 +359,26 @@ async def test_anthropic_messages_count_tokens_with_non_anthropic_model():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status_code", (400, 401, 403, 404, 429, 500))
-@pytest.mark.parametrize(
-    ("model", "count_url"),
-    (
-        ("anthropic/claude-sonnet-5-5", "https://api.anthropic.com/v1/messages/count_tokens"),
-        ("openai/gpt-6.1-sol", "https://api.openai.com/v1/responses/input_tokens"),
-    ),
-)
-async def test_provider_errors_return_labelled_local_estimates(
-    monkeypatch: pytest.MonkeyPatch, status_code: int, model: str, count_url: str
-) -> None:
-    messages: Final = [
-        {"role": "user", "content": "Count the whole request locally when the count API is unavailable."}
-    ]
-    router: Final = Router(
-        model_list=[{"model_name": "counted", "litellm_params": {"model": model, "api_key": "test-count-key"}}]
-    )
-    monkeypatch.setattr(litellm.proxy.proxy_server, "llm_router", router)
-    monkeypatch.setattr(litellm, "disable_token_counter", False)
-    monkeypatch.setattr(litellm, "in_memory_llm_clients_cache", LLMClientCache())
-    monkeypatch.setenv("DISABLE_AIOHTTP_TRANSPORT", "True")
+async def test_internal_token_counter_anthropic_provider_detection():
+    """
+    Test that the internal token_counter correctly detects Anthropic providers
+    and handles the from_anthropic_endpoint flag appropriately
+    """
 
-    with respx.mock(assert_all_called=True) as upstream:
-        upstream.post(count_url).mock(
-            return_value=httpx.Response(
-                status_code, json={"type": "error", "error": {"type": "api_error", "message": "Count unavailable"}}
-            )
-        )
-        counted: Final = await token_counter(
-            request=TokenCountRequest(model="counted", messages=messages), call_endpoint=True
-        )
+    # Test with Anthropic provider
+    llm_router = Router(
+        model_list=[
+            {
+                "model_name": "claude-test",
+                "litellm_params": {
+                    "model": "anthropic/claude-3-sonnet-20240229",
+                    "api_key": "test-key",
+                },
+            }
+        ]
+    )
+
+    setattr(litellm.proxy.proxy_server, "llm_router", llm_router)
 
     # Test with is_direct_request=False (simulating call from Anthropic endpoint)
     # The provider counter is engaged: its API error surfaces instead of a local count

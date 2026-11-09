@@ -29015,24 +29015,6 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        /** ChoiceAnswer */
-        ChoiceAnswer: {
-            /** Choice */
-            choice: string;
-            /** Confidence */
-            confidence: number;
-            /** Probabilities */
-            probabilities: {
-                [key: string]: number;
-            };
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            type: "choice";
-        } & {
-            [key: string]: unknown;
-        };
         /** ChoiceLogprobs */
         ChoiceLogprobs: {
             /** Content */
@@ -31433,67 +31415,6 @@ export interface components {
              * @default 0
              */
             total_tokens: number;
-        };
-        /**
-         * DecisionModelCheck
-         * @description One predicate the decision model scores the request or response against.
-         */
-        DecisionModelCheck: {
-            /**
-             * Action
-             * @default block
-             * @enum {string}
-             */
-            action: "block" | "log";
-            /** Instructions */
-            instructions: string;
-            /** Name */
-            name: string;
-            /**
-             * Threshold
-             * @default 0.7
-             */
-            threshold: number;
-        };
-        /** DecisionsBox */
-        DecisionsBox: {
-            /** Bottom */
-            bottom: number;
-            /** Left */
-            left: number;
-            /** Right */
-            right: number;
-            /** Top */
-            top: number;
-        } & {
-            [key: string]: unknown;
-        };
-        /** DecisionsResponse */
-        DecisionsResponse: {
-            /** Answers */
-            answers: {
-                [key: string]: components["schemas"]["NoulAnswer"] | components["schemas"]["ChoiceAnswer"] | components["schemas"]["ScoreAnswer"] | components["schemas"]["BoxAnswer"];
-            };
-            /** Model */
-            model?: string | null;
-            usage?: components["schemas"]["DecisionsUsage"] | null;
-        } & {
-            [key: string]: unknown;
-        };
-        /** DecisionsUsage */
-        DecisionsUsage: {
-            /**
-             * Input Tokens
-             * @default 0
-             */
-            input_tokens: number;
-            /**
-             * Output Tokens
-             * @default 0
-             */
-            output_tokens: number;
-        } & {
-            [key: string]: unknown;
         };
         /**
          * DecisionModelCheck
@@ -39703,142 +39624,6 @@ export interface components {
              */
             type: "tool_search";
         };
-        /** OpenAIBoxAnswer */
-        OpenAIBoxAnswer: {
-            box: components["schemas"]["DecisionsBox"];
-            /** Confidence */
-            confidence: number | null;
-            /** Name */
-            name: string | null;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            type: "box";
-        };
-        /** OpenAIChoiceAnswer */
-        OpenAIChoiceAnswer: {
-            /** Choice */
-            choice: string | boolean;
-            /** Confidence */
-            confidence: number;
-            /** Name */
-            name: string | null;
-            /** Probabilities */
-            probabilities: components["schemas"]["OpenAIChoiceProbability"][];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            type: "choice";
-        };
-        /** OpenAIChoiceProbability */
-        OpenAIChoiceProbability: {
-            /** Probability */
-            probability: number;
-            /** Value */
-            value: string | boolean;
-        };
-        /** OpenAIDecisionInputTokensDetails */
-        OpenAIDecisionInputTokensDetails: {
-            /**
-             * Cache Write Tokens
-             * @default 0
-             */
-            cache_write_tokens: number;
-            /**
-             * Cached Tokens
-             * @default 0
-             */
-            cached_tokens: number;
-        };
-        /** OpenAIDecisionOutputTokensDetails */
-        OpenAIDecisionOutputTokensDetails: {
-            /**
-             * Reasoning Tokens
-             * @default 0
-             */
-            reasoning_tokens: number;
-        };
-        /** OpenAIDecisionResponse */
-        OpenAIDecisionResponse: {
-            /** Answers */
-            answers: (components["schemas"]["OpenAIPredicateAnswer"] | components["schemas"]["OpenAIChoiceAnswer"] | components["schemas"]["OpenAIScoreAnswer"] | components["schemas"]["OpenAIBoxAnswer"] | components["schemas"]["OpenAIRefusalAnswer"])[];
-            /** Model */
-            model: string;
-            usage: components["schemas"]["OpenAIDecisionUsage"];
-        } & {
-            [key: string]: unknown;
-        };
-        /** OpenAIDecisionUsage */
-        OpenAIDecisionUsage: {
-            /** Input Tokens */
-            input_tokens: number;
-            /**
-             * @default {
-             *       "cache_write_tokens": 0,
-             *       "cached_tokens": 0
-             *     }
-             */
-            input_tokens_details: components["schemas"]["OpenAIDecisionInputTokensDetails"];
-            /** Output Tokens */
-            output_tokens: number;
-            /**
-             * @default {
-             *       "reasoning_tokens": 0
-             *     }
-             */
-            output_tokens_details: components["schemas"]["OpenAIDecisionOutputTokensDetails"];
-            /** Total Tokens */
-            total_tokens: number;
-        };
-        /** OpenAIPredicateAnswer */
-        OpenAIPredicateAnswer: {
-            /** Name */
-            name: string | null;
-            /** Probability */
-            probability: number;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            type: "predicate";
-        };
-        /** OpenAIRefusalAnswer */
-        OpenAIRefusalAnswer: {
-            /** Name */
-            name: string | null;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            type: "refusal";
-        };
-        /** OpenAIScoreAnswer */
-        OpenAIScoreAnswer: {
-            /** Confidence */
-            confidence: number;
-            /** Name */
-            name: string | null;
-            /** Probabilities */
-            probabilities: components["schemas"]["OpenAIScoreProbability"][];
-            /** Score */
-            score: number;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            type: "score";
-        };
-        /** OpenAIScoreProbability */
-        OpenAIScoreProbability: {
-            /** Label */
-            label: string;
-            /** Probability */
-            probability: number;
-            /** Value */
-            value: number;
-        };
         /**
          * OpenIdConnectSecurityScheme
          * @description Defines a security scheme using OpenID Connect.
@@ -44992,30 +44777,6 @@ export interface components {
              * @default 300
              */
             window_seconds: number;
-        };
-        /** ScoreAnswer */
-        ScoreAnswer: {
-            /** Confidence */
-            confidence: number;
-            /** Legend */
-            legend: {
-                [key: string]: string | {
-                    [key: string]: unknown;
-                } | unknown[];
-            };
-            /** Probabilities */
-            probabilities: {
-                [key: string]: number;
-            };
-            /** Score */
-            score: number;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            type: "score";
-        } & {
-            [key: string]: unknown;
         };
         /** ScoreAnswer */
         ScoreAnswer: {

@@ -9,9 +9,6 @@ from typing import TYPE_CHECKING, Final, Protocol, TypeAlias, cast
 
 from pydantic import TypeAdapter
 
-from pydantic import TypeAdapter
-from typing_extensions import TypeIs  # noqa: TID251  # TypeIs reaches typing only on 3.13
-
 import litellm
 from litellm._logging import verbose_proxy_logger
 from litellm.batches.batch_utils import batch_cost_is_final
