@@ -1,0 +1,13 @@
+# Upstream workflows the fork keeps enabled. carto-*.yml workflows are always kept.
+# Every other workflow is disabled by .github/scripts/enforce_workflow_allowlist.py, so the upstream
+# bots, release tooling and test suites that each sync brings in never run here. To keep another
+# upstream workflow, add its path below with the reason it earns runner time
+keep:
+  # PR title lint used by CARTO PRs to carto/main
+  - .github/workflows/conventional-commits.yml
+  # schema.prisma copies must stay identical, which upstream-sync PRs touch every time
+  - .github/workflows/check-schema-sync.yml
+  # GitHub Actions security analysis for CARTO's own workflow changes
+  - .github/workflows/zizmor.yml
+  # grype image scan and offline-migration regression on carto/main PRs (CARTO PR #129)
+  - .github/workflows/image-scan.yml

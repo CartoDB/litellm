@@ -203,6 +203,11 @@ def _force_redis_hash_tag_grouping_from_litellm_settings() -> bool:
     return force_redis_hash_tag_grouping is True
 
 
+# One constant hash tag puts every rate-limit key in the same Redis Cluster slot, so multi-descriptor
+# EVALs never raise CROSSSLOT, even from a plain (non-cluster) client against a cluster-mode server
+RATE_LIMIT_HASH_TAG: Final = "{litellm-rl}"
+
+
 def _sibling_counter_keys(window_key: str) -> tuple[str, str]:
     prefix: Final = window_key.removesuffix(":window")
     return f"{prefix}:requests", f"{prefix}:tokens"
@@ -1368,9 +1373,10 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
         """
         Create the rate limit keys for the given key and value.
         """
-        counter_key: Final = f"{{{key}:{value}}}:{rate_limit_type}"
+        return f"{RATE_LIMIT_HASH_TAG}{key}:{value}:{rate_limit_type}"
 
-        return counter_key
+    def create_window_key(self, key: str, value: str) -> str:
+        return f"{RATE_LIMIT_HASH_TAG}{key}:{value}:window"
 
     def is_cache_list_over_limit(
         self,
@@ -1787,7 +1793,7 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
             max_parallel_requests_limit = rate_limit.get("max_parallel_requests")
             window_size = rate_limit.get("window_size") or self.window_size
 
-            window_key = f"{{{descriptor_key}:{descriptor_value}}}:window"
+            window_key = self.create_window_key(descriptor_key, descriptor_value)
 
             if max_parallel_requests_limit is not None:
                 gauges.append(
@@ -2146,8 +2152,7 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
         read and increment in both single-process and multi-process (Redis)
         deployments.
 
-        Cluster-safety: each descriptor's keys all share a `{key:value}` hash
-        tag, so the Redis Lua path issues one Lua call per descriptor — every
+        Cluster-safety: every key shares RATE_LIMIT_HASH_TAG, so each Lua
         call's keys co-locate on a single Redis Cluster slot, avoiding
         CROSSSLOT errors. Cross-descriptor atomicity is preserved via
         refund-on-rollback: if descriptor i is OVER_LIMIT, descriptors 0..i-1
@@ -2166,9 +2171,6 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
         if len(descriptors) != len(increments):
             raise ValueError("atomic_check_and_increment_by_n: descriptors and increments must have the same length")
 
-        # Build per-descriptor (keys, args, meta) groups. All keys within a
-        # group share the descriptor's {key:value} hash tag, so a single Lua
-        # call per group never triggers CROSSSLOT on Redis Cluster.
         descriptor_groups: Final[list[DescriptorAtomicGroup]] = []
         for descriptor, increment_amounts in zip(descriptors, increments):
             keys, args, meta = self._build_descriptor_atomic_payload(
@@ -2208,7 +2210,7 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
     ) -> DescriptorAtomicGroup:
         """
         Build (KEYS, ARGV, per-counter meta) for a single descriptor's Lua
-        call. All keys returned share the descriptor's {key:value} hash tag.
+        call. All keys returned share RATE_LIMIT_HASH_TAG.
         """
         descriptor_key: Final = descriptor["key"]
         descriptor_value: Final = descriptor["value"]
@@ -2216,7 +2218,7 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
             descriptor.get("rate_limit") or RateLimitDescriptorRateLimitObject()
         )
         window_size: Final = rate_limit.get("window_size") or self.window_size
-        window_key: Final = f"{{{descriptor_key}:{descriptor_value}}}:window"
+        window_key: Final = self.create_window_key(descriptor_key, descriptor_value)
 
         keys: Final[list[str]] = []
         args: Final[list[int]] = []
@@ -4359,7 +4361,8 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
                     stash.ptu_reserved_window_identities = frozenset(
                         identity
                         for identity in tpm_response.get("reservation_windows", frozenset())
-                        if identity[0].startswith(f"{{{PTU_TEAM_DESCRIPTOR_KEY}:")
+                        # CARTO PATCH: window keys carry the constant RATE_LIMIT_HASH_TAG, not a per-descriptor tag
+                        if identity[0].startswith(f"{RATE_LIMIT_HASH_TAG}{PTU_TEAM_DESCRIPTOR_KEY}:")
                     )
                     stash.reserved_model = self._rate_limited_model(requested_model)
                     stash.reserved_scopes = frozenset(
@@ -5078,7 +5081,7 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
             key=counter_key,
             increment_value=increment,
             ttl=self.window_size,
-            window_key=f"{{{scope_key}:{scope_value}}}:window",
+            window_key=self.create_window_key(scope_key, scope_value),
             expected_window_start=window_identity[0],
             reservation_backend=window_identity[1],
         )

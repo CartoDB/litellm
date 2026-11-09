@@ -113,6 +113,7 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         responses_api_request: ResponsesAPIOptionalRequestParams,
         custom_llm_provider: str | None = None,
         litellm_metadata: dict | None = None,
+        litellm_completion_request: dict | None = None,  # CARTO: PR #16 Redis session storage
     ):
         self.model: str = model
         self.litellm_custom_stream_wrapper: litellm.CustomStreamWrapper = litellm_custom_stream_wrapper
@@ -120,6 +121,7 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         self.responses_api_request: ResponsesAPIOptionalRequestParams = responses_api_request
         self.custom_llm_provider: str | None = custom_llm_provider
         self.litellm_metadata: dict | None = litellm_metadata or {}
+        self.litellm_completion_request: dict = litellm_completion_request or {}  # CARTO: PR #16
         # Store lightweight dict snapshots for stream_chunk_builder to reduce
         # repeated Pydantic attribute access in end-of-stream assembly.
         self.collected_chat_completion_chunks: list[dict[str, object]] = []
@@ -1152,7 +1154,10 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
                         return self._pending_response_events.pop(0)
 
                 except StopAsyncIteration:
-                    return self.common_done_event_logic(sync_mode=False)
+                    result = self.common_done_event_logic(sync_mode=False)
+                    if isinstance(result, ResponseCompletedEvent):
+                        await self._store_session_in_redis(result)
+                    return result
 
         except Exception as e:
             # Handle HTTP errors
@@ -1420,3 +1425,36 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
             )
         else:
             return None
+
+    async def _store_session_in_redis(self, response_completed_event: ResponseCompletedEvent) -> None:
+        """
+        Store session in Redis for streaming responses.
+        This fixes the issue where Redis sessions weren't created for streaming requests.
+        """
+        try:
+            response = response_completed_event.response
+            if response and response.id:
+                session_id = (
+                    self.litellm_completion_request.get("litellm_trace_id")
+                    or self.litellm_metadata.get("litellm_trace_id")
+                    or str(uuid.uuid4())
+                )
+                messages = self.litellm_completion_request.get("messages", []).copy()
+                if isinstance(self.litellm_model_response, ModelResponse):
+                    messages.append(
+                        LiteLLMCompletionResponsesConfig.assistant_turn_from_model_response(self.litellm_model_response)
+                    )
+                # CARTO PATCH: key by the DECODED response id. The completed event
+                # carries litellm's b64-encoded id, but previous_response_id is decoded
+                # (responses/utils.py) before it reaches the session handler, so an
+                # encoded store key can never be read back.
+                raw_response_id = ResponsesAPIRequestUtils.decode_previous_response_id_to_original_previous_response_id(
+                    response.id
+                )
+                await LiteLLMCompletionResponsesConfig._patch_store_session_in_redis(
+                    response_id=raw_response_id,
+                    session_id=session_id,
+                    messages=messages,
+                )
+        except Exception:
+            pass

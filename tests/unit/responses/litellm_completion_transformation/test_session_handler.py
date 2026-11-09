@@ -787,3 +787,355 @@ async def test_message_history_replays_real_key_named_tool_payloads() -> None:
     tool_message: Final = result["messages"][2]
     assert json.loads(assistant_message["tool_calls"][0]["function"]["arguments"]) == function_arguments
     assert json.loads(tool_message["content"]) == function_output
+
+
+@pytest.mark.asyncio
+async def test_session_handler_uses_redis_first_carto_patch():
+    """
+    CARTO PATCH regression (PR #16): async_responses_api_session_handler must
+    consult the Redis session store before the DB-backed session handler. The
+    DB store is batch-written, so an immediate follow-up turn misses its own
+    history without the Redis-first read. This wiring was silently dropped in
+    the v1.92.0 upstream sync (helpers survived as orphans) and caused agent
+    conversations to lose context and loop in integration tests.
+    """
+    from litellm.responses.litellm_completion_transformation.transformation import (
+        LiteLLMCompletionResponsesConfig,
+    )
+
+    redis_session = {
+        "messages": [
+            {"role": "user", "content": "who is Michael Jordan"},
+            {"role": "assistant", "content": "A basketball player."},
+        ],
+        "session_id": "trace-abc-123",
+    }
+
+    with patch.object(
+        LiteLLMCompletionResponsesConfig,
+        "_patch_get_session_from_redis",
+        new=AsyncMock(return_value=redis_session),
+    ) as mock_redis_get, patch.object(
+        ResponsesSessionHandler,
+        "get_chat_completion_message_history_for_previous_response_id",
+        new=AsyncMock(),
+    ) as mock_db_get:
+        request = {"messages": [{"role": "user", "content": "and Scottie Pippen?"}]}
+        result = await LiteLLMCompletionResponsesConfig.async_responses_api_session_handler(
+            previous_response_id="resp_123",
+            litellm_completion_request=request,
+        )
+
+    mock_redis_get.assert_awaited_once_with("resp_123")
+    mock_db_get.assert_not_awaited()
+    assert result["litellm_trace_id"] == "trace-abc-123"
+    assert [m["content"] for m in result["messages"]] == [
+        "who is Michael Jordan",
+        "A basketball player.",
+        "and Scottie Pippen?",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_session_handler_falls_back_to_db_when_redis_empty():
+    """CARTO PATCH: with no Redis session, the DB-backed handler is used."""
+    from litellm.responses.litellm_completion_transformation.transformation import (
+        LiteLLMCompletionResponsesConfig,
+    )
+
+    with patch.object(
+        LiteLLMCompletionResponsesConfig,
+        "_patch_get_session_from_redis",
+        new=AsyncMock(return_value=None),
+    ), patch.object(
+        ResponsesSessionHandler,
+        "get_chat_completion_message_history_for_previous_response_id",
+        new=AsyncMock(return_value={"messages": [], "litellm_session_id": None}),
+    ) as mock_db_get:
+        request = {"messages": [{"role": "user", "content": "hello"}]}
+        result = await LiteLLMCompletionResponsesConfig.async_responses_api_session_handler(
+            previous_response_id="resp_456",
+            litellm_completion_request=request,
+        )
+
+    mock_db_get.assert_awaited_once()
+    assert result["messages"][-1]["content"] == "hello"
+
+
+@pytest.mark.asyncio
+async def test_streaming_redis_store_key_matches_decoded_lookup_key():
+    """
+    CARTO PATCH regression: the streaming iterator must store the Redis session
+    under the DECODED response id. The response.completed event carries litellm's
+    b64-encoded id, but previous_response_id is decoded (responses/utils.py)
+    before it reaches the session handler - so a session stored under the encoded
+    id can never be read back, and every follow-up turn loses its history.
+    """
+    from types import SimpleNamespace
+
+    from litellm.responses.litellm_completion_transformation.streaming_iterator import (
+        LiteLLMCompletionStreamingIterator,
+    )
+    from litellm.responses.litellm_completion_transformation.transformation import (
+        LiteLLMCompletionResponsesConfig,
+    )
+    from litellm.responses.utils import ResponsesAPIRequestUtils
+    from litellm.types.utils import Delta, ModelResponseStream, StreamingChoices
+
+    def make_chunk(content=None, finish=None):
+        return ModelResponseStream(
+            id="chatcmpl-real-id-123",
+            choices=[StreamingChoices(index=0, delta=Delta(content=content), finish_reason=finish)],
+            model="gemini-pro",
+        )
+
+    class FakeStream:
+        def __init__(self, chunks):
+            self._chunks = list(chunks)
+            self.logging_obj = SimpleNamespace(
+                litellm_trace_id="trace-1",
+                model_call_details={},
+                response_cost_calculator=lambda result: None,
+                record_native_bedrock_guardrail=lambda response: None,
+            )
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not self._chunks:
+                raise StopAsyncIteration
+            return self._chunks.pop(0)
+
+    iterator = LiteLLMCompletionStreamingIterator(
+        model="gemini-pro",
+        litellm_custom_stream_wrapper=FakeStream(
+            [make_chunk("Hello "), make_chunk("Bristol!"), make_chunk(None, "stop")]
+        ),
+        request_input="Center the map on Bristol",
+        responses_api_request={},
+        custom_llm_provider="gemini",
+        litellm_metadata={},
+        litellm_completion_request={
+            "messages": [{"role": "user", "content": "Center the map on Bristol"}],
+            "litellm_trace_id": "trace-1",
+        },
+    )
+
+    store_mock = AsyncMock()
+    client_visible_id = None
+    with patch.object(LiteLLMCompletionResponsesConfig, "_patch_store_session_in_redis", new=store_mock):
+        async for event in iterator:
+            if "completed" in str(getattr(event, "type", "")).lower():
+                client_visible_id = event.response.id
+
+    assert client_visible_id is not None
+    store_mock.assert_awaited_once()
+    stored_key = store_mock.await_args.kwargs["response_id"]
+    lookup_key = ResponsesAPIRequestUtils.decode_previous_response_id_to_original_previous_response_id(
+        client_visible_id
+    )
+    assert stored_key == lookup_key
+    assert store_mock.await_args.kwargs["messages"] == [
+        {"role": "user", "content": "Center the map on Bristol"},
+        {"role": "assistant", "content": "Hello Bristol!"},
+    ]
+
+
+def _assistant_with_tool_calls(*call_ids: str) -> dict:
+    return {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {"id": call_id, "type": "function", "function": {"name": "get_weather", "arguments": "{}"}}
+            for call_id in call_ids
+        ],
+    }
+
+
+@pytest.fixture
+def cached_tool_calls():
+    from litellm.responses.litellm_completion_transformation.transformation import TOOL_CALLS_CACHE
+    from litellm.types.utils import ChatCompletionMessageToolCall, Function
+
+    call_ids: Final = ("call_X", "call_Y")
+    for call_id in call_ids:
+        TOOL_CALLS_CACHE.set_cache(
+            key=call_id,
+            value=ChatCompletionMessageToolCall(
+                id=call_id, type="function", function=Function(name="get_weather", arguments="{}")
+            ),
+        )
+    yield
+    for call_id in call_ids:
+        TOOL_CALLS_CACHE.delete_cache(key=call_id)
+
+
+async def _merged_session_messages(history: list[dict], call_ids: list[str], branch: str) -> list[tuple[str, str]]:
+    from litellm.responses.litellm_completion_transformation.transformation import (
+        LiteLLMCompletionResponsesConfig,
+    )
+
+    request = LiteLLMCompletionResponsesConfig.transform_responses_api_request_to_chat_completion_request(
+        model="oci/xai.grok-4",
+        input=[{"type": "function_call_output", "call_id": call_id, "output": "sunny"} for call_id in call_ids],
+        responses_api_request={"previous_response_id": "resp_turn_one"},
+    )
+    redis_session = {"messages": history, "session_id": "trace-1"} if branch == "redis" else None
+    with (
+        patch.object(
+            LiteLLMCompletionResponsesConfig,
+            "_patch_get_session_from_redis",
+            new=AsyncMock(return_value=redis_session),
+        ),
+        patch.object(
+            ResponsesSessionHandler,
+            "get_chat_completion_message_history_for_previous_response_id",
+            new=AsyncMock(return_value={"messages": history, "litellm_session_id": "trace-1"}),
+        ),
+    ):
+        merged = await LiteLLMCompletionResponsesConfig.async_responses_api_session_handler(
+            previous_response_id="resp_turn_one", litellm_completion_request=request
+        )
+    return [
+        (
+            message["role"],
+            ",".join(call["id"] for call in message["tool_calls"])
+            if message.get("tool_calls")
+            else message.get("tool_call_id") or message["content"],
+        )
+        for message in merged["messages"]
+    ]
+
+
+@pytest.mark.parametrize("branch", ["redis", "db"])
+@pytest.mark.asyncio
+async def test_follow_up_tool_output_does_not_duplicate_the_history_assistant_turn(cached_tool_calls, branch: str):
+    history = [
+        {"role": "system", "content": "be brief"},
+        {"role": "user", "content": "weather in Paris?"},
+        _assistant_with_tool_calls("call_X"),
+    ]
+
+    merged = await _merged_session_messages(history, ["call_X"], branch)
+
+    assert merged == [
+        ("system", "be brief"),
+        ("user", "weather in Paris?"),
+        ("assistant", "call_X"),
+        ("tool", "call_X"),
+    ]
+
+
+@pytest.mark.parametrize("branch", ["redis", "db"])
+@pytest.mark.asyncio
+async def test_follow_up_parallel_tool_outputs_follow_the_single_history_assistant_turn(cached_tool_calls, branch: str):
+    history = [
+        {"role": "user", "content": "weather in Paris and Rome?"},
+        _assistant_with_tool_calls("call_X", "call_Y"),
+    ]
+
+    merged = await _merged_session_messages(history, ["call_X", "call_Y"], branch)
+
+    assert merged == [
+        ("user", "weather in Paris and Rome?"),
+        ("assistant", "call_X,call_Y"),
+        ("tool", "call_X"),
+        ("tool", "call_Y"),
+    ]
+
+
+@pytest.mark.parametrize("branch", ["redis", "db"])
+@pytest.mark.asyncio
+async def test_follow_up_tool_output_keeps_injected_assistant_turn_when_history_lacks_it(
+    cached_tool_calls, branch: str
+):
+    history = [{"role": "user", "content": "weather in Paris?"}]
+
+    merged = await _merged_session_messages(history, ["call_X"], branch)
+
+    assert merged == [("user", "weather in Paris?"), ("assistant", "call_X"), ("tool", "call_X")]
+
+
+def _tool_call_spend_log(request_id: str, input_items: list[dict], call_id: str) -> dict:
+    return {
+        "request_id": request_id,
+        "call_type": "aresponses",
+        "session_id": "trace-1",
+        "proxy_server_request": {"input": input_items, "model": "oci-bridge"},
+        "response": {
+            "id": request_id,
+            "object": "chat.completion",
+            "created": 1748575031,
+            "model": "grok-4",
+            "choices": [
+                {
+                    "index": 0,
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": call_id,
+                                "type": "function",
+                                "function": {"name": "get_weather", "arguments": "{}"},
+                            }
+                        ],
+                    },
+                }
+            ],
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_follow_up_after_two_tool_call_turns_has_one_assistant_turn_per_tool_call(cached_tool_calls):
+    from litellm.responses.litellm_completion_transformation.transformation import (
+        LiteLLMCompletionResponsesConfig,
+    )
+
+    spend_logs = [
+        _tool_call_spend_log(
+            "chatcmpl-1111",
+            [{"role": "system", "content": "be brief"}, {"role": "user", "content": "weather in Paris?"}],
+            "call_X",
+        ),
+        _tool_call_spend_log(
+            "chatcmpl-2222", [{"type": "function_call_output", "call_id": "call_X", "output": "sunny"}], "call_Y"
+        ),
+    ]
+    request = LiteLLMCompletionResponsesConfig.transform_responses_api_request_to_chat_completion_request(
+        model="oci/xai.grok-4",
+        input=[{"type": "function_call_output", "call_id": "call_Y", "output": "rainy"}],
+        responses_api_request={"previous_response_id": "chatcmpl-2222"},
+    )
+
+    with (
+        patch.object(
+            LiteLLMCompletionResponsesConfig, "_patch_get_session_from_redis", new=AsyncMock(return_value=None)
+        ),
+        patch.object(
+            ResponsesSessionHandler,
+            "get_all_spend_logs_for_previous_response_id",
+            new=AsyncMock(return_value=spend_logs),
+        ),
+    ):
+        merged = await LiteLLMCompletionResponsesConfig.async_responses_api_session_handler(
+            previous_response_id="chatcmpl-2222", litellm_completion_request=request
+        )
+
+    assert [
+        (
+            m["role"],
+            [c["id"] for c in m["tool_calls"]] if m.get("tool_calls") else m.get("tool_call_id") or m["content"],
+        )
+        for m in merged["messages"]
+    ] == [
+        ("system", "be brief"),
+        ("user", "weather in Paris?"),
+        ("assistant", ["call_X"]),
+        ("tool", "call_X"),
+        ("assistant", ["call_Y"]),
+        ("tool", "call_Y"),
+    ]

@@ -37,6 +37,7 @@ from litellm.llms.oci.chat.cohere import (
     handle_cohere_stream_chunk,
 )
 from litellm.llms.oci.chat.generic import (
+    OCIStreamToolCallState,
     adapt_messages_to_generic_oci_standard,
     adapt_tool_definition_to_oci_standard,
     handle_generic_response,
@@ -843,6 +844,7 @@ class OCIStreamWrapper(CustomStreamWrapper):
         # terminal chunk's text is a duplicate to suppress) from the degenerate
         # single-event case (terminal chunk carries the only copy of the text).
         self._cohere_text_emitted = False
+        self._generic_tool_call_state: Final = OCIStreamToolCallState()
 
     def _emit_chunk(self, parsed: ModelResponseStream) -> ModelResponseStream:
         for choice in parsed.choices:
@@ -886,7 +888,7 @@ class OCIStreamWrapper(CustomStreamWrapper):
                         self._cohere_text_emitted = True
                         break
             return self._emit_chunk(result)
-        return self._emit_chunk(handle_generic_stream_chunk(dict_chunk))
+        return self._emit_chunk(handle_generic_stream_chunk(dict_chunk, self._generic_tool_call_state))
 
 
 __all__ = [

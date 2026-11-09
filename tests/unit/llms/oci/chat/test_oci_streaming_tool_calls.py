@@ -11,7 +11,12 @@ Error: ValidationError: 1 validation error for OCIStreamChunk message.toolCalls.
 
 
 
+import json
+from typing import Final
+
+import litellm
 from litellm.llms.oci.chat.generic import handle_generic_stream_chunk
+from litellm.llms.oci.chat.transformation import OCIStreamWrapper
 from litellm.types.utils import ModelResponseStream
 
 
@@ -256,3 +261,210 @@ class TestOCIStreamingToolCalls:
         assert isinstance(result, ModelResponseStream)
         assert result.choices[0].delta.content == "Hello, how can I help you?"
         assert result.choices[0].delta.tool_calls is None
+
+
+def _wrapper() -> OCIStreamWrapper:
+    return OCIStreamWrapper(
+        completion_stream=iter(()),
+        model="xai.grok-4",
+        logging_obj=litellm.litellm_core_utils.litellm_logging.Logging(
+            model="xai.grok-4",
+            messages=[],
+            stream=True,
+            call_type="completion",
+            start_time=None,
+            litellm_call_id="test",
+            function_id="test",
+        ),
+        custom_llm_provider="oci",
+    )
+
+
+def _tc(call_id: str | None = None, name: str | None = None, arguments: str | None = None) -> dict[str, str]:
+    return {
+        "type": "FUNCTION",
+        **({"id": call_id} if call_id is not None else {}),
+        **({"name": name} if name is not None else {}),
+        **({"arguments": arguments} if arguments is not None else {}),
+    }
+
+
+def _feed(wrapper: OCIStreamWrapper, chunks: list[list[dict[str, str]]]) -> list[ModelResponseStream]:
+    responses: Final = [
+        wrapper.chunk_creator(
+            "data: " + json.dumps({"apiFormat": "GENERIC", "message": {"role": "ASSISTANT", "toolCalls": tool_calls}})
+        )
+        for tool_calls in chunks
+    ]
+    assert None not in responses
+    return [r for r in responses if r is not None]
+
+
+def _emit(wrapper: OCIStreamWrapper, chunks: list[list[dict[str, str]]]) -> list[tuple[int, str, str, str]]:
+    return [
+        (tc["index"], tc["id"], tc["function"]["name"], tc["function"]["arguments"])
+        for response in _feed(wrapper, chunks)
+        for tc in response.choices[0].delta.tool_calls or []
+    ]
+
+
+class TestOCIStreamingToolCallIdentity:
+    def test_parallel_calls_in_separate_chunks_get_distinct_indices(self):
+        emitted = _emit(
+            _wrapper(),
+            [
+                [_tc("call_1", "get_weather", '{"city": "Madrid"}')],
+                [_tc("call_2", "get_time", '{"tz": "UTC"}')],
+            ],
+        )
+
+        assert emitted == [
+            (0, "call_1", "get_weather", '{"city": "Madrid"}'),
+            (1, "call_2", "get_time", '{"tz": "UTC"}'),
+        ]
+
+    def test_same_tool_called_twice_in_parallel_gets_distinct_indices(self):
+        emitted = _emit(
+            _wrapper(),
+            [
+                [_tc("call_1", "execute_query", '{"q": "a"}')],
+                [_tc("call_2", "execute_query", '{"q": "b"}')],
+            ],
+        )
+
+        assert emitted == [
+            (0, "call_1", "execute_query", '{"q": "a"}'),
+            (1, "call_2", "execute_query", '{"q": "b"}'),
+        ]
+
+    def test_interleaved_argument_fragments_follow_their_call_id(self):
+        emitted = _emit(
+            _wrapper(),
+            [
+                [_tc("call_1", "tool_a", "")],
+                [_tc("call_2", "tool_b", "")],
+                [_tc("call_1", "", '{"a":')],
+                [_tc("call_2", "", '{"b":')],
+                [_tc("call_1", "", " 1}")],
+                [_tc("call_2", "", " 2}")],
+            ],
+        )
+
+        assert emitted == [
+            (0, "call_1", "tool_a", ""),
+            (1, "call_2", "tool_b", ""),
+            (0, "call_1", "", '{"a":'),
+            (1, "call_2", "", '{"b":'),
+            (0, "call_1", "", " 1}"),
+            (1, "call_2", "", " 2}"),
+        ]
+
+    def test_two_calls_in_one_chunk_get_distinct_indices(self):
+        emitted = _emit(
+            _wrapper(),
+            [[_tc("call_1", "tool_a", "{}"), _tc("call_2", "tool_b", "{}")]],
+        )
+
+        assert emitted == [
+            (0, "call_1", "tool_a", "{}"),
+            (1, "call_2", "tool_b", "{}"),
+        ]
+
+    def test_idless_call_split_across_fragments_keeps_one_index_and_id(self):
+        emitted = _emit(
+            _wrapper(),
+            [
+                [_tc(name="get_weather", arguments="")],
+                [_tc(arguments='{"city": "Madrid"}')],
+            ],
+        )
+
+        assert len({call_id for _, call_id, _, _ in emitted}) == 1
+        assert emitted[0][1].startswith("call_")
+        assert [(i, n, a) for i, _, n, a in emitted] == [
+            (0, "get_weather", ""),
+            (0, "", '{"city": "Madrid"}'),
+        ]
+
+    def test_late_provider_id_attaches_to_open_call_and_keeps_first_id(self):
+        emitted = _emit(
+            _wrapper(),
+            [
+                [_tc(name="get_weather", arguments="")],
+                [_tc("call_late", arguments='{"city": "Madrid"}')],
+            ],
+        )
+
+        assert emitted[0][1].startswith("call_")
+        assert emitted[0][1] != "call_late"
+        assert emitted == [
+            (0, emitted[0][1], "get_weather", ""),
+            (0, emitted[0][1], "", '{"city": "Madrid"}'),
+        ]
+
+    def test_idless_continuation_attaches_to_latest_open_call(self):
+        emitted = _emit(
+            _wrapper(),
+            [
+                [_tc("call_1", "tool_a", "{}")],
+                [_tc("call_2", "tool_b", "")],
+                [_tc(arguments='{"x": 1}')],
+            ],
+        )
+
+        assert emitted == [
+            (0, "call_1", "tool_a", "{}"),
+            (1, "call_2", "tool_b", ""),
+            (1, "call_2", "", '{"x": 1}'),
+        ]
+
+    def test_idless_complete_calls_in_separate_chunks_get_distinct_indices_and_ids(
+        self,
+    ):
+        emitted = _emit(
+            _wrapper(),
+            [
+                [_tc(name="get_weather", arguments='{"city": "Madrid"}')],
+                [_tc(name="get_time", arguments='{"tz": "UTC"}')],
+            ],
+        )
+
+        assert emitted[0][1] != emitted[1][1]
+        assert [(i, n, a) for i, _, n, a in emitted] == [
+            (0, "get_weather", '{"city": "Madrid"}'),
+            (1, "get_time", '{"tz": "UTC"}'),
+        ]
+
+    def test_stream_chunk_builder_assembles_parallel_calls_with_emitted_ids(self):
+        response_chunks = _feed(
+            _wrapper(),
+            [
+                [_tc("call_1", "get_weather", '{"city": "Madrid"}')],
+                [_tc("call_2", "get_time", '{"tz": "UTC"}')],
+            ],
+        )
+
+        rebuilt = litellm.stream_chunk_builder(response_chunks)
+
+        assert rebuilt is not None
+        assert [(tc.id, tc.function.name, tc.function.arguments) for tc in rebuilt.choices[0].message.tool_calls] == [
+            ("call_1", "get_weather", '{"city": "Madrid"}'),
+            ("call_2", "get_time", '{"tz": "UTC"}'),
+        ]
+
+    def test_stream_chunk_builder_keeps_first_emitted_id_for_idless_split_call(self):
+        response_chunks = _feed(
+            _wrapper(),
+            [
+                [_tc(name="get_weather", arguments="")],
+                [_tc(arguments='{"city": "Madrid"}')],
+            ],
+        )
+        first_id = response_chunks[0].choices[0].delta.tool_calls[0]["id"]
+
+        rebuilt = litellm.stream_chunk_builder(response_chunks)
+
+        assert rebuilt is not None
+        assert [(tc.id, tc.function.name, tc.function.arguments) for tc in rebuilt.choices[0].message.tool_calls] == [
+            (first_id, "get_weather", '{"city": "Madrid"}')
+        ]

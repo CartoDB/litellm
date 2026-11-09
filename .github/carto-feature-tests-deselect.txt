@@ -1,0 +1,7 @@
+# Upstream tests the CARTO Feature Tests gate deselects, one pytest node id per line.
+# Every entry needs a reason group below. Remove entries as soon as the code they exercise matches upstream again
+
+# Upstream v1.105.1's realtime streaming tests hang on GitHub runners with no CARTO change involved: upstream's own
+# core-utils shard times out on them against the pure v1.105.1 tree (fork main run 38677492527). No CARTO feature
+# touches litellm_core_utils/realtime_streaming.py; it is only in scope because the whole directory is mirrored
+tests/unit/litellm_core_utils/test_realtime_streaming.py

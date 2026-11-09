@@ -1,3 +1,4 @@
+import re
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any, Final, Literal
 
@@ -23,6 +24,7 @@ else:
     LiteLLMLoggingObj = Any
 
 _DECODED_JSON: Final = TypeAdapter(object)
+_DEPLOYMENT_PATH: Final = re.compile(r"/openai/deployments/[^/?]+[^?]*")
 
 
 class AzureOpenAIResponsesAPIConfig(OpenAIResponsesAPIConfig):
@@ -170,6 +172,9 @@ class AzureOpenAIResponsesAPIConfig(OpenAIResponsesAPIConfig):
             "https://litellm8397336933.openai.azure.com"
             OR
             "https://litellm8397336933.openai.azure.com/openai/responses?api-version=2024-05-01-preview"
+            OR a Chat Completions style base such as
+            "https://litellm8397336933.openai.azure.com/openai/deployments/gpt-4o/chat/completions",
+            whose deployment path is dropped because the Responses API takes the model in the body
         - model: Model name.
         - optional_params: Additional query parameters, including "api_version".
         - stream: If streaming is required (optional).
@@ -181,7 +186,7 @@ class AzureOpenAIResponsesAPIConfig(OpenAIResponsesAPIConfig):
         from litellm.constants import AZURE_DEFAULT_RESPONSES_API_VERSION
 
         return BaseAzureLLM.get_base_azure_url(
-            api_base=api_base,
+            api_base=_DEPLOYMENT_PATH.sub("", api_base) if api_base else api_base,
             litellm_params=litellm_params,
             route="/openai/responses",
             default_api_version=AZURE_DEFAULT_RESPONSES_API_VERSION,

@@ -15,7 +15,7 @@ kwargs lack the flag and these tests fail.
 import json
 from collections.abc import Mapping
 from typing import Final
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
@@ -27,6 +27,8 @@ from litellm.responses.litellm_completion_transformation.handler import (
 )
 from litellm.types.llms.openai import ResponsesAPIResponse
 from litellm.types.utils import ADDRESSED_RESPONSE_ID_FIELD
+
+ITERATOR_PATH = "litellm.responses.litellm_completion_transformation.handler.LiteLLMCompletionStreamingIterator"
 
 
 class _StopForwarding(Exception):
@@ -223,3 +225,264 @@ async def test_bridged_follow_up_turn_keeps_the_addressed_response_id_off_the_pr
     )
     assert isinstance(response, ResponsesAPIResponse)
     assert [item.type for item in response.output] == ["message"]
+
+
+class _InMemoryRedis:
+    def __init__(self) -> None:
+        self.store: dict[str, str] = {}
+
+    async def set(self, name: str, value: str, ex: int) -> None:
+        self.store[name] = value
+
+    async def get(self, name: str) -> str | None:
+        return self.store.get(name)
+
+
+class _RedisBackedCache:
+    def __init__(self, client: _InMemoryRedis) -> None:
+        self.client: Final = client
+
+    def init_async_client(self) -> _InMemoryRedis:
+        return self.client
+
+
+class _LiteLLMCache:
+    supported_call_types: Final = ()
+
+    def __init__(self, client: _InMemoryRedis) -> None:
+        self.cache: Final = _RedisBackedCache(client)
+
+
+def _recording_mock_acompletion(sent_messages: list[list[dict]], reply: str):
+    real_acompletion: Final = litellm.acompletion
+
+    async def fake_acompletion(**kwargs):
+        sent_messages.append([{"role": m["role"], "content": m["content"]} for m in kwargs["messages"]])
+        return await real_acompletion(**{**kwargs, "mock_response": reply})
+
+    return fake_acompletion
+
+
+async def _run_turn(user_text: str, previous_response_id: str | None, stream: bool) -> str:
+    response = await litellm.aresponses(
+        model="openai/gpt-4o",
+        api_key="fake-api-key",
+        input=user_text,
+        previous_response_id=previous_response_id,
+        use_chat_completions_api=True,
+        stream=stream,
+    )
+    if not stream:
+        return response.id
+    completed_ids = [event.response.id async for event in response if event.type == "response.completed"]
+    return completed_ids[-1]
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.asyncio
+async def test_follow_up_turn_replays_prior_turn_from_redis_session(stream: bool):
+    sent_messages: list[list[dict]] = []
+    redis: Final = _InMemoryRedis()
+
+    with (
+        patch("litellm.cache", _LiteLLMCache(redis)),  # test-quality-ok: session store reads the litellm.cache global
+        patch(
+            "litellm.acompletion", _recording_mock_acompletion(sent_messages, "Paris")
+        ),  # test-quality-ok: no DI seam
+    ):
+        first_response_id = await _run_turn("Capital of France?", None, stream)
+        await _run_turn("And its population?", first_response_id, stream)
+
+    assert sent_messages[-1] == [
+        {"role": "user", "content": "Capital of France?"},
+        {"role": "assistant", "content": "Paris"},
+        {"role": "user", "content": "And its population?"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_non_streaming_session_keeps_assistant_tool_calls_for_the_follow_up_tool_result():
+    from litellm.types.utils import ChatCompletionMessageToolCall, Choices, Function, Message, ModelResponse
+
+    redis: Final = _InMemoryRedis()
+    tool_call: Final = ChatCompletionMessageToolCall(
+        id="call_weather", type="function", function=Function(name="get_weather", arguments='{"city": "Paris"}')
+    )
+
+    async def fake_acompletion(**kwargs):
+        return ModelResponse(
+            id="chatcmpl-weather",
+            choices=[
+                Choices(
+                    finish_reason="tool_calls",
+                    index=0,
+                    message=Message(content=None, role="assistant", tool_calls=[tool_call]),
+                )
+            ],
+        )
+
+    with (
+        patch("litellm.cache", _LiteLLMCache(redis)),  # test-quality-ok: session store reads the litellm.cache global
+        patch("litellm.acompletion", fake_acompletion),  # test-quality-ok: no DI seam; file stubs this boundary
+    ):
+        await _run_turn("Weather in Paris?", None, stream=False)
+
+    stored_turns = [json.loads(session)["messages"] for session in redis.store.values()]
+    assert [[(m["role"], [c["id"] for c in m.get("tool_calls", [])]) for m in turns] for turns in stored_turns] == [
+        [("user", []), ("assistant", ["call_weather"])]
+    ]
+
+
+_TOOL_CALL_IDS: Final = ("call_a", "call_b")
+
+
+def _streamed_tool_calls_acompletion(sent_messages: list[list[dict]]):
+    from litellm.types.utils import ChatCompletionDeltaToolCall, Delta, Function, ModelResponseStream, StreamingChoices
+
+    real_acompletion: Final = litellm.acompletion
+    chunk: Final = ModelResponseStream(
+        id="chatcmpl-weather",
+        choices=[
+            StreamingChoices(
+                index=0,
+                finish_reason="tool_calls",
+                delta=Delta(
+                    role="assistant",
+                    content=None,
+                    tool_calls=[
+                        ChatCompletionDeltaToolCall(
+                            id=call_id,
+                            index=index,
+                            type="function",
+                            function=Function(name="get_weather", arguments='{"city": "Paris"}'),
+                        )
+                        for index, call_id in enumerate(_TOOL_CALL_IDS)
+                    ],
+                ),
+            )
+        ],
+    )
+
+    async def fake_acompletion(**kwargs):
+        sent_messages.append(list(kwargs["messages"]))
+        return await real_acompletion(**{**kwargs, "stream": True, "mock_response": chunk})
+
+    return fake_acompletion
+
+
+async def _run_streamed_turn(input: str | list[dict], previous_response_id: str | None) -> str:
+    stream = await litellm.aresponses(
+        model="openai/gpt-4o",
+        api_key="fake-api-key",
+        input=input,
+        previous_response_id=previous_response_id,
+        use_chat_completions_api=True,
+        stream=True,
+    )
+    completed_ids = [event.response.id async for event in stream if event.type == "response.completed"]
+    return completed_ids[-1]
+
+
+def _message_shapes(messages: list[dict]) -> list[tuple[str, list[str]]]:
+    return [
+        (m["role"], [c["id"] for c in m.get("tool_calls", [])] or ([m["tool_call_id"]] if "tool_call_id" in m else []))
+        for m in messages
+    ]
+
+
+@pytest.mark.asyncio
+async def test_streaming_session_keeps_assistant_tool_calls_for_the_follow_up_tool_result():
+    redis: Final = _InMemoryRedis()
+
+    with (
+        patch("litellm.cache", _LiteLLMCache(redis)),  # test-quality-ok: session store reads the litellm.cache global
+        patch(
+            "litellm.acompletion", _streamed_tool_calls_acompletion([])
+        ),  # test-quality-ok: no DI seam; file stubs this boundary
+    ):
+        await _run_streamed_turn("Weather in Paris and Rome?", None)
+
+    stored_turns = [json.loads(session)["messages"] for session in redis.store.values()]
+    assert [_message_shapes(turns) for turns in stored_turns] == [[("user", []), ("assistant", list(_TOOL_CALL_IDS))]]
+
+
+@pytest.mark.parametrize("warm_tool_calls_cache", [False, True], ids=["other_worker", "same_worker"])
+@pytest.mark.asyncio
+async def test_follow_up_rebuilds_the_tool_call_turn_from_the_redis_session(warm_tool_calls_cache: bool):
+    from litellm.responses.litellm_completion_transformation.transformation import TOOL_CALLS_CACHE
+
+    sent_messages: list[list[dict]] = []
+    redis: Final = _InMemoryRedis()
+
+    with (
+        patch("litellm.cache", _LiteLLMCache(redis)),  # test-quality-ok: session store reads the litellm.cache global
+        patch(
+            "litellm.acompletion", _streamed_tool_calls_acompletion(sent_messages)
+        ),  # test-quality-ok: no DI seam; file stubs this boundary
+    ):
+        first_response_id = await _run_streamed_turn("Weather in Paris and Rome?", None)
+        if not warm_tool_calls_cache:
+            for call_id in _TOOL_CALL_IDS:
+                TOOL_CALLS_CACHE.delete_cache(call_id)
+        await _run_streamed_turn(
+            [{"type": "function_call_output", "call_id": call_id, "output": "sunny"} for call_id in _TOOL_CALL_IDS],
+            first_response_id,
+        )
+
+    assert _message_shapes(sent_messages[-1]) == [
+        ("user", []),
+        ("assistant", list(_TOOL_CALL_IDS)),
+        ("tool", ["call_a"]),
+        ("tool", ["call_b"]),
+    ]
+
+
+def _assert_iterator_got_forwarded_request(iterator_cls: MagicMock, forwarded: dict) -> None:
+    passed = iterator_cls.call_args.kwargs["litellm_completion_request"]
+    assert passed["messages"] == forwarded["messages"]
+    assert any(m.get("role") == "user" and "hello" in str(m.get("content")) for m in passed["messages"])
+
+
+def test_sync_streaming_passes_completion_request_to_iterator():
+    """CARTO PATCH (PR #16): the streaming iterator stores the Redis session from this request, so without it a
+    streamed turn is saved with only the assistant reply and the follow-up loses the user's messages"""
+    handler = LiteLLMCompletionTransformationHandler()
+    forwarded: dict = {}
+
+    def fake_completion(**kwargs):
+        forwarded.update(kwargs)
+        return MagicMock(spec=litellm.CustomStreamWrapper)
+
+    with patch("litellm.completion", fake_completion), patch(ITERATOR_PATH) as iterator_cls:
+        handler.response_api_handler(
+            model="gpt-4o",
+            input="hello",
+            responses_api_request={},
+            custom_llm_provider="openai",
+            stream=True,
+            _is_async=False,
+        )
+
+    _assert_iterator_got_forwarded_request(iterator_cls, forwarded)
+
+
+@pytest.mark.asyncio
+async def test_async_streaming_passes_completion_request_to_iterator():
+    handler = LiteLLMCompletionTransformationHandler()
+    forwarded: dict = {}
+
+    async def fake_acompletion(**kwargs):
+        forwarded.update(kwargs)
+        return MagicMock(spec=litellm.CustomStreamWrapper)
+
+    with patch("litellm.acompletion", fake_acompletion), patch(ITERATOR_PATH) as iterator_cls:
+        await handler.response_api_handler(
+            model="gpt-4o",
+            input="hello",
+            responses_api_request={},
+            custom_llm_provider="openai",
+            stream=True,
+            _is_async=True,
+        )
+
+    _assert_iterator_got_forwarded_request(iterator_cls, forwarded)
