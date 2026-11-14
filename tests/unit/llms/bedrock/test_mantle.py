@@ -7,6 +7,7 @@ association via `aws_bedrock_project_id`.
 """
 
 import json
+from typing import Final
 from unittest.mock import patch
 
 import httpx
@@ -17,6 +18,11 @@ from litellm.llms.bedrock.chat.mantle.transformation import AmazonMantleConfig
 from litellm.llms.bedrock.messages.mantle_transformation import (
     AmazonMantleMessagesConfig,
 )
+from litellm.llms.bedrock_mantle.chat.claude_transformation import BedrockMantleClaudeChatConfig
+
+# AWS names this header for Mantle workspaces on the Anthropic Messages API, checked 2026-10-02:
+# https://docs.aws.amazon.com/bedrock/latest/userguide/workspaces.html
+_MANTLE_WORKSPACE_HEADER = "anthropic-workspace-id"
 
 
 def _anthropic_response(url: str) -> httpx.Response:
@@ -345,7 +351,7 @@ def test_mantle_validate_environment_sets_workspace_header():
         optional_params={},
         litellm_params={"aws_bedrock_project_id": "proj_abc123def456"},
     )
-    assert headers["anthropic-workspace"] == "proj_abc123def456"
+    assert headers[_MANTLE_WORKSPACE_HEADER] == "proj_abc123def456"
 
 
 def test_mantle_validate_environment_without_project_id():
@@ -357,7 +363,7 @@ def test_mantle_validate_environment_without_project_id():
         optional_params={},
         litellm_params={"aws_bedrock_project_id": None},
     )
-    assert "anthropic-workspace" not in headers
+    assert _MANTLE_WORKSPACE_HEADER not in headers
 
 
 def test_mantle_messages_validate_environment_sets_workspace_header():
@@ -370,7 +376,7 @@ def test_mantle_messages_validate_environment_sets_workspace_header():
         litellm_params={"aws_bedrock_project_id": "proj_abc123def456"},
         api_base="https://bedrock-mantle.us-east-1.api.aws/anthropic/v1/messages",
     )
-    assert headers["anthropic-workspace"] == "proj_abc123def456"
+    assert headers[_MANTLE_WORKSPACE_HEADER] == "proj_abc123def456"
     assert api_base == "https://bedrock-mantle.us-east-1.api.aws/anthropic/v1/messages"
 
 
@@ -383,7 +389,63 @@ def test_mantle_messages_validate_environment_without_project_id():
         optional_params={},
         litellm_params={},
     )
-    assert "anthropic-workspace" not in headers
+    assert _MANTLE_WORKSPACE_HEADER not in headers
+
+
+_MANTLE_CONFIGS: Final = pytest.mark.parametrize(
+    "config", [AmazonMantleConfig(), BedrockMantleClaudeChatConfig()], ids=["bedrock_mantle_route", "mantle_provider"]
+)
+_MANTLE_MODEL: Final = "anthropic.claude-opus-4-8"
+_CLOSED_RESPONSE_FORMAT: Final = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "out",
+        "schema": {"type": "object", "properties": {"a": {"type": "string"}}, "required": ["a"]},
+    },
+}
+_OPEN_RESPONSE_FORMAT: Final = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "out",
+        "schema": {"type": "object", "properties": {"counts": {"type": "object", "additionalProperties": True}}},
+    },
+}
+_LOOKUP_TOOL: Final = {
+    "type": "function",
+    "function": {"name": "lookup", "parameters": {"type": "object", "properties": {"id": {"type": "string"}}}},
+}
+
+
+@_MANTLE_CONFIGS
+def test_mantle_opt_in_model_keeps_the_json_tool_when_thinking_is_requested(set_native_structured_output, config):
+    set_native_structured_output(_MANTLE_MODEL, "bedrock")
+
+    result: Final = config.map_openai_params(
+        non_default_params={"response_format": _CLOSED_RESPONSE_FORMAT, "thinking": {"type": "adaptive"}},
+        optional_params={},
+        model=_MANTLE_MODEL,
+        drop_params=False,
+    )
+
+    assert "output_format" not in result
+    assert [tool["name"] for tool in result["tools"]] == ["json_tool_call"]
+
+
+@_MANTLE_CONFIGS
+def test_mantle_model_native_on_every_request_stays_native_beside_the_callers_tools(
+    set_native_structured_output, config
+):
+    set_native_structured_output(_MANTLE_MODEL, "legacy")
+
+    result: Final = config.map_openai_params(
+        non_default_params={"response_format": _OPEN_RESPONSE_FORMAT, "tools": [_LOOKUP_TOOL]},
+        optional_params={},
+        model=_MANTLE_MODEL,
+        drop_params=False,
+    )
+
+    assert "output_format" in result
+    assert [tool["name"] for tool in result["tools"]] == ["lookup"]
 
 
 def test_mantle_completion_sends_workspace_header_and_clean_body():
@@ -409,7 +471,7 @@ def test_mantle_completion_sends_workspace_header_and_clean_body():
     assert response.choices[0].message.content == "ok"
     assert len(requests) == 1
     assert requests[0]["path"] == "/anthropic/v1/messages"
-    assert requests[0]["headers"]["anthropic-workspace"] == "proj_abc123def456"
+    assert requests[0]["headers"][_MANTLE_WORKSPACE_HEADER] == "proj_abc123def456"
     assert "aws_bedrock_project_id" not in requests[0]["body"]
 
 
@@ -443,7 +505,7 @@ async def test_mantle_anthropic_messages_sends_workspace_header_and_clean_body()
     assert response["content"][0]["text"] == "ok"
     assert len(requests) == 1
     assert requests[0]["path"] == "/anthropic/v1/messages"
-    assert requests[0]["headers"]["anthropic-workspace"] == "proj_abc123def456"
+    assert requests[0]["headers"][_MANTLE_WORKSPACE_HEADER] == "proj_abc123def456"
     assert "aws_bedrock_project_id" not in requests[0]["body"]
 
 

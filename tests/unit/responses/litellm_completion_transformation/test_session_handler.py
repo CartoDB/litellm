@@ -895,7 +895,8 @@ async def test_streaming_redis_store_key_matches_decoded_lookup_key():
             self.logging_obj = SimpleNamespace(
                 litellm_trace_id="trace-1",
                 model_call_details={},
-                _response_cost_calculator=lambda result: None,
+                response_cost_calculator=lambda result: None,
+                record_native_bedrock_guardrail=lambda response: None,
             )
 
         def __aiter__(self):

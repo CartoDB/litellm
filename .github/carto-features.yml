@@ -116,13 +116,13 @@ features:
 
   - name: "Session Merge Tool-Call Dedupe"
     source_prs: []
-    description: "A follow-up function_call_output for a cached tool call injects the assistant turn that issued it, and the replayed session already holds that same turn (the history ends with it, and the history rebuild itself replays each earlier turn's stored function_call_output through the same cache), so providers received consecutive duplicate assistant turns. OCI rejects that with \"An assistant message with 'toolCalls' must be followed by tool messages\"; Anthropic and Gemini merge them and tolerate it. The session handler makes one pass over the merged message list and keeps only the first assistant tool-call message for each set of ids, in both the Redis and the database branch. CARTO's own fix, not an upstream backport."
+    description: "A follow-up function_call_output for a cached tool call injects the assistant turn that issued it, and the replayed session already holds that same turn (the history ends with it, and the history rebuild itself replays each earlier turn's stored function_call_output through the same cache), so providers received consecutive duplicate assistant turns. OCI rejects that with \"An assistant message with 'toolCalls' must be followed by tool messages\"; Anthropic and Gemini merge them and tolerate it. The session handler makes one pass over the merged message list and keeps only the first assistant tool-call message for each set of ids, in both the Redis and the database branch (the database branch dedupes upstream's leading-system + session + new-input list as merged_messages since v1.108.3). CARTO's own fix, not an upstream backport."
     files:
       - litellm/responses/litellm_completion_transformation/transformation.py
     verification:
       - pattern: '\[\*redis_session_messages, \*redis_new_messages\]'
         file: litellm/responses/litellm_completion_transformation/transformation.py
-      - pattern: '_drop_replayed_assistant_tool_calls(\[\*session_messages, \*_messages\])'
+      - pattern: '_drop_replayed_assistant_tool_calls(merged_messages)'
         file: litellm/responses/litellm_completion_transformation/transformation.py
 
   - name: "Snowflake Cortex Claude Function-Calling Follow-up Turns"
@@ -186,13 +186,13 @@ features:
     source_prs: [135]
     description: "Databricks proxies GPT-5.6+/GPT-6 to OpenAI and inherits its chat-completions rejection of function tools with reasoning on ('Function tools with reasoning_effort are not supported ... in /v1/chat/completions'). Upstream's responses_api_bridge_check only bridges openai/azure and expects gpt-5.x/gpt-6 names, so it never fires for Databricks spellings like databricks-gpt-5-6-terra. This adds a Databricks branch that routes those requests (function tools + reasoning not 'none') to DatabricksResponsesAPIConfig. Earlier Databricks GPT-5 endpoints and tool-less or reasoning-off requests stay on chat. REMOVE when upstream routes Databricks gpt-<n> to Responses itself (tracked upstream in BerriAI/litellm#31213); both patterns below must go together."
     files:
-      - litellm/main.py
+      - litellm/responses/bridge_check.py
       - litellm/llms/databricks/common_utils.py
     verification:
       - pattern: "def is_databricks_gpt_tools_require_responses_model"
         file: litellm/llms/databricks/common_utils.py
       - pattern: "and is_databricks_gpt_tools_require_responses_model(model)"
-        file: litellm/main.py
+        file: litellm/responses/bridge_check.py
 
   - name: "Rate Limiter v3 Constant Redis Hash Tag"
     source_prs: [119]

@@ -273,7 +273,7 @@ def adapt_tool_definition_to_oci_standard(tools: list[dict], vendor: OCIVendors)
     return new_tools
 
 
-def _normalize_oci_finish_reason(raw: str | None) -> str | None:
+def normalize_oci_finish_reason(raw: str | None) -> str | None:
     """Map an OCI-specific finish reason to its OpenAI-standard equivalent.
 
     OCI emits ``COMPLETE`` / ``MAX_TOKENS`` / ``TOOL_CALL(S)`` plus a long tail
@@ -294,7 +294,10 @@ def _normalize_oci_finish_reason(raw: str | None) -> str | None:
     return "stop"
 
 
-def _synthesize_oci_tool_call_id(position: int, name: str, arguments: str) -> str:
+_normalize_oci_finish_reason = normalize_oci_finish_reason
+
+
+def synthesize_oci_tool_call_id(position: int, name: str, arguments: str) -> str:
     """Deterministic synthetic tool-call id derived from chunk content.
 
     Used as a fallback when OCI omits ``id`` (always the case for the OCI
@@ -310,6 +313,9 @@ def _synthesize_oci_tool_call_id(position: int, name: str, arguments: str) -> st
         usedforsecurity=False,
     ).hexdigest()[:24]
     return f"call_{digest}"
+
+
+_synthesize_oci_tool_call_id = synthesize_oci_tool_call_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -358,7 +364,7 @@ def adapt_tools_to_openai_standard(
     """Convert OCI tool-call objects in a response to the OpenAI format."""
     return [
         ChatCompletionMessageToolCall(
-            id=tool.id or _synthesize_oci_tool_call_id(i, tool.name, tool.arguments),
+            id=tool.id or synthesize_oci_tool_call_id(i, tool.name, tool.arguments),
             type="function",
             function={"name": tool.name, "arguments": tool.arguments},
         )
@@ -414,7 +420,7 @@ def handle_generic_response(
         if response_message.toolCalls:
             message.tool_calls = adapt_tools_to_openai_standard(response_message.toolCalls)
 
-    model_response.choices[0].finish_reason = _normalize_oci_finish_reason(response_choice.finishReason)
+    model_response.choices[0].finish_reason = normalize_oci_finish_reason(response_choice.finishReason)
 
     oci_usage: Final = completion_response.chatResponse.usage
     reasoning_tokens: int | None = None
@@ -496,7 +502,7 @@ def handle_generic_stream_chunk(
             for tc, (index, emitted_id) in zip(typed_chunk.message.toolCalls, resolved)
         ]
 
-    finish_reason: Final[str | None] = _normalize_oci_finish_reason(typed_chunk.finishReason)
+    finish_reason: Final[str | None] = normalize_oci_finish_reason(typed_chunk.finishReason)
 
     return ModelResponseStream(
         choices=[

@@ -1,9 +1,11 @@
+import asyncio
 import inspect
 import os
 import sys
-from typing import cast
+from typing import Final, cast
 
 import pytest
+import respx
 from pydantic import BaseModel
 
 sys.path.insert(
@@ -16,13 +18,14 @@ from litellm.llms.ollama.chat.transformation import (
 )
 
 from litellm.types.llms.openai import AllMessageValues
-from litellm.utils import get_optional_params
+from litellm.utils import get_llm_provider, get_optional_params
 
 import json
-from unittest.mock import MagicMock
+from unittest.mock import ANY, MagicMock, patch
 
 import litellm
-from litellm.types.utils import Choices, Message, ModelResponse, ModelResponseStream
+from litellm.types.utils import Choices, EmbeddingResponse, Message, ModelResponse, ModelResponseStream
+from unittest import mock
 
 
 class TestEvent(BaseModel):
@@ -989,3 +992,186 @@ class TestOllamaStreamingUsage:
         )
 
         assert result.usage is None
+
+
+def test_get_ollama_params():
+    try:
+        converted_params = get_optional_params(
+            custom_llm_provider="ollama",
+            model="llama2",
+            max_tokens=20,
+            temperature=0.5,
+            stream=True,
+        )
+        expected_params = {
+            "num_predict": 20,
+            "stream": True,
+            "temperature": 0.5,
+        }
+        print("Converted params", converted_params)
+        for key in expected_params.keys():
+            assert (
+                expected_params[key] == converted_params[key]
+            ), f"{converted_params} != {expected_params}"
+    except Exception as e:
+        pytest.fail(f"Error occurred: {e}")
+
+
+def test_get_ollama_model():
+    try:
+        model, custom_llm_provider, _, _ = get_llm_provider("ollama/code-llama-22")
+        print("Model", "custom_llm_provider", model, custom_llm_provider)
+        assert custom_llm_provider == "ollama", f"{custom_llm_provider} != ollama"
+        assert model == "code-llama-22", f"{model} != code-llama-22"
+    except Exception as e:
+        pytest.fail(f"Error occurred: {e}")
+
+
+def test_ollama_json_mode():
+    # assert that format: json gets passed as is to ollama
+    try:
+        converted_params = get_optional_params(
+            custom_llm_provider="ollama", model="llama2", format="json", temperature=0.5
+        )
+        print("Converted params", converted_params)
+        assert converted_params == {
+            "temperature": 0.5,
+            "format": "json",
+            "stream": False,
+        }, f"{converted_params} != {'temperature': 0.5, 'format': 'json', 'stream': False}"
+    except Exception as e:
+        pytest.fail(f"Error occurred: {e}")
+
+
+mock_ollama_embedding_response = EmbeddingResponse(model="ollama/nomic-embed-text")
+
+
+@mock.patch(
+    "litellm.llms.ollama.completion.handler.ollama_embeddings",
+    return_value=mock_ollama_embedding_response,
+)
+def test_ollama_embeddings(mock_embeddings):
+    # assert that ollama_embeddings is called with the right parameters
+    try:
+        embeddings = litellm.embedding(
+            model="ollama/nomic-embed-text", input=["hello world"]
+        )
+        print(embeddings)
+        mock_embeddings.assert_called_once_with(
+            api_base="http://localhost:11434",
+            model="nomic-embed-text",
+            prompts=["hello world"],
+            optional_params=mock.ANY,
+            logging_obj=mock.ANY,
+            model_response=mock.ANY,
+            encoding=mock.ANY,
+        )
+    except Exception as e:
+        pytest.fail(f"Error occurred: {e}")
+
+
+@mock.patch(
+    "litellm.llms.ollama.completion.handler.ollama_aembeddings",
+    return_value=mock_ollama_embedding_response,
+)
+def test_ollama_aembeddings(mock_aembeddings):
+    # assert that ollama_aembeddings is called with the right parameters
+    try:
+        embeddings = asyncio.run(
+            litellm.aembedding(model="ollama/nomic-embed-text", input=["hello world"])
+        )
+        print(embeddings)
+        mock_aembeddings.assert_called_once_with(
+            api_base="http://localhost:11434",
+            model="nomic-embed-text",
+            prompts=["hello world"],
+            optional_params=mock.ANY,
+            logging_obj=mock.ANY,
+            model_response=mock.ANY,
+            encoding=mock.ANY,
+        )
+    except Exception as e:
+        pytest.fail(f"Error occurred: {e}")
+
+
+@pytest.mark.parametrize(
+    "api_base",
+    [
+        "http://gateway.example.com/ollama",
+        "http://gateway.example.com/ollama/",
+        "http://gateway.example.com/ollama/api/chat/",
+    ],
+)
+def test_get_complete_url_ignores_a_trailing_slash_on_api_base(api_base: str):
+    assert (
+        OllamaChatConfig().get_complete_url(
+            api_base=api_base, api_key=None, model="llama3", optional_params={}, litellm_params={}
+        )
+        == "http://gateway.example.com/ollama/api/chat"
+    )
+
+
+_DEEPWIKI_MCP_TOOL: Final = {
+    "type": "mcp",
+    "server_label": "deepwiki",
+    "server_url": "https://mcp.deepwiki.com/mcp",
+    "require_approval": "never",
+}
+_WEATHER_TOOL: Final = {
+    "type": "function",
+    "function": {"name": "get_weather", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}},
+}
+
+
+def _ollama_chat_route(respx_mock: respx.MockRouter) -> respx.Route:
+    return respx_mock.post("http://ollama.test:11434/api/chat").respond(
+        json={
+            "model": "qwen3:0.6b",
+            "message": {"role": "assistant", "content": "Sunny"},
+            "done": True,
+            "prompt_eval_count": 5,
+            "eval_count": 3,
+        }
+    )
+
+
+def test_ollama_chat_answers_400_for_a_hosted_mcp_tool_it_cannot_run(
+    respx_mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(litellm, "drop_params", False)
+    route: Final = _ollama_chat_route(respx_mock)
+
+    with pytest.raises(litellm.UnsupportedParamsError) as raised:
+        litellm.completion(
+            model="ollama_chat/qwen3:0.6b",
+            messages=[{"role": "user", "content": "weather in Paris?"}],
+            tools=[_DEEPWIKI_MCP_TOOL, _WEATHER_TOOL],
+            api_base="http://ollama.test:11434",
+        )
+
+    assert raised.value.status_code == 400
+    assert "qwen3:0.6b on ollama_chat cannot run the hosted MCP tool `deepwiki`" in str(raised.value)
+    assert not route.called
+
+
+@pytest.mark.parametrize(
+    ("tools", "sent_tools"),
+    [([_DEEPWIKI_MCP_TOOL, _WEATHER_TOOL], [_WEATHER_TOOL]), ([_DEEPWIKI_MCP_TOOL], None)],
+    ids=["beside-a-function", "alone"],
+)
+def test_ollama_chat_drop_params_sends_only_the_tools_ollama_can_call(
+    respx_mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch, tools: list[object], sent_tools: object
+) -> None:
+    monkeypatch.setattr(litellm, "drop_params", False)
+    route: Final = _ollama_chat_route(respx_mock)
+
+    response: Final = litellm.completion(
+        model="ollama_chat/qwen3:0.6b",
+        messages=[{"role": "user", "content": "weather in Paris?"}],
+        tools=tools,
+        api_base="http://ollama.test:11434",
+        drop_params=True,
+    )
+
+    assert json.loads(route.calls.last.request.content).get("tools") == sent_tools
+    assert response.choices[0].message.content == "Sunny"

@@ -15,14 +15,18 @@ import re
 from typing import Final, Literal
 from urllib.parse import urlsplit, urlunsplit
 
+from pydantic import BaseModel, ConfigDict
+
 from litellm.llms.base_llm.chat.transformation import BaseLLMException
+
+_DEFAULT_M2M_TOKEN_LIFETIME_SECONDS: Final = 3600
 
 
 class DatabricksException(BaseLLMException):
     pass
 
 
-# CARTO: model gate for the Databricks GPT Responses bridge in litellm/main.py [sc-571154]
+# CARTO: model gate for the Databricks GPT Responses bridge in litellm/responses/bridge_check.py [sc-571154]
 _DATABRICKS_GPT_VERSION_PATTERN: Final = re.compile(r"^(?:databricks-)?gpt-(\d+)(?:[.-](\d+))?(?:-|$)")
 
 
@@ -37,6 +41,13 @@ def is_databricks_gpt_tools_require_responses_model(model: str) -> bool:
     major: Final = int(match.group(1))
     minor: Final = int(match.group(2)) if match.group(2) is not None else 0
     return major >= 6 or (major == 5 and minor >= 6)
+
+
+class OAuthM2MToken(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    access_token: str
+    expires_in: int = _DEFAULT_M2M_TOKEN_LIFETIME_SECONDS
 
 
 class DatabricksBase:
@@ -223,12 +234,20 @@ class DatabricksBase:
             return f"{normalized_api_base}/ai-gateway/mlflow/v1"
         return api_base
 
-    def _get_oauth_m2m_token(
+    def get_oauth_m2m_token(
         self,
         api_base: str,
         client_id: str,
         client_secret: str,
     ) -> str:
+        return self.get_oauth_m2m_token_and_lifetime(api_base, client_id, client_secret).access_token
+
+    def get_oauth_m2m_token_and_lifetime(
+        self,
+        api_base: str,
+        client_id: str,
+        client_secret: str,
+    ) -> OAuthM2MToken:
         """
         Obtain an OAuth M2M access token using client credentials flow.
 
@@ -241,7 +260,7 @@ class DatabricksBase:
             client_secret: OAuth client secret
 
         Returns:
-            Access token string
+            The access token and its lifetime in seconds
 
         Raises:
             DatabricksException: If token request fails
@@ -275,8 +294,7 @@ class DatabricksBase:
                 message=f"OAuth M2M token request failed: {response.text}",
             )
 
-        token_data: Final = response.json()
-        return token_data["access_token"]
+        return OAuthM2MToken.model_validate(response.json())
 
     def _get_databricks_credentials(
         self, api_key: str | None, api_base: str | None, headers: dict | None
@@ -363,7 +381,7 @@ class DatabricksBase:
         if client_id and client_secret and api_base:
             # Use OAuth M2M flow (preferred for production)
             verbose_logger.debug("Using OAuth M2M authentication for Databricks")
-            access_token: Final = self._get_oauth_m2m_token(api_base, client_id, client_secret)
+            access_token: Final = self.get_oauth_m2m_token(api_base, client_id, client_secret)
             headers = headers or {}
             headers["Authorization"] = f"Bearer {access_token}"
             headers["Content-Type"] = "application/json"

@@ -309,7 +309,7 @@ def test_initialize_with_ad_token_provider(setup_mocks, monkeypatch):
 
 
 def test_initialize_with_enable_token_refresh(setup_mocks, monkeypatch):
-    litellm._turn_on_debug()
+    litellm.turn_on_debug()
     # Enable token refresh
     monkeypatch.delenv("AZURE_CLIENT_ID", raising=False)
     monkeypatch.delenv("AZURE_CLIENT_SECRET", raising=False)
@@ -456,6 +456,10 @@ def test_default_max_retries_env_var_reaches_azure_sdk_client():
             "add_message",
             "arun_thread_stream",
             "aresponses",
+            "aget_responses",
+            "adelete_responses",
+            "acancel_responses",
+            "acompact_responses",
             "aresponses_websocket",
             "alist_input_items",
             "acreate_fine_tuning_job",

@@ -171,7 +171,7 @@ class VertexAIAudioTranscriptionConfig(BaseAudioTranscriptionConfig, VertexBase)
         except ValueError:
             raise VertexAIError(
                 status_code=raw_response.status_code,
-                message=f"Received non-JSON response from Google Speech-to-Text: {raw_response.text}",
+                message="Received non-JSON response from Google Speech-to-Text",
             )
         parsed: Final = VertexSpeechToTextRecognizeResponse.model_validate(response_json)
         transcripts: Final = tuple(
@@ -187,7 +187,7 @@ class VertexAIAudioTranscriptionConfig(BaseAudioTranscriptionConfig, VertexBase)
         billed_duration = _parse_duration_seconds(parsed.metadata.totalBilledDuration if parsed.metadata else None)
         if billed_duration is not None:
             response["duration"] = billed_duration
-        response._hidden_params = response_json
+        response.hidden_params = response_json
         return response
 
 
