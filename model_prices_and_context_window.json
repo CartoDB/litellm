@@ -79799,7 +79799,6 @@
         "supported_output_modalities": [
             "text"
         ],
-        "supports_bedrock_converse_tool_result_images": false,
         "supports_bedrock_runtime_chat_completions_response_format": true,
         "supports_function_calling": true,
         "supports_max_reasoning_effort": true,
@@ -79838,7 +79837,6 @@
         "supported_output_modalities": [
             "text"
         ],
-        "supports_bedrock_converse_tool_result_images": false,
         "supports_bedrock_runtime_chat_completions_response_format": true,
         "supports_function_calling": true,
         "supports_max_reasoning_effort": true,
