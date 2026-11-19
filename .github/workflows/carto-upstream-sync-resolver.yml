@@ -1356,7 +1356,7 @@ jobs:
         run: |
           echo "::group::Pushing resolution to sync branch (WORKFLOW CONTROLLED)"
 
-          # checkout persisted the first token, which may have expired by now
+          # claude-code-action removed checkout's auth header and its credential helper reads GH_TOKEN, unset here
           PUSH_AUTH=$(printf 'x-access-token:%s' "${PUSH_TOKEN}" | base64 -w0)
           echo "::add-mask::${PUSH_AUTH}"
           git config --local --replace-all http.https://github.com/.extraheader "AUTHORIZATION: basic ${PUSH_AUTH}"
