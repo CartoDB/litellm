@@ -24,12 +24,22 @@ esac
 FAKE_YQ: Final = "#!/usr/bin/env bash\nprintf '%s' \"$FAKE_REQUIRED\"\n"
 
 
+STEP: Final = next(
+    step
+    for step in yaml.safe_load(WORKFLOW.read_text())["jobs"]["check-and-label"]["steps"]
+    if step.get("id") == "check-and-label"
+)
+
+
 def checker_script() -> str:
-    steps: Final = yaml.safe_load(WORKFLOW.read_text())["jobs"]["check-and-label"]["steps"]
-    script: Final = next(step["run"] for step in steps if step.get("id") == "check-and-label")
-    return script.replace("${{ github.event.workflow_run.head_branch }}", "upstream-sync/v9.9.9").replace(
-        "${{ github.repository }}", "CartoDB/litellm"
-    )
+    return STEP["run"].replace("${{ github.repository }}", "CartoDB/litellm")
+
+
+def checker_env() -> dict[str, str]:
+    return {
+        name: value.replace("${{ github.event.workflow_run.head_branch }}", "upstream-sync/v9.9.9")
+        for name, value in STEP["env"].items()
+    }
 
 
 def checks(**buckets: str) -> list[dict[str, str]]:
@@ -44,6 +54,7 @@ def label_edit(tmp_path: Path, labeled: bool, mergeable: str, check_list: list[d
     labels: Final = [{"name": "upstream-sync"}, *([{"name": "sync-ready"}] if labeled else [])]
     env: Final = {
         **os.environ,
+        **checker_env(),
         "PATH": f"{tmp_path}:{os.environ['PATH']}",
         "GITHUB_OUTPUT": str(tmp_path / "out"),
         "EDIT_LOG": str(tmp_path / "edits"),
@@ -89,4 +100,4 @@ def test_sync_ready_label_tracks_the_current_head(
 
 def test_runs_on_failed_completions_too() -> None:
     job: Final = yaml.safe_load(WORKFLOW.read_text())["jobs"]["check-and-label"]
-    assert "if" not in job
+    assert "conclusion" not in job.get("if", "")

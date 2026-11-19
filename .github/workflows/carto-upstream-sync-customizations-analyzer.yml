@@ -85,6 +85,7 @@ jobs:
   check-trigger:
     name: Check Trigger Conditions
     runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.full_name == github.repository
     outputs:
       should-run: ${{ steps.check.outputs.should-run }}
       pr-number: ${{ steps.check.outputs.pr-number }}
@@ -92,10 +93,21 @@ jobs:
       mode: ${{ steps.check.outputs.mode }}
 
     steps:
+      - name: Mint carto-litellm-sync token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.LITELLM_SYNC_APP_CLIENT_ID }}
+          private-key: ${{ secrets.LITELLM_SYNC_APP_PRIVATE_KEY }}
+          permission-actions: read
+          permission-pull-requests: read
+
       - name: Determine trigger and mode
         id: check
         env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
         run: |
           echo "::group::Checking trigger conditions"
 
@@ -107,14 +119,14 @@ jobs:
 
           elif [[ "${{ github.event_name }}" == "workflow_run" ]]; then
             # Automatic trigger - ONLY run on SUCCESS
-            if [[ "${{ github.event.workflow_run.conclusion }}" != "success" ]]; then
+            if [[ "${RUN_CONCLUSION}" != "success" ]]; then
               echo "[Analyzer] CI did not succeed - skipping (ci-fixer will handle failures)"
               echo "should-run=false" >> $GITHUB_OUTPUT
               exit 0
             fi
 
             # Check if this is an upstream-sync PR
-            BRANCH_NAME="${{ github.event.workflow_run.head_branch }}"
+            BRANCH_NAME="${HEAD_BRANCH}"
             PR_JSON=$(gh pr list --repo ${{ github.repository }} --head "${BRANCH_NAME}" --json number,labels --jq '.[0]')
 
             if [[ -z "${PR_JSON}" || "${PR_JSON}" == "null" ]]; then
@@ -161,7 +173,7 @@ jobs:
         if: steps.check.outputs.should-run == 'true'
         id: dedup
         env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           BRANCH_NAME="${{ steps.check.outputs.branch-name }}"
 
@@ -205,10 +217,21 @@ jobs:
       analysis_exists: ${{ steps.verify-analysis.outputs.analysis_exists }}
 
     steps:
+      - name: Mint carto-litellm-sync token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.LITELLM_SYNC_APP_CLIENT_ID }}
+          private-key: ${{ secrets.LITELLM_SYNC_APP_PRIVATE_KEY }}
+          permission-contents: read
+          permission-issues: write
+          permission-members: read
+          permission-pull-requests: write
+
       - name: Get PR info
         id: pr-info
         env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -eu
 
@@ -254,11 +277,11 @@ jobs:
         with:
           ref: ${{ steps.pr-info.outputs.head-ref }}
           fetch-depth: 0
-          token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Comment on PR - Starting analysis
         env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           MODE="${{ needs.check-trigger.outputs.mode }}"
           if [[ "${MODE}" == "analyze-and-fix" ]]; then
@@ -287,7 +310,7 @@ jobs:
 
       - name: Analyze CARTO PRs for feature context
         env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           echo "::group::Analyzing CARTO PRs for feature context"
 
@@ -468,7 +491,8 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           use_vertex: "true"
-          github_token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          github_token: ${{ steps.app-token.outputs.token }}
+          allowed_bots: carto-litellm-sync
           show_full_output: true
           claude_args: "--model claude-opus-5-5 --max-turns 150 --allowedTools Read,Bash,Grep,Glob ${{ github.event.inputs.debug == 'true' && '--debug' || '' }}"
           prompt: |
@@ -629,8 +653,8 @@ jobs:
         env:
           ANTHROPIC_VERTEX_PROJECT_ID: carto-ci-resources
           CLOUD_ML_REGION: global
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
-          GITHUB_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
 
       - name: Cleanup GCP credentials
         if: always()
@@ -703,7 +727,7 @@ jobs:
       - name: Update PR description with full analysis
         if: steps.verify-analysis.outputs.analysis_exists == 'true'
         env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           echo "::group::Updating PR description with full analysis"
 
@@ -796,7 +820,7 @@ jobs:
       - name: Post summary comment
         if: steps.verify-analysis.outputs.analysis_exists == 'true'
         env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           PR_NUMBER="${{ steps.pr-info.outputs.pr-number }}"
           MODE="${{ needs.check-trigger.outputs.mode }}"
@@ -845,7 +869,7 @@ jobs:
       - name: Comment on PR - Analysis failed
         if: failure() || steps.verify-analysis.outputs.analysis_exists != 'true'
         env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           PR_NUMBER="${{ steps.pr-info.outputs.pr-number }}"
 
@@ -897,10 +921,22 @@ jobs:
       )
 
     steps:
+      - name: Mint carto-litellm-sync token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.LITELLM_SYNC_APP_CLIENT_ID }}
+          private-key: ${{ secrets.LITELLM_SYNC_APP_PRIVATE_KEY }}
+          permission-actions: read
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+          permission-workflows: write
+
       - name: Get PR info for fix job
         id: fix-pr-info
         env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           # Get PR number from either analyze job output or check-trigger
           if [[ "${{ needs.check-trigger.outputs.mode }}" == "fix-only" ]]; then
@@ -922,7 +958,7 @@ jobs:
         with:
           ref: ${{ steps.fix-pr-info.outputs.head-ref }}
           fetch-depth: 0
-          token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Configure git
         run: |
@@ -932,7 +968,7 @@ jobs:
       - name: Download analysis artifacts (fix-only mode)
         if: needs.check-trigger.outputs.mode == 'fix-only'
         env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           echo "::group::Getting analysis for fix-only mode"
 
@@ -1034,7 +1070,7 @@ jobs:
 
       - name: Comment on PR - Starting fix
         env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           DROPPED=$(jq -r '.summary.incorrectly_dropped // 0' /tmp/feature_analysis.json)
 
@@ -1056,7 +1092,8 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           use_vertex: "true"
-          github_token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          github_token: ${{ steps.app-token.outputs.token }}
+          allowed_bots: carto-litellm-sync
           show_full_output: true
           claude_args: "--model claude-opus-5-5 --max-turns 200 --allowedTools Read,Write,Edit,Bash,Grep,Glob"
           prompt: |
@@ -1336,8 +1373,8 @@ jobs:
         env:
           ANTHROPIC_VERTEX_PROJECT_ID: carto-ci-resources
           CLOUD_ML_REGION: global
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
-          GITHUB_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
 
       - name: Cleanup GCP credentials
         if: always()
@@ -1365,7 +1402,7 @@ jobs:
       - name: Update PR description with fix status
         if: steps.fix-report.outputs.has_report == 'true'
         env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           echo "::group::Updating PR description with fix status"
 
@@ -1420,7 +1457,7 @@ jobs:
       - name: Post detailed fix comment
         if: steps.fix-report.outputs.has_report == 'true'
         env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           PR_NUMBER="${{ steps.fix-pr-info.outputs.pr-number }}"
           SUMMARY="${{ steps.fix-report.outputs.summary }}"
@@ -1464,7 +1501,7 @@ jobs:
       - name: Comment on PR - Fix failed
         if: failure()
         env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           PR_NUMBER="${{ steps.fix-pr-info.outputs.pr-number }}"
 
