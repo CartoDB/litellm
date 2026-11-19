@@ -18,7 +18,8 @@
 #     BerriAI dropped the "-stable" tag suffix after v1.83.14-stable) and syncs main
 #   - Creates PR to carto/main if carto/main is behind main (regardless of upstream sync)
 #
-# Uses X_GITHUB_SUPERCARTOFANTE token to allow workflow file modifications.
+# Each job mints a token from the carto-litellm-sync GitHub App so pushes can modify workflow files
+# and PRs it opens trigger CI.
 
 name: CARTO - Upstream Sync # do not change the name since is referenced in the ci-fixer workflow
 
@@ -51,6 +52,16 @@ jobs:
       current-version: ${{ steps.detect-release.outputs.current-version }}
       current-version-tag: ${{ steps.detect-release.outputs.current-version-tag }}
     steps:
+      - name: Mint carto-litellm-sync token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.LITELLM_SYNC_APP_CLIENT_ID }}
+          private-key: ${{ secrets.LITELLM_SYNC_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: read
+
       # Checkout carto/main to check what version we currently have in production
       # NOT main (which has unstable upstream dev code that's always ahead of stable)
       - name: Checkout carto/main branch
@@ -68,7 +79,7 @@ jobs:
       - name: Detect new stable release (bash + gh CLI)
         id: detect-release
         env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -eu
 
@@ -144,12 +155,23 @@ jobs:
       - check-new-release
     if: needs.check-new-release.outputs.has-new-release == 'true'
     steps:
+      - name: Mint carto-litellm-sync token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.LITELLM_SYNC_APP_CLIENT_ID }}
+          private-key: ${{ secrets.LITELLM_SYNC_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-workflows: write
+
       - name: Checkout main branch
         uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
-          token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Configure Git
         run: |
@@ -400,12 +422,26 @@ jobs:
       pr-number: ${{ steps.create-pr.outputs.pr-number }}
       sync-branch: ${{ steps.create-sync-branch.outputs.branch-name }}
     steps:
+      - name: Mint carto-litellm-sync token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.LITELLM_SYNC_APP_CLIENT_ID }}
+          private-key: ${{ secrets.LITELLM_SYNC_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-actions: write
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+          permission-workflows: write
+
       - name: Checkout main branch
         uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
-          token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Configure Git
         run: |
@@ -587,7 +623,7 @@ jobs:
         env:
           NEW_VERSION: ${{ needs.check-new-release.outputs.new-version }}
           SYNC_BRANCH: ${{ steps.create-sync-branch.outputs.branch-name }}
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           SILENT_MODE: ${{ inputs.silent }}
         run: |
           set -eu
@@ -643,7 +679,7 @@ jobs:
       - name: Check conflicts and trigger resolver
         if: steps.create-pr.outputs.pr-url != ''
         env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -eu
 

@@ -40,6 +40,19 @@ jobs:
     # Runs on every completion, failures included: sync-ready must also come off when a newer head stops passing
 
     steps:
+      - name: Mint carto-litellm-sync token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.LITELLM_SYNC_APP_CLIENT_ID }}
+          private-key: ${{ secrets.LITELLM_SYNC_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-checks: read
+          permission-issues: write
+          permission-pull-requests: write
+          permission-statuses: read
+
       # workflow_run executes from the default branch, so the required list cannot be altered by the sync PR
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
         with:
@@ -50,7 +63,7 @@ jobs:
       - name: Check PR readiness and add label
         id: check-and-label
         env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -eu
 
@@ -188,7 +201,7 @@ jobs:
       - name: Alert Slack - ungated failures need a human
         if: steps.check-and-label.outputs.ungated-failed != '' && steps.check-and-label.outputs.silent-mode != 'true'
         env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           SLACK_KEY: ${{ secrets.SLACK_KEY }}
           PR_NUMBER: ${{ steps.check-and-label.outputs.pr-number }}
           PR_URL: ${{ steps.check-and-label.outputs.pr-url }}
@@ -222,7 +235,7 @@ jobs:
       - name: Notify Slack - Tests Passed
         if: steps.check-and-label.outputs.pr-ready == 'true' && steps.check-and-label.outputs.silent-mode != 'true'
         env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_NUMBER: ${{ steps.check-and-label.outputs.pr-number }}
           PR_URL: ${{ steps.check-and-label.outputs.pr-url }}
           VERSION: ${{ steps.check-and-label.outputs.version }}

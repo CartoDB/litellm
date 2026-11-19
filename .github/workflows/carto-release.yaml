@@ -32,7 +32,7 @@ name: CARTO - Create Release
 # - Rate limiting: max-turns: 50, 20-min timeout (~$0.50-2 per release)
 # - No git push from notes generation step (ephemeral runner)
 #
-# Uses X_GITHUB_SUPERCARTOFANTE token where workflow modifications are needed.
+# Uses a carto-litellm-sync GitHub App token where org membership reads and release creation need it.
 
 on:
   workflow_dispatch:
@@ -123,6 +123,17 @@ jobs:
       contents: write
       packages: write
     steps:
+      - name: Mint carto-litellm-sync token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.LITELLM_SYNC_APP_CLIENT_ID }}
+          private-key: ${{ secrets.LITELLM_SYNC_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: read
+          permission-members: read
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
@@ -211,8 +222,8 @@ jobs:
       - name: Calculate next CARTO version
         id: calc-version
         env:
-          # PAT with read:org scope needed to fetch org members list
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          # App token with members:read needed to fetch org members list
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           UPSTREAM_VERSION="${{ steps.detect-upstream.outputs.upstream_version }}"
           LATEST_TAG="${{ steps.get-latest-tag.outputs.latest_tag }}"
@@ -572,6 +583,16 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Mint carto-litellm-sync token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.LITELLM_SYNC_APP_CLIENT_ID }}
+          private-key: ${{ secrets.LITELLM_SYNC_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+
       - name: Download release notes
         uses: actions/download-artifact@95815c38cf2ff2164869cbab79da8d1f422bc89e # v4.2.1
         with:
@@ -587,9 +608,9 @@ jobs:
           draft: false
           prerelease: false
         env:
-          # Use PAT instead of GITHUB_TOKEN so the release event triggers
+          # Use the App token instead of GITHUB_TOKEN so the release event triggers
           # downstream workflows (e.g. carto-n8n-notifier.yml)
-          GITHUB_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
 
       - name: Release Summary
         run: |

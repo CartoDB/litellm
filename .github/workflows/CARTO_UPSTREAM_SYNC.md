@@ -438,7 +438,7 @@ Only these users can trigger the resolver:
 | Token | Purpose | Scope |
 |-------|---------|-------|
 | `GITHUB_TOKEN` | Standard operations | Default permissions |
-| `X_GITHUB_SUPERCARTOFANTE` | Workflow file modifications | `contents:write`, `workflows:write` |
+| `carto-litellm-sync` GitHub App token | Per-job push, PR and workflow dispatch, including workflow file modifications; minted from `LITELLM_SYNC_APP_CLIENT_ID` and `LITELLM_SYNC_APP_PRIVATE_KEY` | Per job, only the `permission-*` inputs the job uses (for example `contents:write`, `workflows:write`) |
 | `ANTHROPIC_API_KEY` | Claude Code for resolver | API access |
 | `SLACK_KEY` | Notifications | `chat:write` |
 

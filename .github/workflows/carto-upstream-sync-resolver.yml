@@ -15,7 +15,7 @@ name: CARTO Upstream Sync - Conflict Resolver # do not change the name since is 
 #   - Git operations are deterministic (not dependent on Claude's actions)
 #
 # Security features:
-# - Only runs when triggered by authorized users (Cartofante, mateo-di)
+# - Only runs when triggered by authorized users (Cartofante, mateo-di, carto-litellm-sync[bot])
 # - Only runs on PRs labeled 'upstream-sync'
 # - Only runs on upstream-sync/* branches (not main directly)
 # - Only runs when conflicts are detected
@@ -73,7 +73,7 @@ jobs:
 
           # Security Check 1: Only allow specific authorized users
           ACTOR="${{ github.actor }}"
-          ALLOWED_ACTORS="Cartofante mateo-di"
+          ALLOWED_ACTORS="Cartofante mateo-di carto-litellm-sync[bot]"
 
           # Check if actor is in allowed list (case-insensitive)
           ACTOR_LOWER="${ACTOR,,}"
@@ -278,10 +278,23 @@ jobs:
     if: needs.security-check.outputs.authorized == 'true' && needs.check-eligibility.outputs.eligible == 'true' && needs.check-eligibility.outputs.verify-only != 'true'
 
     steps:
+      - name: Mint carto-litellm-sync token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.LITELLM_SYNC_APP_CLIENT_ID }}
+          private-key: ${{ secrets.LITELLM_SYNC_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: read
+          permission-issues: write
+          permission-members: read
+          permission-pull-requests: write
+
       - name: Get PR branch info
         id: pr-info
         env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           # Get head and base refs based on trigger type
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
@@ -309,7 +322,7 @@ jobs:
         with:
           ref: ${{ steps.pr-info.outputs.head-ref }}
           fetch-depth: 0
-          token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Configure git
         run: |
@@ -422,7 +435,7 @@ jobs:
 
       - name: Comment on PR - Starting
         env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           gh pr comment ${{ needs.check-eligibility.outputs.pr-number }} \
             --repo ${{ github.repository }} \
@@ -471,7 +484,7 @@ jobs:
       - name: Analyze CARTO PRs for feature context
         id: carto-prs
         env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           echo "::group::Analyzing CARTO PRs for feature context"
 
@@ -660,7 +673,7 @@ jobs:
 
       - name: Fetch PR comments for context
         env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           echo "::group::Fetching PR comments for previous resolution context"
 
@@ -683,7 +696,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           use_vertex: "true"
-          github_token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          github_token: ${{ steps.app-token.outputs.token }}
           show_full_output: true
           claude_args: "--model claude-opus-5-5 --max-turns 250 --allowedTools Read,Write,Edit,Bash,Grep,Glob ${{ github.event.inputs.debug == 'true' && '--debug' || '' }}"
           prompt: |
@@ -1155,8 +1168,24 @@ jobs:
         env:
           ANTHROPIC_VERTEX_PROJECT_ID: carto-ci-resources
           CLOUD_ML_REGION: global
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
-          GITHUB_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+
+      # Installation tokens expire after 1 hour, shorter than this job's timeout, so writes after the Claude step use a fresh one
+      - name: Mint carto-litellm-sync token for post-Claude writes
+        id: app-token-post
+        if: always()
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.LITELLM_SYNC_APP_CLIENT_ID }}
+          private-key: ${{ secrets.LITELLM_SYNC_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-actions: write
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+          permission-workflows: write
 
       - name: Cleanup GCP credentials
         if: always()
@@ -1324,8 +1353,15 @@ jobs:
       - name: Push resolution to sync branch (HARDCODED - updates existing PR)
         id: push-resolution
         if: steps.verify-resolution.outputs.resolved == 'true'
+        env:
+          PUSH_TOKEN: ${{ steps.app-token-post.outputs.token }}
         run: |
           echo "::group::Pushing resolution to sync branch (WORKFLOW CONTROLLED)"
+
+          # checkout persisted the first token, which may have expired by now
+          PUSH_AUTH=$(printf 'x-access-token:%s' "${PUSH_TOKEN}" | base64 -w0)
+          echo "::add-mask::${PUSH_AUTH}"
+          git config --local --replace-all http.https://github.com/.extraheader "AUTHORIZATION: basic ${PUSH_AUTH}"
 
           HEAD_REF="${{ steps.pr-info.outputs.head-ref }}"
           PR_NUMBER="${{ needs.check-eligibility.outputs.pr-number }}"
@@ -1344,7 +1380,7 @@ jobs:
         id: check-remaining
         if: steps.push-resolution.outcome == 'success'
         env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token-post.outputs.token }}
         run: |
           echo "::group::Checking if PR still has conflicts"
 
@@ -1376,7 +1412,7 @@ jobs:
       - name: Summary
         if: always()
         env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token-post.outputs.token }}
         run: |
           echo "::group::Workflow Execution Summary"
           echo "[Resolver] Conflict resolution workflow completed"
@@ -1416,7 +1452,7 @@ jobs:
       - name: Comment on PR - Completion
         if: always()
         env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token-post.outputs.token }}
         run: |
           PR_NUMBER="${{ needs.check-eligibility.outputs.pr-number }}"
           PUSH_SUCCESS="${{ steps.push-resolution.outcome }}"
@@ -1517,7 +1553,7 @@ jobs:
       - name: Add merge warning comment
         if: steps.push-resolution.outcome == 'success'
         env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token-post.outputs.token }}
         run: |
           PR_NUMBER="${{ needs.check-eligibility.outputs.pr-number }}"
 
@@ -1541,10 +1577,23 @@ jobs:
     if: needs.security-check.outputs.authorized == 'true' && needs.check-eligibility.outputs.verify-only == 'true'
 
     steps:
+      - name: Mint carto-litellm-sync token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.LITELLM_SYNC_APP_CLIENT_ID }}
+          private-key: ${{ secrets.LITELLM_SYNC_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: read
+          permission-issues: write
+          permission-members: read
+          permission-pull-requests: write
+
       - name: Get PR branch info
         id: pr-info
         env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           PR_NUMBER="${{ needs.check-eligibility.outputs.pr-number }}"
           PR_JSON=$(gh pr view ${PR_NUMBER} --repo ${{ github.repository }} --json headRefName,baseRefName)
@@ -1560,11 +1609,11 @@ jobs:
         with:
           ref: ${{ steps.pr-info.outputs.head-ref }}
           fetch-depth: 0
-          token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Comment on PR - Starting verification
         env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           gh pr comment ${{ needs.check-eligibility.outputs.pr-number }} \
             --repo ${{ github.repository }} \
@@ -1579,7 +1628,7 @@ jobs:
 
       - name: Analyze CARTO PRs for feature context
         env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           echo "::group::Analyzing CARTO PRs for feature context"
 
@@ -1668,7 +1717,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           use_vertex: "true"
-          github_token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          github_token: ${{ steps.app-token.outputs.token }}
           show_full_output: true
           claude_args: "--model claude-opus-5-5 --max-turns 100 --allowedTools Read,Bash,Grep,Glob ${{ github.event.inputs.debug == 'true' && '--debug' || '' }}"
           prompt: |
@@ -1771,8 +1820,8 @@ jobs:
         env:
           ANTHROPIC_VERTEX_PROJECT_ID: carto-ci-resources
           CLOUD_ML_REGION: global
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
-          GITHUB_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
 
       - name: Cleanup GCP credentials
         if: always()
@@ -1781,7 +1830,7 @@ jobs:
       - name: Comment on PR - Results
         if: always()
         env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           PR_NUMBER="${{ needs.check-eligibility.outputs.pr-number }}"
 

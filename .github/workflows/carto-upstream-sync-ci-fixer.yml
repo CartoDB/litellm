@@ -66,6 +66,18 @@ jobs:
       ignored-failed: ${{ steps.check.outputs.ignored-failed }}
 
     steps:
+      - name: Mint carto-litellm-sync token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.LITELLM_SYNC_APP_CLIENT_ID }}
+          private-key: ${{ secrets.LITELLM_SYNC_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-checks: read
+          permission-pull-requests: read
+          permission-statuses: read
+
       # workflow_run executes from the default branch, so the sync PR cannot alter which checks block sync-ready
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
         with:
@@ -76,7 +88,7 @@ jobs:
       - name: Get PR information
         id: check
         env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           EVENT_NAME: ${{ github.event_name }}
           DISPATCH_PR: ${{ github.event.inputs.pr-number }}
           HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
@@ -168,12 +180,27 @@ jobs:
     if: needs.check-ci-status.outputs.should-fix == 'true'
 
     steps:
+      - name: Mint carto-litellm-sync token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.LITELLM_SYNC_APP_CLIENT_ID }}
+          private-key: ${{ secrets.LITELLM_SYNC_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-actions: read
+          permission-contents: write
+          permission-issues: write
+          permission-members: read
+          permission-pull-requests: write
+          permission-workflows: write
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.check-ci-status.outputs.branch-name }}
           fetch-depth: 0
-          token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Configure git
         run: |
@@ -182,7 +209,7 @@ jobs:
 
       - name: Download logs of the failing required checks
         env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
           BLOCKING: ${{ needs.check-ci-status.outputs.blocking-failed }}
           IGNORED: ${{ needs.check-ci-status.outputs.ignored-failed }}
@@ -212,7 +239,7 @@ jobs:
 
       - name: Comment on PR - Starting Fix
         env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           BLOCKING: ${{ needs.check-ci-status.outputs.blocking-failed }}
           IGNORED: ${{ needs.check-ci-status.outputs.ignored-failed }}
         run: |
@@ -254,7 +281,7 @@ jobs:
 
       - name: Fetch PR comments for context
         env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           echo "::group::Fetching PR comments for previous fix context"
 
@@ -279,7 +306,7 @@ jobs:
       - name: Analyze CARTO PRs
         id: carto-analysis
         env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           echo "::group::Analyzing CARTO PRs"
 
@@ -331,7 +358,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           use_vertex: "true"
-          github_token: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          github_token: ${{ steps.app-token.outputs.token }}
           show_full_output: true
           claude_args: "--model claude-opus-5-5 --max-turns 200 --allowedTools Read,Write,Edit,Bash,Grep,Glob"
           prompt: |
@@ -658,8 +685,8 @@ jobs:
         env:
           ANTHROPIC_VERTEX_PROJECT_ID: carto-ci-resources
           CLOUD_ML_REGION: global
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
-          GITHUB_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
 
       - name: Cleanup GCP credentials
         if: always()
@@ -686,7 +713,7 @@ jobs:
       - name: Comment on PR - Result
         if: always()
         env:
-          GH_TOKEN: ${{ secrets.X_GITHUB_SUPERCARTOFANTE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           PR_NUMBER="${{ needs.check-ci-status.outputs.pr-number }}"
 
