@@ -37,6 +37,7 @@ jobs:
   check-and-label:
     name: Check if PR is ready
     runs-on: ubuntu-latest
+    if: github.event.workflow_run.head_repository.full_name == github.repository
     # Runs on every completion, failures included: sync-ready must also come off when a newer head stops passing
 
     steps:
@@ -46,8 +47,7 @@ jobs:
         with:
           client-id: ${{ secrets.LITELLM_SYNC_APP_CLIENT_ID }}
           private-key: ${{ secrets.LITELLM_SYNC_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
+          permission-actions: read
           permission-checks: read
           permission-issues: write
           permission-pull-requests: write
@@ -64,10 +64,10 @@ jobs:
         id: check-and-label
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
           set -eu
 
-          BRANCH="${{ github.event.workflow_run.head_branch }}"
           echo "::group::Checking if PR from ${BRANCH} is ready for sync-ready label"
 
           # Find PR for this branch
@@ -239,6 +239,7 @@ jobs:
           PR_NUMBER: ${{ steps.check-and-label.outputs.pr-number }}
           PR_URL: ${{ steps.check-and-label.outputs.pr-url }}
           VERSION: ${{ steps.check-and-label.outputs.version }}
+          WORKFLOW_URL: ${{ github.event.workflow_run.html_url }}
         run: |
           set -eu
 
@@ -262,8 +263,6 @@ jobs:
           echo "::endgroup::"
 
           echo "::group::Posting Step 4 notification to Slack"
-
-          WORKFLOW_URL="${{ github.event.workflow_run.html_url }}"
 
           # Clean version for display
           VERSION_CLEAN=$(echo "${VERSION}" | sed -E 's/^v//; s/-stable$//')

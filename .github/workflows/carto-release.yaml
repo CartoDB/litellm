@@ -129,8 +129,6 @@ jobs:
         with:
           client-id: ${{ secrets.LITELLM_SYNC_APP_CLIENT_ID }}
           private-key: ${{ secrets.LITELLM_SYNC_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
           permission-contents: read
           permission-members: read
 
@@ -589,8 +587,6 @@ jobs:
         with:
           client-id: ${{ secrets.LITELLM_SYNC_APP_CLIENT_ID }}
           private-key: ${{ secrets.LITELLM_SYNC_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
           permission-contents: write
 
       - name: Download release notes

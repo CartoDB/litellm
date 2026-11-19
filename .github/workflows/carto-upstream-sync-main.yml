@@ -58,8 +58,6 @@ jobs:
         with:
           client-id: ${{ secrets.LITELLM_SYNC_APP_CLIENT_ID }}
           private-key: ${{ secrets.LITELLM_SYNC_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
           permission-contents: read
 
       # Checkout carto/main to check what version we currently have in production
@@ -161,8 +159,6 @@ jobs:
         with:
           client-id: ${{ secrets.LITELLM_SYNC_APP_CLIENT_ID }}
           private-key: ${{ secrets.LITELLM_SYNC_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
           permission-contents: write
           permission-workflows: write
 
@@ -428,8 +424,6 @@ jobs:
         with:
           client-id: ${{ secrets.LITELLM_SYNC_APP_CLIENT_ID }}
           private-key: ${{ secrets.LITELLM_SYNC_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
           permission-actions: write
           permission-contents: write
           permission-issues: write

@@ -284,8 +284,6 @@ jobs:
         with:
           client-id: ${{ secrets.LITELLM_SYNC_APP_CLIENT_ID }}
           private-key: ${{ secrets.LITELLM_SYNC_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
           permission-contents: read
           permission-issues: write
           permission-members: read
@@ -696,7 +694,9 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           use_vertex: "true"
+          restrict_untrusted_prs: "false"
           github_token: ${{ steps.app-token.outputs.token }}
+          allowed_bots: carto-litellm-sync
           show_full_output: true
           claude_args: "--model claude-opus-5-5 --max-turns 250 --allowedTools Read,Write,Edit,Bash,Grep,Glob ${{ github.event.inputs.debug == 'true' && '--debug' || '' }}"
           prompt: |
@@ -1179,8 +1179,6 @@ jobs:
         with:
           client-id: ${{ secrets.LITELLM_SYNC_APP_CLIENT_ID }}
           private-key: ${{ secrets.LITELLM_SYNC_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
           permission-actions: write
           permission-contents: write
           permission-issues: write
@@ -1583,8 +1581,6 @@ jobs:
         with:
           client-id: ${{ secrets.LITELLM_SYNC_APP_CLIENT_ID }}
           private-key: ${{ secrets.LITELLM_SYNC_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
           permission-contents: read
           permission-issues: write
           permission-members: read
@@ -1718,6 +1714,7 @@ jobs:
         with:
           use_vertex: "true"
           github_token: ${{ steps.app-token.outputs.token }}
+          allowed_bots: carto-litellm-sync
           show_full_output: true
           claude_args: "--model claude-opus-5-5 --max-turns 100 --allowedTools Read,Bash,Grep,Glob ${{ github.event.inputs.debug == 'true' && '--debug' || '' }}"
           prompt: |

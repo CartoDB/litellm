@@ -85,6 +85,7 @@ jobs:
   check-trigger:
     name: Check Trigger Conditions
     runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.full_name == github.repository
     outputs:
       should-run: ${{ steps.check.outputs.should-run }}
       pr-number: ${{ steps.check.outputs.pr-number }}
@@ -98,8 +99,6 @@ jobs:
         with:
           client-id: ${{ secrets.LITELLM_SYNC_APP_CLIENT_ID }}
           private-key: ${{ secrets.LITELLM_SYNC_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
           permission-actions: read
           permission-pull-requests: read
 
@@ -107,6 +106,8 @@ jobs:
         id: check
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
         run: |
           echo "::group::Checking trigger conditions"
 
@@ -118,14 +119,14 @@ jobs:
 
           elif [[ "${{ github.event_name }}" == "workflow_run" ]]; then
             # Automatic trigger - ONLY run on SUCCESS
-            if [[ "${{ github.event.workflow_run.conclusion }}" != "success" ]]; then
+            if [[ "${RUN_CONCLUSION}" != "success" ]]; then
               echo "[Analyzer] CI did not succeed - skipping (ci-fixer will handle failures)"
               echo "should-run=false" >> $GITHUB_OUTPUT
               exit 0
             fi
 
             # Check if this is an upstream-sync PR
-            BRANCH_NAME="${{ github.event.workflow_run.head_branch }}"
+            BRANCH_NAME="${HEAD_BRANCH}"
             PR_JSON=$(gh pr list --repo ${{ github.repository }} --head "${BRANCH_NAME}" --json number,labels --jq '.[0]')
 
             if [[ -z "${PR_JSON}" || "${PR_JSON}" == "null" ]]; then
@@ -222,8 +223,6 @@ jobs:
         with:
           client-id: ${{ secrets.LITELLM_SYNC_APP_CLIENT_ID }}
           private-key: ${{ secrets.LITELLM_SYNC_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
           permission-contents: read
           permission-issues: write
           permission-members: read
@@ -493,6 +492,7 @@ jobs:
         with:
           use_vertex: "true"
           github_token: ${{ steps.app-token.outputs.token }}
+          allowed_bots: carto-litellm-sync
           show_full_output: true
           claude_args: "--model claude-opus-5-5 --max-turns 150 --allowedTools Read,Bash,Grep,Glob ${{ github.event.inputs.debug == 'true' && '--debug' || '' }}"
           prompt: |
@@ -927,8 +927,6 @@ jobs:
         with:
           client-id: ${{ secrets.LITELLM_SYNC_APP_CLIENT_ID }}
           private-key: ${{ secrets.LITELLM_SYNC_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
           permission-actions: read
           permission-contents: write
           permission-issues: write
@@ -1095,6 +1093,7 @@ jobs:
         with:
           use_vertex: "true"
           github_token: ${{ steps.app-token.outputs.token }}
+          allowed_bots: carto-litellm-sync
           show_full_output: true
           claude_args: "--model claude-opus-5-5 --max-turns 200 --allowedTools Read,Write,Edit,Bash,Grep,Glob"
           prompt: |

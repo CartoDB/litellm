@@ -425,6 +425,7 @@ See internal documentation for future improvement options (auto-supersede strate
 Only these users can trigger the resolver:
 - `Cartofante` (automation account)
 - `mateo-di`
+- `carto-litellm-sync[bot]` (GitHub App)
 
 ### Protected Operations
 
