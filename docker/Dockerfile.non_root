@@ -39,6 +39,7 @@ WORKDIR /build
 COPY pyproject.toml uv.lock README.md model_prices_and_context_window.json ./
 COPY litellm-rust/ litellm-rust/
 COPY litellm/ litellm/
+COPY litellm_cli/ litellm_cli/
 COPY enterprise/pyproject.toml enterprise/
 COPY litellm-proxy-extras/pyproject.toml litellm-proxy-extras/
 COPY packaging/litellm-proxy/pyproject.toml packaging/litellm-proxy/
