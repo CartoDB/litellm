@@ -80,3 +80,28 @@ def test_custom_auth_bearer(client):
         exc_info.value.message
         == "Authentication Error, CustomAuth - Malformed API Key passed in. Ensure Key has `Bearer` prefix"
     )
+
+
+def test_failed_custom_auth_does_not_register_request_callbacks(client, monkeypatch):
+    callback_lists = (
+        "callbacks",
+        "input_callback",
+        "success_callback",
+        "failure_callback",
+        "_async_success_callback",
+        "_async_failure_callback",
+    )
+    for name in callback_lists:
+        monkeypatch.setattr(litellm, name, [])
+    # A registered logger would export to Langfuse Cloud; keep a regression local.
+    monkeypatch.setenv("LANGFUSE_HOST", "http://127.0.0.1:9")
+    test_data = {
+        "model": "openai-model",
+        "messages": [{"role": "user", "content": "hi"}],
+        "callbacks": ["langfuse"],
+    }
+
+    with pytest.raises(Exception, match="Authentication Error, Failed custom auth"):
+        client.post("/chat/completions", json=test_data, headers={"Authorization": "Bearer sk-unit-test-master"})
+
+    assert {name: getattr(litellm, name) for name in callback_lists} == {name: [] for name in callback_lists}

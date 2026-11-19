@@ -343,6 +343,33 @@ async def test_add_litellm_data_to_request_strips_guardrail_information_despite_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("opt_in_field", ["metadata", "team_metadata"])
+async def test_add_litellm_data_to_request_strips_guardrail_information_despite_pricing_opt_in(opt_in_field):
+    data = {
+        "model": "gpt-4",
+        "messages": [{"role": "user", "content": "hi"}],
+        "input_cost_per_token": 0.0001,
+        "metadata": {
+            "user_session": "keep-me",
+            "standard_logging_guardrail_information": [{"guardrail_name": "forged", "guardrail_cost": 5.0}],
+        },
+    }
+
+    updated = await add_litellm_data_to_request(
+        data=data,
+        request=_make_request_mock(),
+        user_api_key_dict=_user_api_key_auth(**{opt_in_field: {"allow_client_pricing_override": True}}),
+        proxy_config=MagicMock(),
+        general_settings={},
+        version="test-version",
+    )
+
+    assert updated["input_cost_per_token"] == 0.0001
+    assert updated["metadata"]["user_session"] == "keep-me"
+    assert "standard_logging_guardrail_information" not in updated["metadata"]
+
+
+@pytest.mark.asyncio
 async def test_add_litellm_data_to_request_strips_json_string_litellm_metadata():
     """``litellm_metadata`` may arrive as a JSON-encoded string (multipart/
     form-data or ``extra_body``). The strip has to run after the proxy parses

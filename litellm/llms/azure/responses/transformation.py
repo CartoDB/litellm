@@ -89,6 +89,9 @@ def _without_fields_azure_rejects(item: object, rejected_fields: Mapping[str, fr
     return {key: value for key, value in item.items() if key not in rejected} if rejected else item
 
 
+_DEPLOYMENT_PATH: Final = re.compile(r"/openai/deployments/[^/?]+[^?]*")
+
+
 class AzureOpenAIResponsesAPIConfig(OpenAIResponsesAPIConfig):
     # Parameters not supported by Azure Responses API
     AZURE_UNSUPPORTED_PARAMS = ["context_management"]
@@ -198,6 +201,9 @@ class AzureOpenAIResponsesAPIConfig(OpenAIResponsesAPIConfig):
             "https://litellm8397336933.openai.azure.com"
             OR
             "https://litellm8397336933.openai.azure.com/openai/responses?api-version=2024-05-01-preview"
+            OR a Chat Completions style base such as
+            "https://litellm8397336933.openai.azure.com/openai/deployments/gpt-4o/chat/completions",
+            whose deployment path is dropped because the Responses API takes the model in the body
         - model: Model name.
         - optional_params: Additional query parameters, including "api_version".
         - stream: If streaming is required (optional).
@@ -220,7 +226,7 @@ class AzureOpenAIResponsesAPIConfig(OpenAIResponsesAPIConfig):
             )
 
         return BaseAzureLLM.get_base_azure_url(
-            api_base=resolved_api_base,
+            api_base=_DEPLOYMENT_PATH.sub("", resolved_api_base) if resolved_api_base else resolved_api_base,
             litellm_params=responses_params,
             route="/openai/responses",
             default_api_version=AZURE_DEFAULT_RESPONSES_API_VERSION,

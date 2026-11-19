@@ -167,6 +167,35 @@ def test_explicit_v1_api_base_keeps_responses_api_version_selection(
     assert result == f"https://gateway.example.com/foundry/openai/openai/v1/responses?api-version={expected_version}"
 
 
+@pytest.mark.parametrize(
+    "api_base",
+    [
+        "https://res.openai.azure.com",
+        "https://res.openai.azure.com/",
+        "https://res.openai.azure.com/openai/responses",
+        "https://res.openai.azure.com/openai/deployments/gpt-4o",
+        "https://res.openai.azure.com/openai/deployments/gpt-4o/",
+        "https://res.openai.azure.com/openai/deployments/gpt-4o/chat/completions",
+        "https://res.openai.azure.com/openai/deployments/gpt-4o/embeddings",
+    ],
+)
+def test_get_complete_url_drops_chat_completions_deployment_path(api_base: str):
+    result: Final = AzureOpenAIResponsesAPIConfig().get_complete_url(
+        api_base=api_base, litellm_params={"api_version": "2024-05-01-preview"}
+    )
+
+    assert result == "https://res.openai.azure.com/openai/responses?api-version=2024-05-01-preview"
+
+
+def test_get_complete_url_keeps_query_when_dropping_deployment_path():
+    result: Final = AzureOpenAIResponsesAPIConfig().get_complete_url(
+        api_base="https://res.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-10-21",
+        litellm_params={"api_version": "2024-05-01-preview"},
+    )
+
+    assert result == "https://res.openai.azure.com/openai/responses?api-version=2024-10-21"
+
+
 @pytest.mark.serial
 @pytest.mark.parametrize(
     ("api_base", "api_version", "expected_url"),
