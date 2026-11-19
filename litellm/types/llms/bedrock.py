@@ -244,7 +244,7 @@ class ConverseTokenUsageBlock(TypedDict, total=False):
 
 
 class ServiceTierBlock(TypedDict):
-    type: Literal["priority", "default", "flex", "reserved"]
+    type: Literal["priority", "default", "flex"]
 
 
 class ConverseResponseBlock(TypedDict, total=False):

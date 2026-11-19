@@ -18,7 +18,6 @@ from litellm.integrations.custom_guardrail import (
 from litellm.proxy._types import UserAPIKeyAuth
 from litellm.responses.mcp.litellm_proxy_mcp_handler import (
     LITELLM_PROXY_MCP_SERVER_URL_PREFIX,
-    saved_toolset_exists,
 )
 from litellm.types.guardrails import GuardrailEventHooks
 

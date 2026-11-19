@@ -4324,27 +4324,6 @@ def runtime_model_cost_registrations(
     )
 
 
-def runtime_model_cost_registrations(
-    model: str, custom_llm_provider: str
-) -> tuple[tuple[str, Mapping[str, object]], ...]:
-    names: Final = get_potential_model_names(model, custom_llm_provider)
-    candidates: Final = (
-        model,
-        names["combined_model_name"],
-        f"{custom_llm_provider}/{names['split_model']}",
-        names["split_model"],
-        names["stripped_model_name"],
-    )
-    entries: Final = ((key, _builtin_cost_map().get(key)) for key in dict.fromkeys(candidates))
-    registered: Final = (
-        (key, entry) for key, entry in entries if isinstance(entry, AliasedCostEntry) and entry.registered_fields
-    )
-    return tuple(
-        (key, MappingProxyType({name: value for name, value in entry.items() if name in entry.registered_fields}))
-        for key, entry in registered
-    )
-
-
 class _LiveDeploymentReplay:
     """Single-slot holder for the callback that rebuilds live router deployments.
 

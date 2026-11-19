@@ -324,7 +324,7 @@ async def _forward_client_message(
         await send_to_bedrock(bedrock_message)
 
 
-async def _send_opening_message(
+async def _ack_session_update(
     client_ws: RealtimeClientWebSocket,
     transformation_config: BedrockRealtimeConfig,
     model: str,

@@ -11,7 +11,7 @@ from litellm.litellm_core_utils.prompt_templates.factory import chat_completion_
 from litellm.types.llms.anthropic import AnthropicMessagesTextParam
 from litellm.types.llms.openai import AllMessageValues
 from litellm.types.llms.vertex_ai import ContentType
-from litellm.types.utils import CountContextManagement, TokenCountMessagesFormat, TokenCountResponse
+from litellm.types.utils import TokenCountMessagesFormat, TokenCountResponse
 
 if TYPE_CHECKING:
     from litellm.exceptions import APIError

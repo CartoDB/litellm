@@ -554,7 +554,6 @@ class GoogleAIStudioTokenCounter(BaseTokenCounter):
         from litellm.llms.gemini.count_tokens.handler import GoogleAIStudioTokenCounter
         from litellm.llms.vertex_ai.count_tokens.context import (
             VertexGeminiCountContextError,
-            count_context_edits,
             count_context_error_response,
             gemini_count_contents,
             malformed_tool_result_text_count_error,

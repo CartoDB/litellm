@@ -898,9 +898,6 @@ class LiteLLMMessagesToCompletionTransformationHandler:
         """Handle non-Anthropic models asynchronously using the adapter"""
         context_management: Final = kwargs.pop("context_management", None)
         additional_drop_params: Final[list[str] | None] = kwargs.get("additional_drop_params", None)
-        drop_invalid_edits: Final = litellm.drop_params is True or (
-            "drop_params" in kwargs and kwargs["drop_params"] is True
-        )
         litellm_router: Final[Router | None] = _router_or_proxy_fallback(kwargs.pop("litellm_router", None))
 
         proxy_litellm_metadata, user_api_key_auth = _extract_proxy_litellm_metadata(kwargs)

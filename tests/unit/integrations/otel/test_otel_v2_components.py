@@ -11,7 +11,6 @@ from collections.abc import Iterator
 from contextvars import Context as ContextVarContext
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
-from typing import Final
 
 import pytest
 import requests

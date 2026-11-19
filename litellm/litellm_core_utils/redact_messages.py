@@ -16,8 +16,6 @@ from typing import TYPE_CHECKING, Any, Final, Protocol
 
 from pydantic import BaseModel, JsonValue, TypeAdapter, ValidationError
 
-from pydantic import JsonValue, TypeAdapter, ValidationError
-
 import litellm
 from litellm.constants import REDACTED_BY_LITELLM
 from litellm.integrations.custom_logger import CustomLogger
@@ -173,48 +171,6 @@ def _redact_bedrock_guardrail_trace(response: object) -> None:
         response.update(traces)
         return
     for field, value in ((name, attribute_or_none(response, name)) for name in BEDROCK_GUARDRAIL_TRACE_FIELDS):
-        if value is not None:
-            setattr(response, field, _redacted_bedrock_trace(value))
-
-
-BEDROCK_GUARDRAIL_TRACE_FIELDS: Final = ("trace", "amazon-bedrock-trace")
-_MATCHED_TEXT_KEYS: Final = frozenset({"match", "regex"})
-_JSON_OBJECT: Final = TypeAdapter(dict[str, JsonValue])
-
-
-def _without_matched_text(trace: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
-    redacted: Final = dict(copy.deepcopy(trace))
-    stack: Final[list[JsonValue]] = [redacted]  # mutable-ok: iterative walk, recursive_detector bans recursion here
-    while stack:
-        node = stack.pop()
-        if isinstance(node, dict):
-            for key in _MATCHED_TEXT_KEYS & node.keys():
-                node[key] = "[REDACTED]"
-            stack.extend(node.values())
-        elif isinstance(node, list):
-            stack.extend(node)
-    return redacted
-
-
-def _redacted_bedrock_trace(trace: object) -> object:
-    try:
-        return _without_matched_text(_JSON_OBJECT.validate_python(trace))
-    except ValidationError:
-        return trace
-
-
-def _redact_bedrock_guardrail_trace(response: object) -> None:
-    """A Bedrock guardrail trace echoes the matched text of its sensitive-information and word findings back."""
-    mapping: Final = _as_mapping(response)
-    if isinstance(response, dict):
-        traces: Final = {
-            field: _redacted_bedrock_trace(value)
-            for field, value in (mapping or {}).items()
-            if field in BEDROCK_GUARDRAIL_TRACE_FIELDS
-        }
-        response.update(traces)
-        return
-    for field, value in ((name, getattr(response, name, None)) for name in BEDROCK_GUARDRAIL_TRACE_FIELDS):
         if value is not None:
             setattr(response, field, _redacted_bedrock_trace(value))
 

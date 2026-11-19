@@ -4358,7 +4358,6 @@ _OPTIONAL_PARAMS_ADAPTER: Final = TypeAdapter(dict[str, object])
 _OLLAMA_EMBEDDING_HEADERS_ADAPTER: Final = TypeAdapter(dict[str, str])
 _MODEL_INFO_ADAPTER: Final = TypeAdapter(Mapping[str, object])
 _REQUEST_KWARGS_ADAPTER: Final = TypeAdapter(Mapping[str, object])
-_MODEL_INFO_ADAPTER: Final = TypeAdapter(Mapping[str, object])
 _PROVIDER_ROUTING_HINTS: Final = TypeAdapter(ProviderRoutingHints)
 _BASE_URL_HINT: Final = TypeAdapter(BaseUrlRoutingHint)
 _OPAQUE_VALUE_ADAPTER: Final = TypeAdapter(object)
@@ -4417,43 +4416,6 @@ def _native_output_attempt_timeout(
     retry_timeout: Final = ctx.timeout_for_optional_params(fallback.optional_params)
     ctx.logging.record_applied_timeout(retry_timeout)
     return retry_timeout
-
-
-_AWS_BEDROCK_CLIENT_CREDENTIAL_KEYS: Final = (
-    "aws_access_key_id",
-    "aws_secret_access_key",
-    "aws_session_token",
-    "aws_region_name",
-)
-
-
-def _native_output_fallback(
-    ctx: CompletionDispatchContext,
-    first_attempt_params: Mapping[str, object],
-    first_attempt_litellm_params: Mapping[str, object],
-) -> NativeOutputFallback:
-    litellm_params: Final = without_bedrock_native_output_opt_in(first_attempt_litellm_params)
-    remapped_params: Final = ctx.optional_params_for_model_info(deployment_model_info(litellm_params))
-    return NativeOutputFallback(
-        optional_params={
-            **{key: value for key, value in remapped_params.items() if key != "aws_bedrock_client"},
-            **{
-                key: first_attempt_params[key]
-                for key in _AWS_BEDROCK_CLIENT_CREDENTIAL_KEYS
-                if key in first_attempt_params
-            },
-        },
-        litellm_params=litellm_params,
-    )
-
-
-def _converse_native_output_fallback(
-    ctx: CompletionDispatchContext,
-    first_attempt_params: Mapping[str, object],
-    first_attempt_litellm_params: Mapping[str, object],
-) -> NativeOutputFallback | None:
-    fallback: Final = _native_output_fallback(ctx, first_attempt_params, first_attempt_litellm_params)
-    return None if AmazonConverseConfig.sends_native_text_format(fallback.optional_params) else fallback
 
 
 def _complete_bedrock(ctx: CompletionDispatchContext) -> _CompletionDispatchResult:

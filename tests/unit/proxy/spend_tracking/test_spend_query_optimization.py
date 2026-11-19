@@ -11,8 +11,6 @@ from datetime import timezone
 from typing import Final
 from unittest.mock import AsyncMock, MagicMock
 
-from collections.abc import Mapping
-
 import pytest
 
 from litellm.proxy.auth.authorization_dependencies import get_log_team_lookup

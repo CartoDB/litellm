@@ -27,8 +27,6 @@ RUN npm run build
 # ---------- runtime ----------
 FROM nginx:${NGINX_VERSION} AS runtime
 
-RUN apk upgrade --no-cache brotli-libs
-
 # Drop the upstream default :80 server; we own the config.
 RUN rm -f /etc/nginx/conf.d/default.conf
 

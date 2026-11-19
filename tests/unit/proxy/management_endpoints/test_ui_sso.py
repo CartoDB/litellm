@@ -10,7 +10,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
-from pydantic import SecretStr
 import respx
 from fastapi import HTTPException, Request
 from pydantic import SecretStr

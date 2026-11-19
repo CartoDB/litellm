@@ -23,8 +23,6 @@ from litellm.llms.anthropic.messages.context_management.inference_view import (
     inference_request_view,
 )
 from litellm.llms.vertex_ai.count_tokens.context import (
-    CountContextEdits,
-    InferenceRequestView,
     VertexGeminiCountContext,
     VertexGeminiCountContextError,
     gemini_count_contents,

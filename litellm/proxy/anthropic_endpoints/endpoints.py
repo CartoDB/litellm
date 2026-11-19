@@ -93,31 +93,6 @@ def _token_count_fields(
     return resolve_counted_tool_fields(resolving, llm_router, team_id)
 
 
-_TOKEN_COUNT_FIELDS: Final = ("model", "messages", "tools", "system")
-
-
-def _token_count_request(fields: Mapping[str, object]) -> TokenCountRequest | ProxyException:
-    try:
-        return TokenCountRequest.model_validate({name: fields[name] for name in _TOKEN_COUNT_FIELDS if name in fields})
-    except ValidationError as e:
-        return ProxyException(
-            message=first_validation_error(e),
-            type="invalid_request_error",
-            param=str(e.errors(include_url=False)[0]["loc"][0]),
-            code=status.HTTP_400_BAD_REQUEST,
-        )
-
-
-def _token_count_fields(
-    data: Mapping[str, object], auto_drop_params: bool, llm_router: Router | None, team_id: str | None
-) -> Mapping[str, object] | ProxyException:
-    fields: Final = {
-        name: data[name] for name in (*_TOKEN_COUNT_FIELDS, "drop_params", "additional_drop_params") if name in data
-    }
-    resolving: Final = {**fields, "drop_params": True} if auto_drop_params else fields
-    return resolve_counted_tool_fields(resolving, llm_router, team_id)
-
-
 def _strip_total_tokens_from_anthropic_response(response: object) -> None:
     """Remove the OpenAI-flavored `usage.total_tokens` field that LiteLLM
     injects into Anthropic /v1/messages responses.

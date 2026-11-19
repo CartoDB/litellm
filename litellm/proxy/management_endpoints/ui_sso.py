@@ -2989,52 +2989,6 @@ async def _insert_sso_user_or_find_concurrent_insert(
         return await users.find_by_id(concurrent_insert.user_id) or concurrent_insert
 
 
-DefaultTeamJoin: TypeAlias = Callable[
-    [LiteLLM_UserTable, Sequence[str | NewUserRequestTeam], PrismaClient], Awaitable[None]
-]
-
-
-async def _join_default_teams_as_admin(
-    user: LiteLLM_UserTable, teams: Sequence[str | NewUserRequestTeam], prisma_client: PrismaClient
-) -> None:
-    await add_new_user_to_default_team(
-        user_id=user.user_id,
-        user_email=user.user_email,
-        user_api_key_dict=UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN),
-        teams=teams,
-        prisma_client=prisma_client,
-    )
-
-
-def _default_teams_not_joined(user: LiteLLM_UserTable) -> tuple[str | NewUserRequestTeam, ...]:
-    joined: Final = frozenset(user.teams)
-    return tuple(
-        team
-        for team in check_if_default_team_set() or ()
-        if (team if isinstance(team, str) else team.team_id) not in joined
-    )
-
-
-async def _insert_sso_user_or_find_concurrent_insert(
-    insert: Awaitable[NewUserResponse],
-    user_id: str | None,
-    prisma_client: PrismaClient,
-    join_default_teams: DefaultTeamJoin = _join_default_teams_as_admin,
-) -> NewUserResponse | LiteLLM_UserTable:
-    try:
-        return await insert
-    except Exception:
-        users: Final = UserRepository(prisma_client, use_writer=True)
-        concurrent_insert: Final = None if user_id is None else await users.find_by_id(user_id)
-        if concurrent_insert is None:
-            raise
-        unjoined: Final = _default_teams_not_joined(concurrent_insert)
-        if not unjoined:
-            return concurrent_insert
-        await join_default_teams(concurrent_insert, unjoined, prisma_client)
-        return await users.find_by_id(concurrent_insert.user_id) or concurrent_insert
-
-
 @router.get(
     "/sso/get/ui_settings",
     tags=["experimental"],

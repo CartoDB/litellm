@@ -482,22 +482,6 @@ def local_model_cost_map(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     litellm.get_model_info.cache_clear()
 
 
-NativeStructuredOutputKey: TypeAlias = Literal["legacy", "bedrock"] | None
-
-
-@pytest.fixture
-def set_native_structured_output(
-    local_model_cost_map: None, monkeypatch: pytest.MonkeyPatch
-) -> Callable[[str, NativeStructuredOutputKey], None]:
-    def set_flags(model_cost_key: str, native_key: NativeStructuredOutputKey) -> None:
-        entry: Final = litellm.model_cost[model_cost_key]
-        monkeypatch.setitem(entry, "supports_native_structured_output", native_key == "legacy")
-        monkeypatch.setitem(entry, "supports_bedrock_native_structured_output", native_key == "bedrock")
-        litellm.get_model_info.cache_clear()
-
-    return set_flags
-
-
 @pytest.fixture
 def declare_mid_conversation_system(monkeypatch: pytest.MonkeyPatch) -> Callable[[str, bool], None]:
     def declare(model_cost_key: str, supported: bool) -> None:

@@ -51,7 +51,6 @@ from litellm.router_utils.router_callbacks.track_deployment_metrics import (
     increment_deployment_successes_for_current_minute,
 )
 from litellm.types.router import (
-    RouterRateLimitError,
     AllowedFailsPolicy,
     DeploymentTypedDict,
     LiteLLMParamsTypedDict,

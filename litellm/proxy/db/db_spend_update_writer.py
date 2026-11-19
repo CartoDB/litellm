@@ -159,34 +159,6 @@ def _turn_chains_through_the_db(payload: Mapping[str, object], llm_router: "Rout
     )
 
 
-def _turn_chains_through_the_db(payload: Mapping[str, object], llm_router: "Router | None") -> bool:
-    """A Responses turn the chat-completions bridge replays from its spend log on the next `previous_response_id`.
-
-    Native Responses providers hold the conversation themselves, so their rows can wait for the batch write.
-    A row with no router deployment behind it is treated as bridged, which keeps today's immediate flush.
-    """
-    if payload.get("call_type") not in RESPONSES_SESSION_CALL_TYPES:
-        return False
-    model_id: Final = payload.get("model_id")
-    deployment: Final = (
-        llm_router.get_deployment(model_id=model_id) if llm_router is not None and isinstance(model_id, str) else None
-    )
-    if deployment is None:
-        return True
-    from litellm.responses.main import provider_stores_the_conversation
-
-    litellm_params: Final = deployment.litellm_params
-    return not provider_stores_the_conversation(
-        litellm_params.model,
-        litellm_params.custom_llm_provider,
-        {
-            "use_chat_completions_api": litellm_params.use_chat_completions_api,
-            "model_info": deployment.model_info.model_dump(),
-            "api_base": litellm_params.api_base,
-        },
-    )
-
-
 def _org_member_transaction_key(org_id: str, user_id: str) -> str:
     return f"organization_id::{quote(org_id, safe='')}::user_id::{quote(user_id, safe='')}"
 

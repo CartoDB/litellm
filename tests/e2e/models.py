@@ -1431,11 +1431,6 @@ class TokenCountModelBody(BaseModel, frozen=True):
     region: str | None = None
 
 
-class TokenCountModelBody(BaseModel, frozen=True):
-    model: str
-    region: str | None = None
-
-
 class ModelInfoBody(BaseModel):
     enforce_supported_endpoints: bool | None = None
     # id is left unset so the proxy assigns a unique model_id per deployment.

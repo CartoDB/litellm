@@ -79,12 +79,6 @@ def _resolve_oidc_reference(credential: str | None) -> str | None:
             return resolved
 
 
-@dataclass(frozen=True, slots=True)
-class _PassThroughCredentials:
-    api_key: str
-    api_base: str | None
-
-
 class PassthroughEndpointRouter:
     """
     Use this class to Get credentials for pass-through endpoints

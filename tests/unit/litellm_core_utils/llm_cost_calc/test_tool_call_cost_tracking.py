@@ -1,8 +1,6 @@
 from collections.abc import Callable
 from typing import Final
 
-from typing import Final
-
 import pytest
 
 import litellm

@@ -17122,10 +17122,7 @@
         "supports_vision": true,
         "supports_xhigh_reasoning_effort": true,
         "supports_max_reasoning_effort": true,
-        "provider_specific_entry": {
-            "us": 1.1,
-            "fast": 2
-        },
+        "provider_specific_entry": {"us":1.1,"fast":2},
         "supports_output_config": true,
         "supports_speed": true,
         "supports_fast_mode": true,
@@ -23404,11 +23401,6 @@
     },
     "databricks/kimi-latest": {
         "alias_of": "databricks/databricks-kimi-k3"
-    },
-    "databricks/system.ai.kimi-k3": {
-        "litellm_provider": "databricks",
-        "mode": "chat",
-        "token_count_framing": 100
     },
     "databricks/system.ai.kimi-k3": {
         "litellm_provider": "databricks",
@@ -30073,8 +30065,7 @@
         "supports_response_schema": false,
         "supports_system_messages": true,
         "supports_video_input": true,
-        "supports_vision": true,
-        "output_cost_per_image_token_priority": 5.4e-05
+        "supports_vision": true
     },
     "gemini-3.1-flash-lite-preview": {
         "cache_read_input_token_cost": 2.5e-08,
@@ -30640,9 +30631,7 @@
         "output_cost_per_token_above_200k_tokens_priority": 2.7e-05,
         "output_cost_per_token_batches": 5e-06,
         "output_cost_per_token_flex": 5e-06,
-        "output_cost_per_token_priority": 1.8e-05,
-        "input_cost_per_token_above_200k_tokens_flex": 1.25e-06,
-        "output_cost_per_token_above_200k_tokens_flex": 7.5e-06
+        "output_cost_per_token_priority": 1.8e-05
     },
     "gemini-3.1-pro-preview": {
         "cache_creation_input_token_cost_above_200k_tokens": 2.5e-07,
@@ -30703,9 +30692,7 @@
         "supports_video_input": true,
         "supports_vision": true,
         "supports_web_search": true,
-        "web_search_billing_unit": "per_query",
-        "input_cost_per_token_above_200k_tokens_flex": 2e-06,
-        "output_cost_per_token_above_200k_tokens_flex": 9e-06
+        "web_search_billing_unit": "per_query"
     },
     "gemini-3.1-pro-preview-customtools": {
         "prompt_cache_min_tokens": 4096,
@@ -30871,13 +30858,7 @@
         "supports_video_input": true,
         "supports_vision": true,
         "supports_web_search": true,
-        "web_search_billing_unit": "per_query",
-        "input_cost_per_audio_token_above_200k_tokens_priority": 1.8e-06,
-        "input_cost_per_audio_token_above_200k_tokens_flex": 5e-07,
-        "cache_read_input_audio_token_cost_priority": 1.8e-07,
-        "input_cost_per_audio_token_flex": 5e-07,
-        "input_cost_per_audio_token_above_200k_tokens": 1e-06,
-        "input_cost_per_audio_token_above_200k_tokens_batches": 5e-07
+        "web_search_billing_unit": "per_query"
     },
     "vertex_ai/gemini-3.5-flash": {
         "prompt_cache_min_tokens": 4096,
@@ -31271,9 +31252,7 @@
         "supports_video_input": true,
         "supports_vision": true,
         "supports_web_search": true,
-        "web_search_billing_unit": "per_query",
-        "input_cost_per_token_above_200k_tokens_flex": 2e-06,
-        "output_cost_per_token_above_200k_tokens_flex": 9e-06
+        "web_search_billing_unit": "per_query"
     },
     "vertex_ai/gemini-3.1-pro-preview-customtools": {
         "prompt_cache_min_tokens": 4096,
@@ -32181,11 +32160,7 @@
         "output_cost_per_token": 1.2e-05,
         "output_cost_per_token_batches": 6e-06,
         "rpm": 1000.0,
-        "search_context_cost_per_query": {
-            "search_context_size_low": 0.035,
-            "search_context_size_medium": 0.035,
-            "search_context_size_high": 0.035
-        },
+        "search_context_cost_per_query": {"search_context_size_low":0.035,"search_context_size_medium":0.035,"search_context_size_high":0.035},
         "source": "https://ai.google.dev/gemini-api/docs/models/deep-research-pro-preview-12-2025",
         "supported_endpoints": [
             "/v1/chat/completions",
@@ -33195,13 +33170,7 @@
         "supports_url_context": true,
         "supports_vision": true,
         "supports_web_search": true,
-        "web_search_billing_unit": "per_query",
-        "input_cost_per_audio_token_above_200k_tokens_priority": 1.8e-06,
-        "input_cost_per_audio_token_above_200k_tokens_flex": 5e-07,
-        "cache_read_input_audio_token_cost_priority": 1.8e-07,
-        "input_cost_per_audio_token_flex": 5e-07,
-        "input_cost_per_audio_token_above_200k_tokens": 1e-06,
-        "input_cost_per_audio_token_above_200k_tokens_batches": 5e-07
+        "web_search_billing_unit": "per_query"
     },
     "gemini-omni-flash-preview": {
         "input_cost_per_audio_token": 1.5e-06,
@@ -42870,7 +42839,7 @@
         "supports_xhigh_reasoning_effort": true
     },
     "meta/muse-voice-transcribe-1.0": {
-        "input_cost_per_second": 5e-05,
+        "input_cost_per_second": 0.00005,
         "litellm_provider": "meta",
         "mode": "audio_transcription",
         "source": "https://dev.meta.ai/docs/speech-to-text",
@@ -53891,8 +53860,8 @@
             "/v1/images/generations",
             "/v1/images/edits",
             "/v1/batch"
-        ],
-        "output_cost_per_image_token_priority": 0.000216
+        ]
+
     },
     "vertex_ai/gemini-3-pro-image-preview": {
         "input_cost_per_image": 0.0011,
@@ -53926,8 +53895,8 @@
             "/v1/images/generations",
             "/v1/images/edits",
             "/v1/batch"
-        ],
-        "output_cost_per_image_token_priority": 0.000216
+        ]
+
     },
     "vertex_ai/gemini-3.1-flash-image": {
         "cache_read_input_token_cost": 5e-08,
@@ -53961,8 +53930,8 @@
             "/v1/images/generations",
             "/v1/images/edits",
             "/v1/batch"
-        ],
-        "output_cost_per_image_token_priority": 0.000108
+        ]
+
     },
     "vertex_ai/gemini-3.1-flash-image-preview": {
         "input_cost_per_image": 0.00056,
@@ -53987,8 +53956,8 @@
             "/v1/images/generations",
             "/v1/images/edits",
             "/v1/batch"
-        ],
-        "output_cost_per_image_token_priority": 0.000108
+        ]
+
     },
     "vertex_ai/gemini-3.1-flash-lite-image": {
         "cache_read_input_token_cost": 2.5e-08,
@@ -54035,8 +54004,7 @@
         "supports_response_schema": false,
         "supports_system_messages": true,
         "supports_video_input": true,
-        "supports_vision": true,
-        "output_cost_per_image_token_priority": 5.4e-05
+        "supports_vision": true
     },
     "vertex_ai/gemini-3.1-flash-lite-preview": {
         "cache_read_input_token_cost": 2.5e-08,
@@ -65138,13 +65106,7 @@
             {
                 "name": "claude-adaptive-thinking",
                 "pattern": "claude-[a-z]+-(?:4[-._](?:[6-9]|[1-9]\\d)(?!\\d)|[5-9](?!\\d)(?:[-._]\\d{1,2}(?!\\d))?)",
-                "fill_missing_for_providers": [
-                    "anthropic",
-                    "azure_ai",
-                    "bedrock",
-                    "bedrock_converse",
-                    "vertex_ai-anthropic_models"
-                ],
+                "fill_missing_for_providers": ["anthropic", "azure_ai", "bedrock", "bedrock_converse", "vertex_ai-anthropic_models"],
                 "description": "Claude at version 4.6 or higher, in any id shape that contains claude-<family>-: minors 4.6 through 4.99, any later major-minor, and bare 5+ majors so a new family shaped like claude-fable-5 matches. Requiring the claude- prefix keeps non-Claude names such as team-sonnet-5-1 out. The minor is capped at two digits so an 8-digit date suffix such as claude-opus-4-20250514 is never read as a >= 4.6 minor. Two-digit majors are deliberately not matched so ids like claude-opus-41 (4.1) are not read as major 41. Turns on adaptive thinking for new versions and new families with no code change.",
                 "model_info": {
                     "supports_adaptive_thinking": true
@@ -65153,13 +65115,7 @@
             {
                 "name": "claude-legacy-thinking",
                 "pattern": "claude-[a-z]+-4[-._]6(?!\\d)",
-                "fill_missing_for_providers": [
-                    "anthropic",
-                    "azure_ai",
-                    "bedrock",
-                    "bedrock_converse",
-                    "vertex_ai-anthropic_models"
-                ],
+                "fill_missing_for_providers": ["anthropic", "azure_ai", "bedrock", "bedrock_converse", "vertex_ai-anthropic_models"],
                 "description": "Claude at version 4.6 exactly, in any id shape that contains claude-<family>-4-6 (dotted and underscored minors included, dated releases such as claude-sonnet-4-6-20260219 too). The 4.6 family is adaptive-thinking yet still accepts legacy thinking.type=enabled with budget_tokens, so the caller's hard budget cap is forwarded verbatim instead of being rewritten to an uncapped output_config.effort. The lookahead keeps two-digit minors such as 4-60 from matching. 4.7+ and 5+ majors reject the legacy shape and stay on the adaptive translation.",
                 "model_info": {
                     "supports_legacy_thinking": true
@@ -65184,13 +65140,7 @@
             {
                 "name": "claude-mid-conversation-system",
                 "pattern": "claude-[a-z]+-(?:4[-._](?:[89]|[1-9]\\d)(?!\\d)|[5-9](?!\\d)(?:[-._]\\d{1,2}(?!\\d))?)",
-                "fill_missing_for_providers": [
-                    "anthropic",
-                    "azure_ai",
-                    "bedrock",
-                    "bedrock_converse",
-                    "vertex_ai-anthropic_models"
-                ],
+                "fill_missing_for_providers": ["anthropic", "azure_ai", "bedrock", "bedrock_converse", "vertex_ai-anthropic_models"],
                 "description": "Claude at version 4.8 or higher, in any id shape that contains claude-<family>-: minors 4.8 through 4.99, any later major-minor, and bare 5+ majors so a new family like claude-fable-5 matches. Two-digit majors are deliberately not matched so ids like claude-opus-41 (4.1) are not read as major 41. Anthropic introduced mid-conversation system messages with Opus 4.8 and every newer Claude keeps them; 4.7 and below reject the system role inside messages.",
                 "model_info": {
                     "supports_mid_conversation_system": true
@@ -65199,13 +65149,7 @@
             {
                 "name": "claude-tool-search",
                 "pattern": "claude-[a-z]+-(?:4[-._](?:[5-9]|[1-9]\\d)(?!\\d)|[5-9](?!\\d)(?:[-._]\\d{1,2}(?!\\d))?)",
-                "fill_missing_for_providers": [
-                    "anthropic",
-                    "azure_ai",
-                    "bedrock",
-                    "bedrock_converse",
-                    "vertex_ai-anthropic_models"
-                ],
+                "fill_missing_for_providers": ["anthropic", "azure_ai", "bedrock", "bedrock_converse", "vertex_ai-anthropic_models"],
                 "description": "Claude at version 4.5 or higher, in any id shape that contains claude-<family>-: minors 4.5 through 4.99, any later major-minor, and bare 5+ majors so a new family like claude-fable-5 matches. Two-digit majors are deliberately not matched so ids like claude-opus-41 (4.1) are not read as major 41. Anthropic's tool search docs list every Claude 4.5 and newer model as supported and Opus 4.1 and earlier as unsupported, so the flag follows the version instead of a per-model list. azure_ai is included because Microsoft Foundry runs tool search for Claude on both Anthropic-hosted and Azure-hosted deployments.",
                 "model_info": {
                     "supports_tool_search": true
@@ -65231,11 +65175,7 @@
             {
                 "name": "openai-reasoning-family-baseline",
                 "pattern": "^(?!.*search-api)(?:[a-z0-9_.-]+/)*(?:ft:)?(?:o[1-9]\\d*(?![a-z0-9])|gpt-[5-9](?:\\.\\d+)?(?![0-9.])|(?:gpt-\\d+(?:\\.\\d+)?(?:-[a-z0-9]+)*-)?(?:codex|deep-research|chat-latest)(?![a-z0-9]))",
-                "fill_missing_for_providers": [
-                    "azure",
-                    "azure_ai",
-                    "openai"
-                ],
+                "fill_missing_for_providers": ["azure", "azure_ai", "openai"],
                 "description": "OpenAI reasoning families by id shape, under any provider namespace and with an optional ft: prefix: the o-series (o1, o3-pro, o4-mini), gpt-5 through gpt-9 majors including dotted minors and suffixed variants (gpt-5.5-cyber, gpt-6-astra), and the codex, deep-research and chat-latest lines when standalone or on a gpt base. gpt-5-search-api is excluded because it is a search-only surface. Every model here is a reasoning model, and the Responses API drops the caller's reasoning param for any mapped OpenAI model whose info lacks supports_reasoning, so an id the registry has not named yet keeps its reasoning settings instead of silently losing them. Rules lose to exact entries. Carries no mode and no pricing, so cost stays on the standard unpriced behavior.",
                 "model_info": {
                     "supports_reasoning": true
@@ -75563,9 +75503,7 @@
         "mode": "chat",
         "output_cost_per_token": 4.4e-06,
         "source": "https://cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing",
-        "supported_regions": [
-            "global"
-        ],
+        "supported_regions": ["global"],
         "supports_function_calling": true,
         "supports_pdf_input": false,
         "supports_prompt_caching": true,
@@ -76899,9 +76837,7 @@
     },
     "global.xai.grok-4.7": {
         "supports_regex_lookaround": false,
-        "supported_endpoints": [
-            "/v1/chat/completions"
-        ],
+        "supported_endpoints": ["/v1/chat/completions"],
         "supports_bedrock_runtime_chat_completions_tools_with_reasoning": true,
         "supports_bedrock_runtime_chat_completions_response_format": true,
         "cache_read_input_token_cost": 5e-07,
@@ -76929,9 +76865,7 @@
     },
     "us.xai.grok-4.7": {
         "supports_regex_lookaround": false,
-        "supported_endpoints": [
-            "/v1/chat/completions"
-        ],
+        "supported_endpoints": ["/v1/chat/completions"],
         "supports_bedrock_runtime_chat_completions_tools_with_reasoning": true,
         "supports_bedrock_runtime_chat_completions_response_format": true,
         "cache_read_input_token_cost": 5.5e-07,
@@ -77438,11 +77372,7 @@
         "output_cost_per_token": 7.5e-06,
         "output_cost_per_token_batches": 3.75e-06,
         "rpm": 1000.0,
-        "search_context_cost_per_query": {
-            "search_context_size_low": 0.014,
-            "search_context_size_medium": 0.014,
-            "search_context_size_high": 0.014
-        },
+        "search_context_cost_per_query": {"search_context_size_low":0.014,"search_context_size_medium":0.014,"search_context_size_high":0.014},
         "source": "https://ai.google.dev/gemini-api/docs/pricing",
         "supported_endpoints": [
             "/v1/chat/completions",
@@ -77488,11 +77418,7 @@
         "output_cost_per_token": 7.5e-06,
         "output_cost_per_token_batches": 3.75e-06,
         "output_cost_per_token_priority": 1.35e-05,
-        "search_context_cost_per_query": {
-            "search_context_size_low": 0.014,
-            "search_context_size_medium": 0.014,
-            "search_context_size_high": 0.014
-        },
+        "search_context_cost_per_query": {"search_context_size_low":0.014,"search_context_size_medium":0.014,"search_context_size_high":0.014},
         "source": "https://cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing",
         "supported_endpoints": [
             "/v1/chat/completions",
@@ -77518,8 +77444,7 @@
         "supports_video_input": true,
         "supports_vision": true,
         "supports_web_search": true,
-        "web_search_billing_unit": "per_query",
-        "output_cost_per_image_token_priority": 5.4e-05
+        "web_search_billing_unit": "per_query"
     },
     "vertex_ai/gemini-nano-banana-2.1": {
         "cache_read_input_token_cost": 1.5e-07,
@@ -77540,11 +77465,7 @@
         "output_cost_per_token": 7.5e-06,
         "output_cost_per_token_batches": 3.75e-06,
         "output_cost_per_token_priority": 1.35e-05,
-        "search_context_cost_per_query": {
-            "search_context_size_low": 0.014,
-            "search_context_size_medium": 0.014,
-            "search_context_size_high": 0.014
-        },
+        "search_context_cost_per_query": {"search_context_size_low":0.014,"search_context_size_medium":0.014,"search_context_size_high":0.014},
         "source": "https://cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing",
         "supported_endpoints": [
             "/v1/chat/completions",
@@ -77570,8 +77491,7 @@
         "supports_video_input": true,
         "supports_vision": true,
         "supports_web_search": true,
-        "web_search_billing_unit": "per_query",
-        "output_cost_per_image_token_priority": 5.4e-05
+        "web_search_billing_unit": "per_query"
     },
     "azure_ai/grok-4.7": {
         "cache_read_input_token_cost": 5e-07,
@@ -77629,7 +77549,7 @@
         "supports_tool_choice": true,
         "supports_vision": true
     },
-    "claude-haiku-5-5": {
+"claude-haiku-5-5": {
         "input_cost_per_token_above_100k_tokens_batches": 2.5e-07,
         "output_cost_per_token_above_100k_tokens_batches": 1.25e-06,
         "cache_creation_input_token_cost_above_100k_tokens_batches": 3.125e-07,
@@ -78668,11 +78588,7 @@
         "output_cost_per_token_priority": 1.8e-05,
         "prompt_cache_min_tokens": 4096.0,
         "rpm": 2000.0,
-        "search_context_cost_per_query": {
-            "search_context_size_low": 0.014,
-            "search_context_size_medium": 0.014,
-            "search_context_size_high": 0.014
-        },
+        "search_context_cost_per_query": {"search_context_size_low":0.014,"search_context_size_medium":0.014,"search_context_size_high":0.014},
         "source": "https://ai.google.dev/gemini-api/docs/pricing",
         "supported_endpoints": [
             "/v1/chat/completions",
@@ -78732,11 +78648,7 @@
         "output_cost_per_token_priority": 1.8e-05,
         "prompt_cache_min_tokens": 6144.0,
         "regional_endpoint_uplift_multiplier": 1.1,
-        "search_context_cost_per_query": {
-            "search_context_size_low": 0.014,
-            "search_context_size_medium": 0.014,
-            "search_context_size_high": 0.014
-        },
+        "search_context_cost_per_query": {"search_context_size_low":0.014,"search_context_size_medium":0.014,"search_context_size_high":0.014},
         "source": "https://cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing",
         "supported_endpoints": [
             "/v1/chat/completions",
@@ -78795,11 +78707,7 @@
         "output_cost_per_token_priority": 3.6e-05,
         "prompt_cache_min_tokens": 6144.0,
         "regional_endpoint_uplift_multiplier": 1.1,
-        "search_context_cost_per_query": {
-            "search_context_size_low": 0.014,
-            "search_context_size_medium": 0.014,
-            "search_context_size_high": 0.014
-        },
+        "search_context_cost_per_query": {"search_context_size_low":0.014,"search_context_size_medium":0.014,"search_context_size_high":0.014},
         "source": "https://cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing",
         "supported_endpoints": [
             "/v1/chat/completions",

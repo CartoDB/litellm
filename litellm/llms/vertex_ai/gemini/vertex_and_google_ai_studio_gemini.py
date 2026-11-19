@@ -41,7 +41,6 @@ from litellm.litellm_core_utils.tool_fields import (
     qualified_member_name,
     tool_params_without_hosted_mcp,
 )
-from litellm.litellm_core_utils.tool_fields import tool_params_without_hosted_mcp
 from litellm.llms.base_llm.chat.transformation import BaseConfig, BaseLLMException
 from litellm.llms.custom_httpx.http_handler import (
     AsyncHTTPHandler,

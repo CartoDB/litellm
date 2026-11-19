@@ -31,8 +31,6 @@ from litellm.constants import MANAGED_OBJECT_STALENESS_CUTOFF_DAYS
 from litellm.types.router import LiteLLM_Params
 from litellm.types.utils import LiteLLMBatch
 
-from litellm.types.utils import LiteLLMBatch
-
 if TYPE_CHECKING:
     from litellm.batches.batch_utils import BatchCostUsageResult
 

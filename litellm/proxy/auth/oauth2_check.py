@@ -20,11 +20,6 @@ class OAuth2TokenValidationError(ValueError):
     inactive, or could not be reached."""
 
 
-class OAuth2TokenValidationError(ValueError):
-    """The token-info or introspection endpoint did not vouch for the token: it rejected it, reported it
-    inactive, or could not be reached."""
-
-
 class Oauth2Handler:
     """
     Handles OAuth2 token validation.

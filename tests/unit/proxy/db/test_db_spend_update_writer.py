@@ -15,8 +15,6 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import httpx
 import pytest
-
-from litellm.types.caching import RedisPipelineLpopOperation, RedisPipelineRpushOperation
 from prisma.errors import DataError as PrismaDataError
 from prisma.errors import RawQueryError
 from redis.exceptions import DataError

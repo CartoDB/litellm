@@ -1,3 +1,5 @@
+import os
+import sys
 from unittest.mock import MagicMock, patch
 
 from openai._legacy_response import LegacyAPIResponse

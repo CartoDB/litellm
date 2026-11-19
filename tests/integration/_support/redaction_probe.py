@@ -22,7 +22,6 @@ def _payload(kwargs: Mapping[str, object], response_obj: object, logger: str, ho
             "request": request,
             "response": response_obj.model_dump() if isinstance(response_obj, BaseModel) else response_obj,
             "standard_response": standard.get("response") if isinstance(standard, Mapping) else None,
-            "standard": standard,
         },
         default=str,
     )
