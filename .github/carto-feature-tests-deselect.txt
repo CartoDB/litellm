@@ -5,3 +5,10 @@
 # core-utils shard times out on them against the pure v1.105.1 tree (fork main run 38677492527). No CARTO feature
 # touches litellm_core_utils/realtime_streaming.py; it is only in scope because the whole directory is mirrored
 tests/unit/litellm_core_utils/test_realtime_streaming.py
+
+# Upstream v1.110.1 tests that compare the whole bridged chat request and expect no tool_choice key. CARTO's
+# "Snowflake Streaming + Tool Calling" feature (manifest pattern "tool_choice_value is None and tools") sets
+# tool_choice to "auto" whenever the Responses request carries tools and no tool_choice, so these exact-match
+# assertions see one extra key. The rest of each request matches upstream
+tests/unit/responses/test_responses_api_bridge_flag.py::test_bridge_sends_text_verbosity_on_a_client_tool_search_follow_up_turn
+tests/unit/responses/litellm_completion_transformation/test_count_request.py::test_claude_count_request_leaves_out_tools_the_deployment_drops

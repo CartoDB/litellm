@@ -9,12 +9,12 @@ from email.utils import parsedate_to_datetime
 from functools import lru_cache, partial
 from pathlib import Path
 from types import MappingProxyType
-from typing import IO, Final, Protocol, TypeAlias
+from typing import IO, ClassVar, Final, Protocol, TypeAlias
 from urllib.parse import quote
 
 import httpx
 import soundfile
-from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
+from pydantic import ConfigDict, TypeAdapter, ValidationError
 from typing_extensions import ReadOnly, TypedDict
 
 import litellm
@@ -34,6 +34,8 @@ from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLogging
 from litellm.litellm_core_utils.litellm_logging import (
     get_standard_logging_object_payload,
 )
+from litellm.llms.bedrock.base_aws_llm import BaseAWSLLM
+from litellm.llms.bedrock.web_identity_session_policy import TRANSCRIBE_SESSION_POLICY, WebIdentitySessionPolicy
 from litellm.llms.custom_httpx.http_handler import get_async_httpx_client
 from litellm.proxy._types import (
     PassThroughEndpointLoggingResultValues,
@@ -45,6 +47,7 @@ from litellm.proxy.common_utils.resource_ownership import (
     is_proxy_admin,
     user_can_access_resource_owner,
 )
+from litellm.types.llms.base import LiteLLMBaseModel
 from litellm.types.llms.custom_http import httpxSpecialProvider
 from litellm.types.utils import StandardPassThroughResponseObject
 
@@ -68,22 +71,26 @@ JobLookup: TypeAlias = Callable[[str], Awaitable[Mapping[str, object]]]
 MediaDurationProbe: TypeAlias = Callable[[str, float], Awaitable[float | None]]
 
 
+class TranscribeAWS(BaseAWSLLM):
+    _web_identity_session_policy: ClassVar[WebIdentitySessionPolicy] = TRANSCRIBE_SESSION_POLICY
+
+
 class GetTranscriptionJobRequest(TypedDict):
     TranscriptionJobName: ReadOnly[str]
 
 
-class _MediaRef(BaseModel):
+class _MediaRef(LiteLLMBaseModel):
     model_config = ConfigDict(frozen=True)
     MediaFileUri: str | None = None
 
 
-class _JobTag(BaseModel):
+class _JobTag(LiteLLMBaseModel):
     model_config = ConfigDict(frozen=True)
     Key: str | None = None
     Value: str | None = None
 
 
-class TranscriptionJobRecord(BaseModel):
+class TranscriptionJobRecord(LiteLLMBaseModel):
     model_config = ConfigDict(frozen=True)
     TranscriptionJobStatus: str | None = None
     CreationTime: float | None = None
@@ -91,7 +98,7 @@ class TranscriptionJobRecord(BaseModel):
     Tags: tuple[_JobTag, ...] = ()
 
 
-class _TranscriptionJobResponse(BaseModel):
+class _TranscriptionJobResponse(LiteLLMBaseModel):
     model_config = ConfigDict(frozen=True)
     TranscriptionJob: TranscriptionJobRecord | None = None
 
@@ -105,7 +112,7 @@ StartedJob: TypeAlias = TranscriptionJobRecord | None
 JobPricer: TypeAlias = Callable[[str, str, float, StartedJob], Awaitable[float]]
 
 
-class _PricedCostMapEntry(BaseModel):
+class _PricedCostMapEntry(LiteLLMBaseModel):
     model_config = ConfigDict(frozen=True, strict=True)
     input_cost_per_second: float
 
@@ -445,7 +452,7 @@ def _as_json_object(response: httpx.Response) -> Mapping[str, object]:
 
 
 def transcribe_job_lookup(aws_region_name: str) -> JobLookup:
-    from litellm.llms.bedrock.base_aws_llm import BaseAWSLLM, run_aws_signing, sign_aws_json_post
+    from litellm.llms.bedrock.base_aws_llm import run_aws_signing, sign_aws_json_post
 
     url: Final = f"https://transcribe.{aws_region_name}.{get_aws_dns_suffix(aws_region_name)}/"
     headers: Final = MappingProxyType(
@@ -460,7 +467,7 @@ def transcribe_job_lookup(aws_region_name: str) -> JobLookup:
         payload: Final = json.dumps(body)
         prepped: Final = await run_aws_signing(
             sign_aws_json_post,
-            get_credentials=partial(BaseAWSLLM().get_credentials, aws_region_name=aws_region_name),
+            get_credentials=partial(TranscribeAWS().get_credentials, aws_region_name=aws_region_name),
             service_name="transcribe",
             aws_region_name=aws_region_name,
             url=url,
@@ -491,6 +498,10 @@ def s3_media_url(media_uri: str, aws_region_name: str) -> str | None:
     return f"https://{bucket}.s3.{aws_region_name}.{dns_suffix}/{quote(key)}"
 
 
+def _header_or_default(headers: Mapping[str, str], name: str, default: str) -> str:
+    return headers.get(name, default)
+
+
 def media_predates_job(headers: Mapping[str, str], job_created_at: float) -> bool:
     try:
         modified_at: Final = parsedate_to_datetime(headers["last-modified"]).timestamp()
@@ -500,7 +511,7 @@ def media_predates_job(headers: Mapping[str, str], job_created_at: float) -> boo
 
 
 async def write_media_within_limit(response: httpx.Response, media_file: IO[bytes], max_bytes: int) -> bool:
-    if int(response.headers.get("content-length", "0")) > max_bytes:
+    if int(_header_or_default(response.headers, "content-length", "0")) > max_bytes:
         return False
     async for chunk in response.aiter_bytes():
         _ = media_file.write(chunk)
@@ -522,11 +533,11 @@ def transcribe_media_duration_probe(aws_region_name: str, download_slots: asynci
     from botocore.auth import S3SigV4Auth
     from botocore.awsrequest import AWSRequest
 
-    from litellm.llms.bedrock.base_aws_llm import BaseAWSLLM, run_aws_signing
+    from litellm.llms.bedrock.base_aws_llm import run_aws_signing
 
     def sign_s3_get(url: str) -> dict[str, str]:  # mutable-ok: httpx request headers take a dict
         aws_request: Final = AWSRequest(method="GET", url=url)
-        credentials: Final = BaseAWSLLM().get_credentials(aws_region_name=aws_region_name)
+        credentials: Final = TranscribeAWS().get_credentials(aws_region_name=aws_region_name)
         S3SigV4Auth(credentials, "s3", aws_region_name).add_auth(aws_request)
         return dict(aws_request.prepare().headers.items())
 
@@ -590,8 +601,7 @@ class TranscribePassthroughLoggingHandler:
 
     @staticmethod
     def _operation_from_response(httpx_response: httpx.Response) -> str:
-        headers: Final[Mapping[str, str]] = httpx_response.request.headers
-        target: Final = headers.get("x-amz-target", "")
+        target: Final = _header_or_default(httpx_response.request.headers, "x-amz-target", "")
         return target.split(".")[-1]
 
     @staticmethod
