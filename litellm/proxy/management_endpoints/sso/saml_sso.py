@@ -45,6 +45,10 @@ from litellm.proxy._experimental.mcp_server.outbound_credentials.sso_assertion_s
 from litellm.proxy.auth.ip_address_utils import IPAddressUtils
 from litellm.proxy.management_endpoints.sso_helper_utils import SSO_SESSIONS_TARGET
 from litellm.proxy.management_endpoints.types import CustomOpenID, get_litellm_user_role
+from litellm.proxy.mcp_server.outbound_credentials.sso_assertion_store import (
+    SSOIdentityAssertion,
+    assertion_from_saml_login,
+)
 from litellm.proxy.utils import get_custom_url
 
 try:

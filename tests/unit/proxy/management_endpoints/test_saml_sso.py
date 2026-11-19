@@ -42,6 +42,7 @@ from litellm.proxy.management_endpoints.sso.saml_sso import (
     SAMLAuthHandler,
 )
 from litellm.proxy.management_endpoints.types import CustomOpenID
+from litellm.proxy.mcp_server.outbound_credentials.sso_assertion_store import SSOIdentityAssertion
 
 
 def _shared_cache(store: InMemoryCache | None = None) -> DualCache:

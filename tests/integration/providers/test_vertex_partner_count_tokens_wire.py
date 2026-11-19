@@ -19,6 +19,13 @@ from integration._support.client import Gateway, Scenario, eventually
 from integration._support.process import graceful_stop_seconds, owned_proxy_process
 from integration._support.vertex import service_account_json
 from integration._support.wire import Reply, Request, Wire, wire_server
+from integration.providers._count_tokens_system_lift import (
+    RESPONSES_REQUEST_OPTIONS,
+    RESPONSES_TOOL_USE,
+    count_request_fields,
+    counted_fields,
+    inference_count_fields,
+)
 from integration._support.ports import allocate_port
 from pydantic import JsonValue, TypeAdapter
 from tokenizers import Regex, Tokenizer, models, pre_tokenizers
@@ -427,14 +434,22 @@ def test_utils_token_counter_local_mode_never_calls_the_peer(gateway: Gateway) -
         assert wire.drain() == ()
 
 
-def test_utils_token_counter_surfaces_the_peer_error_for_openai_tools(gateway: Gateway) -> None:
+def _inference_and_count_fields(wire: Wire) -> tuple[dict[str, JsonValue], ...]:
+    requests: Final = wire.drain()
+    (inference,) = (request for request in requests if request.target == _MESSAGE_TARGET)
+    return (counted_fields(_JSON_OBJECT.validate_json(inference.body)), *map(counted_fields, _count_bodies(requests)))
+
+
+def test_utils_token_counter_counts_openai_tools_the_way_chat_inference_sends_them(gateway: Gateway) -> None:
     with wire_server(_peer(_strict)) as wire, gateway.scenario() as scenario:
         model: Final = _deployment(gateway, scenario, wire.url)
         body: Final = {**_bare(model), "tools": _OPENAI_TOOLS}
+        generated: Final = gateway.request("POST", "/v1/chat/completions", {**body, "max_tokens": 16})
+        assert generated.status_code == 200, generated.text
         response: Final = gateway.request("POST", "/utils/token_counter", body, params={"call_endpoint": "true"})
-        assert response.status_code == 400, response.text
-        assert "total_tokens" not in response.text, response.text
-        assert _counted_bodies(wire) == ({**_PEER_BARE, "tools": _OPENAI_TOOLS},)
+        assert _payload(response)["total_tokens"] == _PEER_COUNT, response.text
+        inference, counted = _inference_and_count_fields(wire)
+        assert counted == inference, (counted, inference)
 
 
 def test_responses_input_tokens_counts_through_the_partner_peer(gateway: Gateway) -> None:
@@ -451,8 +466,24 @@ def test_responses_input_tokens_counts_through_the_partner_peer(gateway: Gateway
         assert _counted_bodies(wire) == (_PEER_BARE,)
 
 
-def test_responses_input_tokens_surfaces_the_peer_error(gateway: Gateway) -> None:
+@pytest.mark.parametrize("request_body", RESPONSES_TOOL_USE.values(), ids=RESPONSES_TOOL_USE.keys())
+def test_responses_input_tokens_counts_what_responses_inference_sends(
+    gateway: Gateway, request_body: dict[str, JsonValue]
+) -> None:
     with wire_server(_peer(_strict)) as wire, gateway.scenario() as scenario:
+        model: Final = _deployment(gateway, scenario, wire.url)
+        generated: Final = gateway.request(
+            "POST", "/v1/responses", {**request_body, "model": model, "max_output_tokens": 16}
+        )
+        assert generated.status_code == 200, generated.text
+        response: Final = gateway.request("POST", "/v1/responses/input_tokens", {**request_body, "model": model})
+        assert _payload(response)["input_tokens"] == _PEER_COUNT, response.text
+        inference, counted = _inference_and_count_fields(wire)
+        assert counted == inference, (counted, inference)
+
+
+def test_responses_input_tokens_surfaces_the_peer_error(gateway: Gateway) -> None:
+    with wire_server(_peer(_rejecting(400))) as wire, gateway.scenario() as scenario:
         model: Final = _deployment(gateway, scenario, wire.url)
         response: Final = gateway.request(
             "POST",
@@ -462,7 +493,111 @@ def test_responses_input_tokens_surfaces_the_peer_error(gateway: Gateway) -> Non
         assert response.status_code == 400, response.text
         assert response.json() == _RESPONSES_ROUTE.rejection(_REJECTION), response.text
         (sent,) = _counted_bodies(wire)
-        assert sent["tools"] == _RESPONSES_TOOLS, sent
+        assert sent["system"] == [{"type": "text", "text": "Be terse"}], sent
+        assert sent["tools"] == [
+            {
+                "name": "get_weather",
+                "input_schema": _WEATHER_SCHEMA,
+                "type": "custom",
+                "description": "Look up the current weather for a city",
+            }
+        ], sent
+
+
+def test_responses_input_tokens_rejects_an_unpaired_tool_output_without_calling_vertex(gateway: Gateway) -> None:
+    with wire_server(_peer(_strict)) as wire, gateway.scenario() as scenario:
+        model: Final = _deployment(gateway, scenario, wire.url)
+        body: Final[dict[str, JsonValue]] = {
+            "model": model,
+            "input": [
+                {"role": "user", "content": "What is the weather in Paris?"},
+                {"type": "function_call", "call_id": "call_1", "name": "get_weather", "arguments": "Paris?"},
+                {"type": "function_call_output", "call_id": "call_1", "output": "Sunny"},
+            ],
+            "tools": _RESPONSES_TOOLS,
+        }
+        response: Final = gateway.request("POST", "/v1/responses/input_tokens", body)
+        assert response.status_code == 400, response.text
+        assert "get_weather" in _error_message(_JSON_OBJECT.validate_json(response.content)), response.text
+        assert wire.drain() == ()
+
+
+def test_responses_input_tokens_types_a_peer_error_by_its_status(gateway: Gateway) -> None:
+    with wire_server(_peer(_rejecting(404, "not_found_error"))) as wire, gateway.scenario() as scenario:
+        model: Final = _deployment(gateway, scenario, wire.url)
+        response: Final = _RESPONSES_ROUTE.send(gateway, model)
+        assert response.status_code == 404, response.text
+        assert response.json() == _RESPONSES_ROUTE.rejection(_REJECTION), response.text
+        assert _counted_bodies(wire) == (_PEER_BARE,)
+
+
+@pytest.mark.parametrize(
+    ("backend", "route"),
+    [
+        pytest.param(_GLM_BACKEND, _MESSAGES_ROUTE, id="glm-messages"),
+        pytest.param(_GLM_BACKEND, _RESPONSES_ROUTE, id="glm-responses"),
+        pytest.param(_GLM_BACKEND, _GOOGLE_ROUTE, id="glm-google"),
+        pytest.param(_GLM_BACKEND, _UTILS_ROUTE, id="glm-utils"),
+        pytest.param(_MISTRAL_BACKEND, _MESSAGES_ROUTE, id="mistral-messages"),
+    ],
+)
+def test_partner_without_a_count_route_answers_400_without_calling_vertex(
+    gateway: Gateway, backend: str, route: _CountRoute
+) -> None:
+    with wire_server(_peer()) as wire, gateway.scenario() as scenario:
+        model: Final = _deployment(gateway, scenario, wire.url, model=f"vertex_ai/{backend}")
+        response: Final = route.send(gateway, model)
+        assert response.status_code == 400, response.text
+        payload: Final = _JSON_OBJECT.validate_json(response.content)
+        message: Final = _error_message(payload)
+        assert backend in message, message
+        assert payload == route.rejection(message), response.text
+        assert wire.drain() == ()
+
+
+def test_llama_count_still_reaches_the_meta_count_route(gateway: Gateway) -> None:
+    with wire_server(_peer()) as wire, gateway.scenario() as scenario:
+        model: Final = _deployment(gateway, scenario, wire.url, model=f"vertex_ai/{_LLAMA_BACKEND}")
+        response: Final = _count(gateway, _bare(model))
+        assert _payload(response) == {"input_tokens": _PEER_COUNT, "litellm_count_source": "provider"}, response.text
+        (sent,) = _count_bodies(wire.drain(), _LLAMA_COUNT_TARGET)
+        assert sent["messages"] == _MESSAGES, sent
+
+
+@pytest.mark.timeout(2 * graceful_stop_seconds() + 120)
+def test_custom_tokenizer_partner_counts_locally_on_every_count_route(gateway: Gateway, tmp_path: Path) -> None:
+    environment: Final = {"HF_HOME": str(tmp_path / "hf-home")}
+    with (
+        wire_server(_tokenizer_hub(_char_tokenizer())) as hub,
+        wire_server(_peer()) as vertex,
+        owned_proxy_process(gateway, tmp_path, {**environment, "HF_ENDPOINT": hub.url}) as owned,
+        owned.gateway.scenario() as scenario,
+    ):
+        model: Final = _deployment(
+            owned.gateway,
+            scenario,
+            vertex.url,
+            model=f"vertex_ai/{_GLM_BACKEND}",
+            model_info={"custom_tokenizer": {"identifier": _TOKENIZER_REPO, "revision": "main", "auth_token": None}},
+        )
+        local: Final = _payload(
+            owned.gateway.request("POST", "/utils/token_counter", _bare(model), params={"call_endpoint": "false"})
+        )
+        assert local["tokenizer_type"] == "huggingface_tokenizer", local
+        total: Final = local["total_tokens"]
+        assert isinstance(total, int) and total >= len(_COUNTED_TEXT), local
+        counts: Final = tuple(_route_count(owned.gateway, route, model) for route in _COUNT_ROUTES)
+        assert counts == ((200, total),) * len(_COUNT_ROUTES), counts
+        contents_only: Final = owned.gateway.request(
+            "POST",
+            "/utils/token_counter",
+            {"model": model, "contents": [{"role": "user", "parts": [{"text": _COUNTED_TEXT}]}]},
+            params={"call_endpoint": "true"},
+        )
+        assert contents_only.status_code == 400, contents_only.text
+        assert _GLM_BACKEND in _error_message(_JSON_OBJECT.validate_json(contents_only.content)), contents_only.text
+        assert vertex.drain() == ()
+        assert {request.target for request in hub.drain()} >= {_TOKENIZER_TARGET}
 
 
 def test_responses_input_tokens_types_a_peer_error_by_its_status(gateway: Gateway) -> None:
@@ -890,3 +1025,20 @@ def test_responses_endpoint_on_the_same_deployment_still_generates(gateway: Gate
         (sent,) = wire.drain()
         assert sent.target == _MESSAGE_TARGET, sent.target
         assert marker in sent.body.decode(), sent.body
+
+
+def test_responses_input_tokens_counts_the_structured_output_responses_inference_sends(gateway: Gateway) -> None:
+    request_body: Final = RESPONSES_REQUEST_OPTIONS["text-format"]
+    with wire_server(_peer(_strict)) as wire, gateway.scenario() as scenario:
+        model: Final = _deployment(gateway, scenario, wire.url)
+        generated: Final = gateway.request(
+            "POST", "/v1/responses", {**request_body, "model": model, "max_output_tokens": 4096}
+        )
+        assert generated.status_code == 200, generated.text
+        response: Final = gateway.request("POST", "/v1/responses/input_tokens", {**request_body, "model": model})
+        assert _payload(response)["input_tokens"] == _PEER_COUNT, response.text
+        requests: Final = wire.drain()
+        (inference,) = (request for request in requests if request.target == _MESSAGE_TARGET)
+        (counted,) = _count_bodies(requests)
+        expected: Final = inference_count_fields(_JSON_OBJECT.validate_json(inference.body))
+        assert count_request_fields(counted) == expected, (counted, expected)
